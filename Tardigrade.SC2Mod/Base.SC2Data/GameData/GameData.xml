@@ -44,8 +44,11 @@
     <!-- CORE UNIT DEFINITIONS  (edit here — everything else updates automatically) -->
     <!--   CoreUnit1 / CoreUnit2  are always granted to the player at game start.   -->
     <!--   They are excluded from banning and picking in the Roster Draft.          -->
-    <!--   The draft pool (Pool1..Pool12) is filtered at runtime, so any unit you   -->
+    <!--   The draft pool (Pool1..Pool16) is filtered at runtime, so any unit you   -->
     <!--   promote to a core slot automatically disappears from the draftable pool. -->
+    <!--   Ravager / Lurker / Brood Lord get a direct larva-build path (AbilData)    -->
+    <!--   so they are buildable without their parent. Archon is NOT a pool pick;    -->
+    <!--   it is unlocked by drafting either templar (see RosterEnforce.galaxy).     -->
     <!-- ════════════════════════════════════════════════════════════════════════  -->
     <CUser id="TardigradeRosterConfig">
         <Fields Id="CoreUnit1" Type="GameLink" GameLinkType="Unit"/>
@@ -62,58 +65,68 @@
         <Fields Id="Pool10"    Type="GameLink" GameLinkType="Unit"/>
         <Fields Id="Pool11"    Type="GameLink" GameLinkType="Unit"/>
         <Fields Id="Pool12"    Type="GameLink" GameLinkType="Unit"/>
+        <Fields Id="Pool13"    Type="GameLink" GameLinkType="Unit"/>
+        <Fields Id="Pool14"    Type="GameLink" GameLinkType="Unit"/>
+        <Fields Id="Pool15"    Type="GameLink" GameLinkType="Unit"/>
+        <Fields Id="Pool16"    Type="GameLink" GameLinkType="Unit"/>
         <Fields Id="PoolCount" Type="Int"/>
 
         <Instances Id="Terran">
             <GameLink GameLink="Marine"><Field Id="CoreUnit1"/></GameLink>
             <GameLink GameLink="Medivac"><Field Id="CoreUnit2"/></GameLink>
-            <Int Int="12"><Field Id="PoolCount"/></Int>
+            <Int Int="14"><Field Id="PoolCount"/></Int>
             <GameLink GameLink="Marauder"><Field Id="Pool1"/></GameLink>
             <GameLink GameLink="Reaper"><Field Id="Pool2"/></GameLink>
             <GameLink GameLink="Ghost"><Field Id="Pool3"/></GameLink>
             <GameLink GameLink="Hellion"><Field Id="Pool4"/></GameLink>
-            <GameLink GameLink="SiegeTank"><Field Id="Pool5"/></GameLink>
-            <GameLink GameLink="Thor"><Field Id="Pool6"/></GameLink>
-            <GameLink GameLink="VikingFighter"><Field Id="Pool7"/></GameLink>
-            <GameLink GameLink="Banshee"><Field Id="Pool8"/></GameLink>
-            <GameLink GameLink="HellionTank"><Field Id="Pool9"/></GameLink>
-            <GameLink GameLink="Cyclone"><Field Id="Pool10"/></GameLink>
+            <GameLink GameLink="HellionTank"><Field Id="Pool5"/></GameLink>
+            <GameLink GameLink="WidowMine"><Field Id="Pool6"/></GameLink>
+            <GameLink GameLink="Cyclone"><Field Id="Pool7"/></GameLink>
+            <GameLink GameLink="SiegeTank"><Field Id="Pool8"/></GameLink>
+            <GameLink GameLink="Thor"><Field Id="Pool9"/></GameLink>
+            <GameLink GameLink="VikingFighter"><Field Id="Pool10"/></GameLink>
             <GameLink GameLink="Liberator"><Field Id="Pool11"/></GameLink>
             <GameLink GameLink="Raven"><Field Id="Pool12"/></GameLink>
+            <GameLink GameLink="Banshee"><Field Id="Pool13"/></GameLink>
+            <GameLink GameLink="Battlecruiser"><Field Id="Pool14"/></GameLink>
         </Instances>
         <Instances Id="Protoss">
             <GameLink GameLink="Stalker"><Field Id="CoreUnit1"/></GameLink>
             <GameLink GameLink="Observer"><Field Id="CoreUnit2"/></GameLink>
-            <Int Int="12"><Field Id="PoolCount"/></Int>
+            <Int Int="15"><Field Id="PoolCount"/></Int>
             <GameLink GameLink="Zealot"><Field Id="Pool1"/></GameLink>
             <GameLink GameLink="Sentry"><Field Id="Pool2"/></GameLink>
-            <GameLink GameLink="Immortal"><Field Id="Pool3"/></GameLink>
-            <GameLink GameLink="Colossus"><Field Id="Pool4"/></GameLink>
-            <GameLink GameLink="HighTemplar"><Field Id="Pool5"/></GameLink>
-            <GameLink GameLink="DarkTemplar"><Field Id="Pool6"/></GameLink>
-            <GameLink GameLink="VoidRay"><Field Id="Pool7"/></GameLink>
-            <GameLink GameLink="Phoenix"><Field Id="Pool8"/></GameLink>
-            <GameLink GameLink="Adept"><Field Id="Pool9"/></GameLink>
-            <GameLink GameLink="Disruptor"><Field Id="Pool10"/></GameLink>
-            <GameLink GameLink="Carrier"><Field Id="Pool11"/></GameLink>
+            <GameLink GameLink="Adept"><Field Id="Pool3"/></GameLink>
+            <GameLink GameLink="Immortal"><Field Id="Pool4"/></GameLink>
+            <GameLink GameLink="Colossus"><Field Id="Pool5"/></GameLink>
+            <GameLink GameLink="HighTemplar"><Field Id="Pool6"/></GameLink>
+            <GameLink GameLink="DarkTemplar"><Field Id="Pool7"/></GameLink>
+            <GameLink GameLink="Disruptor"><Field Id="Pool8"/></GameLink>
+            <GameLink GameLink="WarpPrism"><Field Id="Pool9"/></GameLink>
+            <GameLink GameLink="Phoenix"><Field Id="Pool10"/></GameLink>
+            <GameLink GameLink="VoidRay"><Field Id="Pool11"/></GameLink>
             <GameLink GameLink="Oracle"><Field Id="Pool12"/></GameLink>
+            <GameLink GameLink="Carrier"><Field Id="Pool13"/></GameLink>
+            <GameLink GameLink="Tempest"><Field Id="Pool14"/></GameLink>
+            <GameLink GameLink="Mothership"><Field Id="Pool15"/></GameLink>
         </Instances>
         <Instances Id="Zerg">
             <GameLink GameLink="Zergling"><Field Id="CoreUnit1"/></GameLink>
             <GameLink GameLink="Queen"><Field Id="CoreUnit2"/></GameLink>
-            <Int Int="12"><Field Id="PoolCount"/></Int>
-            <GameLink GameLink="Roach"><Field Id="Pool1"/></GameLink>
-            <GameLink GameLink="Hydralisk"><Field Id="Pool2"/></GameLink>
-            <GameLink GameLink="Infestor"><Field Id="Pool3"/></GameLink>
-            <GameLink GameLink="Ultralisk"><Field Id="Pool4"/></GameLink>
-            <GameLink GameLink="BroodLord"><Field Id="Pool5"/></GameLink>
-            <GameLink GameLink="Mutalisk"><Field Id="Pool6"/></GameLink>
-            <GameLink GameLink="Corruptor"><Field Id="Pool7"/></GameLink>
-            <GameLink GameLink="LurkerMP"><Field Id="Pool8"/></GameLink>
-            <GameLink GameLink="Ravager"><Field Id="Pool9"/></GameLink>
-            <GameLink GameLink="SwarmHost"><Field Id="Pool10"/></GameLink>
-            <GameLink GameLink="Viper"><Field Id="Pool11"/></GameLink>
-            <GameLink GameLink="Baneling"><Field Id="Pool12"/></GameLink>
+            <Int Int="13"><Field Id="PoolCount"/></Int>
+            <GameLink GameLink="Baneling"><Field Id="Pool1"/></GameLink>
+            <GameLink GameLink="Roach"><Field Id="Pool2"/></GameLink>
+            <GameLink GameLink="Ravager"><Field Id="Pool3"/></GameLink>
+            <GameLink GameLink="Hydralisk"><Field Id="Pool4"/></GameLink>
+            <GameLink GameLink="LurkerMP"><Field Id="Pool5"/></GameLink>
+            <GameLink GameLink="Infestor"><Field Id="Pool6"/></GameLink>
+            <GameLink GameLink="SwarmHost"><Field Id="Pool7"/></GameLink>
+            <GameLink GameLink="Ultralisk"><Field Id="Pool8"/></GameLink>
+            <GameLink GameLink="Mutalisk"><Field Id="Pool9"/></GameLink>
+            <GameLink GameLink="Corruptor"><Field Id="Pool10"/></GameLink>
+            <GameLink GameLink="BroodLord"><Field Id="Pool11"/></GameLink>
+            <GameLink GameLink="Viper"><Field Id="Pool12"/></GameLink>
+            <GameLink GameLink="Overseer"><Field Id="Pool13"/></GameLink>
         </Instances>
     </CUser>
 

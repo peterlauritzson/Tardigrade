@@ -9,8 +9,9 @@
 //
 //   CYCLE: In-game the three chosen modifiers rotate as the Day, Dusk, and
 //   Night phases. The active phase's modifier is applied to EVERY unit on the
-//   map (both teams). A bottom-left HUD widget shows the active modifier and a
-//   countdown to the next phase.
+//   map (both teams). A top-center legend panel lists all three phases with
+//   their effects, highlights the one that is active, and counts down to the
+//   next phase.
 //
 // Requires: Debug.galaxy, TriggerLibs/NativeLib
 //--------------------------------------------------------------------------------------------------
@@ -45,12 +46,10 @@ string[4] g_cycle_iconPhase;        // [1..3] icon per phase
 string g_cycle_activeBehavior = ""; // currently applied buff (read by scan loop)
 int    g_cycle_curPhase = 0;
 
-// Cycle HUD
-int  g_cycle_hud        = c_invalidDialogId;
-int  g_cycle_hudTitle   = c_invalidDialogControlId;
-int  g_cycle_hudImgCur  = c_invalidDialogControlId;
-int  g_cycle_hudImgNext = c_invalidDialogControlId;
-int  g_cycle_hudTimer   = c_invalidDialogControlId;
+// Cycle HUD (top-center legend panel)
+int    g_cycle_hud      = c_invalidDialogId;
+int    g_cycle_hudTitle = c_invalidDialogControlId;
+int[4] g_cycle_hudRow;   // [1..3] one row per phase (Day / Dusk / Night)
 
 //--------------------------------------------------------------------------------------------------
 // Data: modifier behavior link, display name, and effect description.
@@ -130,7 +129,7 @@ void CycleMod_UpdateUI() {
     i = 1;
     while (i <= c_cycleModCount) {
         btnTxt = "<c val=\"FFFFFF\">" + CycleMod_Name(i) + "</c>"
-            + "\n<c val=\"888888\">" + CycleMod_Desc(i) + "</c>";
+            + "\n<c val=\"7FD0FF\">" + CycleMod_Desc(i) + "</c>";
         DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
             pickGroup, StringToText(btnTxt));
         DialogControlSetVisible(g_cycle_btnMod[i], pickGroup, !g_cycle_taken[i]);
@@ -188,10 +187,18 @@ void CycleMod_FinishDraft() {
         + " Dusk=" + CycleMod_Name(g_cycle_chosen[2])
         + " Night=" + CycleMod_Name(g_cycle_chosen[3]));
 
+    // Announce the full cycle plan with effects so it stays in the chat log.
     UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
-        "<c val=\"FFD700\">Cycle:</c>  Day = " + CycleMod_Name(g_cycle_chosen[1])
-        + "   |   Dusk = " + CycleMod_Name(g_cycle_chosen[2])
-        + "   |   Night = " + CycleMod_Name(g_cycle_chosen[3])));
+        "<c val=\"FFD54A\">BATTLE CYCLE</c>  <c val=\"AAAAAA\">- these three phases rotate all game:</c>"));
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
+        "<c val=\"FFE24A\">  Day:</c>   " + CycleMod_Name(g_cycle_chosen[1])
+        + "  <c val=\"AAAAAA\">-  " + CycleMod_Desc(g_cycle_chosen[1]) + "</c>"));
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
+        "<c val=\"FFE24A\">  Dusk:</c>  " + CycleMod_Name(g_cycle_chosen[2])
+        + "  <c val=\"AAAAAA\">-  " + CycleMod_Desc(g_cycle_chosen[2]) + "</c>"));
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
+        "<c val=\"FFE24A\">  Night:</c> " + CycleMod_Name(g_cycle_chosen[3])
+        + "  <c val=\"AAAAAA\">-  " + CycleMod_Desc(g_cycle_chosen[3]) + "</c>"));
 
     if (g_cycle_callback != null) {
         TriggerExecute(g_cycle_callback, false, false);
@@ -315,29 +322,60 @@ void CycleMod_LoadConfig() {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Build the bottom-left HUD widget.
+// Build the top-center legend panel: a title/countdown line plus one row per
+// phase (Day/Dusk/Night). Placed at the top of the screen so it never overlaps
+// the minimap or command card.
 //--------------------------------------------------------------------------------------------------
 void CycleMod_InitHUD() {
-    g_cycle_hud = DialogCreate(320, 96, c_anchorBottomLeft, 20, 300, false);
+    int p;
+
+    g_cycle_hud = DialogCreate(430, 116, c_anchorTop, 0, 24, false);
     DialogSetVisible(g_cycle_hud, PlayerGroupAll(), true);
     DialogSetImageVisible(g_cycle_hud, true);
 
     g_cycle_hudTitle = DialogControlCreate(g_cycle_hud, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_cycle_hudTitle, PlayerGroupAll(), 300, 22);
-    DialogControlSetPosition(g_cycle_hudTitle, PlayerGroupAll(), c_anchorTop, 0, 8);
+    DialogControlSetSize(g_cycle_hudTitle, PlayerGroupAll(), 410, 22);
+    DialogControlSetPosition(g_cycle_hudTitle, PlayerGroupAll(), c_anchorTop, 0, 6);
 
-    g_cycle_hudImgCur = DialogControlCreate(g_cycle_hud, c_triggerControlTypeImage);
-    DialogControlSetSize(g_cycle_hudImgCur, PlayerGroupAll(), 44, 44);
-    DialogControlSetPosition(g_cycle_hudImgCur, PlayerGroupAll(), c_anchorTopLeft, 30, 40);
-
-    g_cycle_hudTimer = DialogControlCreate(g_cycle_hud, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_cycle_hudTimer, PlayerGroupAll(), 120, 30);
-    DialogControlSetPosition(g_cycle_hudTimer, PlayerGroupAll(), c_anchorTop, 0, 48);
-
-    g_cycle_hudImgNext = DialogControlCreate(g_cycle_hud, c_triggerControlTypeImage);
-    DialogControlSetSize(g_cycle_hudImgNext, PlayerGroupAll(), 28, 28);
-    DialogControlSetPosition(g_cycle_hudImgNext, PlayerGroupAll(), c_anchorTopRight, 30, 48);
+    p = 1;
+    while (p <= c_cyclePhaseCount) {
+        g_cycle_hudRow[p] = DialogControlCreate(g_cycle_hud, c_triggerControlTypeLabel);
+        DialogControlSetSize(g_cycle_hudRow[p], PlayerGroupAll(), 406, 24);
+        DialogControlSetPosition(g_cycle_hudRow[p], PlayerGroupAll(),
+            c_anchorTop, 8, 32 + (p - 1) * 26);
+        p = p + 1;
+    }
 }
+
+//--------------------------------------------------------------------------------------------------
+// Refresh the legend rows, highlighting the active phase.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_RenderRows(int activePhase) {
+    int    p;
+    int    modIdx;
+    string tag;
+    string clr;
+    string mrk;
+    string line;
+
+    p = 1;
+    while (p <= c_cyclePhaseCount) {
+        modIdx = g_cycle_chosen[p];
+        if (p == 1)      { tag = "DAY  "; }
+        else if (p == 2) { tag = "DUSK "; }
+        else             { tag = "NIGHT"; }
+
+        if (p == activePhase) { clr = "FFE24A"; mrk = "> "; }   // bright gold, active
+        else                  { clr = "8A9099"; mrk = "  "; }   // muted grey, inactive
+
+        line = "<c val=\"" + clr + "\">" + mrk + tag + "   "
+            + CycleMod_Name(modIdx) + "   -   " + CycleMod_Desc(modIdx) + "</c>";
+        DialogControlSetPropertyAsText(g_cycle_hudRow[p], c_triggerControlPropertyText,
+            PlayerGroupAll(), StringToText(line));
+        p = p + 1;
+    }
+}
+
 
 //--------------------------------------------------------------------------------------------------
 // Scan loop: apply the active modifier to every unit, remove the other two.
@@ -402,20 +440,16 @@ bool CycleMod_PhaseTrigger(bool testConds, bool runActions) {
             GameSetLighting(g_cycle_lightPhase[phase], g_cycle_transitionDuration);
         }
 
-        // HUD
-        DialogControlSetPropertyAsText(g_cycle_hudTitle, c_triggerControlPropertyText,
-            PlayerGroupAll(), StringToText("<c val=\"FFD700\">" + CycleMod_Name(modIdx)
-                + "</c>  <c val=\"888888\">(" + CycleMod_Desc(modIdx) + ")</c>"));
-        DialogControlSetPropertyAsString(g_cycle_hudImgCur, c_triggerControlPropertyImage,
-            PlayerGroupAll(), g_cycle_iconPhase[phase]);
-        DialogControlSetPropertyAsString(g_cycle_hudImgNext, c_triggerControlPropertyImage,
-            PlayerGroupAll(), g_cycle_iconPhase[nextPhase]);
+        // Legend rows (rebuilt once per phase, active phase highlighted)
+        CycleMod_RenderRows(phase);
 
-        // Countdown
+        // Title + countdown (updated every second)
         secs = FixedToInt(g_cycle_phaseDuration);
         while (secs > 0) {
-            DialogControlSetPropertyAsText(g_cycle_hudTimer, c_triggerControlPropertyText,
-                PlayerGroupAll(), StringToText(IntToString(secs) + "s"));
+            DialogControlSetPropertyAsText(g_cycle_hudTitle, c_triggerControlPropertyText,
+                PlayerGroupAll(), StringToText(
+                    "<c val=\"FFD54A\">BATTLE CYCLE</c>    <c val=\"AAAAAA\">next phase in</c> <c val=\"FFFFFF\">"
+                    + IntToString(secs) + "s</c>"));
             Wait(1.0, c_timeGame);
             secs = secs - 1;
         }

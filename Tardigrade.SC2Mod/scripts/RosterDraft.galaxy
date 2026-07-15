@@ -10,7 +10,7 @@
 //--------------------------------------------------------------------------------------------------
 
 // Constants
-const int c_rosterPoolMax    = 12; // draftable units per race (2 columns of 6)
+const int c_rosterPoolMax    = 16; // max draftable units per race (2 columns of 8)
 const int c_rosterBanTotal   = 4;  // total cross-bans (2 per player)
 const int c_rosterPickTotal  = 8;  // total snake picks (4 per player)
 const int c_rosterRosterSize = 6;  // 2 core + 4 drafted
@@ -32,13 +32,13 @@ int       g_roster_phase       = 0;   // 0 = ban phase, 1 = pick phase
 int       g_roster_banIndex    = 0;
 int[5]    g_roster_banOrder;          // [1..4] who is doing the banning
 bool[5]   g_roster_banIsP1;           // [1..4] true = P1 is banning (from P2's pool)
-bool[13]  g_roster_p1Banned;          // units banned FROM P1's pool (by P2)
-bool[13]  g_roster_p2Banned;          // units banned FROM P2's pool (by P1)
+bool[17]  g_roster_p1Banned;          // units banned FROM P1's pool (by P2)
+bool[17]  g_roster_p2Banned;          // units banned FROM P2's pool (by P1)
 int       g_roster_pickIndex   = 0;
 int[9]    g_roster_pickOrder;
 bool[9]   g_roster_pickIsP1;
-bool[13]  g_roster_p1Picked;          // [1..12] which pool slots P1 has taken
-bool[13]  g_roster_p2Picked;          // [1..12] which pool slots P2 has taken
+bool[17]  g_roster_p1Picked;          // [1..16] which pool slots P1 has taken
+bool[17]  g_roster_p2Picked;          // [1..16] which pool slots P2 has taken
 int       g_roster_p1PickCount = 0;
 int       g_roster_p2PickCount = 0;
 
@@ -46,7 +46,7 @@ int       g_roster_p2PickCount = 0;
 int       g_roster_dialog      = c_invalidDialogId;
 int       g_roster_lblTitle    = c_invalidDialogControlId;
 int       g_roster_lblSubtitle = c_invalidDialogControlId; // "YOUR TURN" or "waiting..."
-int[13]   g_roster_btnPool;                                // [1..12] unit pool buttons
+int[17]   g_roster_btnPool;                                // [1..16] unit pool buttons
 int[7]    g_roster_lblSlot;                                // [1..6] right-panel roster slots
 trigger   g_roster_trigger     = null;
 
@@ -86,6 +86,8 @@ string RosterUnitDisplayName(string unitType) {
     if (unitType == "Cyclone")      { return "Cyclone"; }
     if (unitType == "Liberator")    { return "Liberator"; }
     if (unitType == "Raven")        { return "Raven"; }
+    if (unitType == "WidowMine")    { return "Widow Mine"; }
+    if (unitType == "Battlecruiser"){ return "Battlecruiser"; }
     // Protoss
     if (unitType == "Stalker")      { return "Stalker"; }
     if (unitType == "Observer")     { return "Observer"; }
@@ -101,6 +103,10 @@ string RosterUnitDisplayName(string unitType) {
     if (unitType == "Disruptor")    { return "Disruptor"; }
     if (unitType == "Carrier")      { return "Carrier"; }
     if (unitType == "Oracle")       { return "Oracle"; }
+    if (unitType == "Archon")       { return "Archon"; }
+    if (unitType == "WarpPrism")    { return "Warp Prism"; }
+    if (unitType == "Tempest")      { return "Tempest"; }
+    if (unitType == "Mothership")   { return "Mothership"; }
     // Zerg
     if (unitType == "Zergling")     { return "Zergling"; }
     if (unitType == "Queen")        { return "Queen"; }
@@ -116,6 +122,7 @@ string RosterUnitDisplayName(string unitType) {
     if (unitType == "SwarmHost")    { return "Swarm Host"; }
     if (unitType == "Viper")        { return "Viper"; }
     if (unitType == "Baneling")     { return "Baneling"; }
+    if (unitType == "Overseer")     { return "Overseer"; }
     return unitType;
 }
 
@@ -136,6 +143,8 @@ string RosterUnitRole(string unitType) {
     if (unitType == "Cyclone")      { return "Lock-On  ·  Skirmisher"; }
     if (unitType == "Liberator")    { return "Zone Control  ·  Air"; }
     if (unitType == "Raven")        { return "Tech Support  ·  Turret"; }
+    if (unitType == "WidowMine")    { return "Hidden  ·  Anti Ground/Air"; }
+    if (unitType == "Battlecruiser"){ return "Capital Ship  ·  Yamato"; }
     // Protoss
     if (unitType == "Stalker")      { return "Core  ·  Blink"; }
     if (unitType == "Observer")     { return "Core  ·  Detector"; }
@@ -143,14 +152,18 @@ string RosterUnitRole(string unitType) {
     if (unitType == "Sentry")       { return "Force Field  ·  Support"; }
     if (unitType == "Immortal")     { return "Hardened Shield  ·  AA"; }
     if (unitType == "Colossus")     { return "AoE  ·  Siege"; }
-    if (unitType == "HighTemplar")  { return "Psionic Storm"; }
-    if (unitType == "DarkTemplar")  { return "Permanent Cloak"; }
+    if (unitType == "HighTemplar")  { return "Psionic Storm  ·  unlocks Archon"; }
+    if (unitType == "DarkTemplar")  { return "Permanent Cloak  ·  unlocks Archon"; }
     if (unitType == "VoidRay")      { return "Prismatic Beam  ·  Air"; }
     if (unitType == "Phoenix")      { return "Air  ·  Graviton Beam"; }
     if (unitType == "Adept")        { return "Psionic Transfer"; }
     if (unitType == "Disruptor")    { return "Nova Burst"; }
     if (unitType == "Carrier")      { return "Interceptor Swarm  ·  Air"; }
     if (unitType == "Oracle")       { return "Revelation  ·  Stasis"; }
+    if (unitType == "Archon")       { return "Splash Melee  ·  from Templar"; }
+    if (unitType == "WarpPrism")    { return "Transport  ·  Pylon"; }
+    if (unitType == "Tempest")      { return "Long-Range  ·  Capital"; }
+    if (unitType == "Mothership")   { return "Cloak Field  ·  Capital"; }
     // Zerg
     if (unitType == "Zergling")     { return "Core  ·  Rush"; }
     if (unitType == "Queen")        { return "Core  ·  Transfuse"; }
@@ -162,10 +175,11 @@ string RosterUnitRole(string unitType) {
     if (unitType == "Mutalisk")     { return "Harassment  ·  Bounce"; }
     if (unitType == "Corruptor")    { return "Anti-Massive  ·  Air"; }
     if (unitType == "LurkerMP")     { return "Spine Burst  ·  Siege"; }
-    if (unitType == "Ravager")      { return "Corrosive Bile"; }
+    if (unitType == "Ravager")      { return "Corrosive Bile  ·  Ranged"; }
     if (unitType == "SwarmHost")    { return "Locust Wave"; }
     if (unitType == "Viper")        { return "Blinding Cloud  ·  CC"; }
     if (unitType == "Baneling")     { return "Explosive  ·  Splash"; }
+    if (unitType == "Overseer")     { return "Detector  ·  Air"; }
     return "";
 }
 
@@ -631,19 +645,19 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     // Button size: 238 × 56  (2 lines: name + role)
     // Col A (1..6):  xOffset=-290  →  left≈20
     // Col B (7..12): xOffset=-38   →  left≈273
-    // Row step: 64px, starting at y=88
+    // Row step: 56px, starting at y=82.  Two columns of up to 8 buttons each.
     i = 1;
     while (i <= c_rosterPoolMax) {
         g_roster_btnPool[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeButton);
-        DialogControlSetSize(g_roster_btnPool[i], PlayerGroupAll(), 238, 56);
-        if (i <= 6) {
+        DialogControlSetSize(g_roster_btnPool[i], PlayerGroupAll(), 238, 50);
+        if (i <= 8) {
             row = i - 1;
             DialogControlSetPosition(g_roster_btnPool[i], PlayerGroupAll(),
-                c_anchorTop, -290, 88 + row * 64);
+                c_anchorTop, -290, 82 + row * 56);
         } else {
-            row = i - 7;
+            row = i - 9;
             DialogControlSetPosition(g_roster_btnPool[i], PlayerGroupAll(),
-                c_anchorTop, -38, 88 + row * 64);
+                c_anchorTop, -38, 82 + row * 56);
         }
         // Hidden initially; UpdateUI makes the correct set visible per picker
         DialogControlSetVisible(g_roster_btnPool[i], PlayerGroupAll(), false);

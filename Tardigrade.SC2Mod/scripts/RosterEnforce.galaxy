@@ -70,7 +70,22 @@ bool RosterEnforce_InRoster(int whichRoster, string unitType) {
     return false;
 }
 
-// Disable every non-rostered master unit for a single player.
+// A unit is allowed if it is in the roster. Archon is the one exception: it has
+// no standalone build path in SC2 (it is a templar merge), so it is available
+// whenever the player drafted either templar type. The Zerg morph units
+// (Ravager / Lurker / Brood Lord) need no special case here — they have a
+// direct larva-build path in AbilData, so being in the roster is enough.
+bool RosterEnforce_IsAllowed(int whichRoster, string unitType) {
+    if (RosterEnforce_InRoster(whichRoster, unitType)) { return true; }
+
+    if (unitType == "Archon"
+        && (RosterEnforce_InRoster(whichRoster, "HighTemplar")
+            || RosterEnforce_InRoster(whichRoster, "DarkTemplar"))) { return true; }
+
+    return false;
+}
+
+// Disable every non-allowed master unit for a single player.
 void RosterEnforce_ApplyToPlayer(int player, int race, int whichRoster) {
     int    n;
     int    i;
@@ -86,7 +101,7 @@ void RosterEnforce_ApplyToPlayer(int player, int race, int whichRoster) {
         else if (race == c_tardigrade_raceProtoss) { unitType = g_enfProtoss[i]; }
         else                                      { unitType = g_enfZerg[i]; }
 
-        if (!RosterEnforce_InRoster(whichRoster, unitType)) {
+        if (!RosterEnforce_IsAllowed(whichRoster, unitType)) {
             TechTreeUnitAllow(player, unitType, false);
         }
         i = i + 1;
