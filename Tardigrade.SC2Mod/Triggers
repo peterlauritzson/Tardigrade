@@ -16,12 +16,12 @@
         <Element Type="FunctionCall" Id="4195EE98">
             <FunctionDef Type="FunctionDef" Library="Ntve" Id="00000123"/>
             <ScriptCode>
-                Peregrine_Init();
+                Tardigrade_Init();
             </ScriptCode>
         </Element>
         <Element Type="CustomScript" Id="03797DA3">
             <ScriptCode>
-                include &quot;scripts/PeregrineLogic&quot;
+                include &quot;scripts/TardigradeLogic&quot;
             </ScriptCode>
         </Element>
     </Library>

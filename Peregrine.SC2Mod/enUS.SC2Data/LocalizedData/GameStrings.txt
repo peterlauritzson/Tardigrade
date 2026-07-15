@@ -1,4 +1,0 @@
-﻿DocInfo/DescLong=Peregrine: The Momentum Doctrine<n/>"Static defense is a slow death."<n/><n/>Peregrine is an Extension Mod that fundamentally changes the rules of engagement. It enforces the Momentum Doctrine: a set of mechanics where speed equals power, and stillness equals vulnerability.<n/><n/>Core Concepts:<n/><n/>Velocity is Viole
-DocInfo/DescShort=1-8
-DocInfo/Name=Peregrine
-Unit/Name/PeregrineResourceHighway=Resource Highway

@@ -8,7 +8,7 @@
              <AIBuilds index="215" Enabled="1"/> -->
     </CGame>
 
-    <CUser id="PeregrineRaceStartConfig">
+    <CUser id="TardigradeRaceStartConfig">
         <Fields Id="TownHall" Type="GameLink" GameLinkType="Unit"/>
         <Fields Id="Worker" Type="GameLink" GameLinkType="Unit"/>
         <Fields Id="ExtraUnit" Type="GameLink" GameLinkType="Unit"/>
@@ -47,7 +47,7 @@
     <!--   The draft pool (Pool1..Pool12) is filtered at runtime, so any unit you   -->
     <!--   promote to a core slot automatically disappears from the draftable pool. -->
     <!-- ════════════════════════════════════════════════════════════════════════  -->
-    <CUser id="PeregrineRosterConfig">
+    <CUser id="TardigradeRosterConfig">
         <Fields Id="CoreUnit1" Type="GameLink" GameLinkType="Unit"/>
         <Fields Id="CoreUnit2" Type="GameLink" GameLinkType="Unit"/>
         <Fields Id="Pool1"     Type="GameLink" GameLinkType="Unit"/>
@@ -117,28 +117,29 @@
         </Instances>
     </CUser>
 
-    <CUser id="PeregrineDayNightConfig">
+    <!-- ════════════════════════════════════════════════════════════════════════ -->
+    <!-- CYCLE CONFIG                                                                -->
+    <!--   Timing + lighting for the Day / Dusk / Night phases. The three modifiers -->
+    <!--   themselves are drafted at runtime (see CycleMod.galaxy + BehaviorData);   -->
+    <!--   this block only controls how long each phase lasts and how it looks.      -->
+    <!--   PhaseDuration is in seconds. Set to a small value for testing.            -->
+    <!-- ════════════════════════════════════════════════════════════════════════ -->
+    <CUser id="TardigradeCycleConfig">
         <Fields Id="PhaseDuration" Type="Fixed"/>
         <Fields Id="TransitionDuration" Type="Fixed"/>
         <Fields Id="LightDay" Type="GameLink" GameLinkType="Light"/>
         <Fields Id="LightDusk" Type="GameLink" GameLinkType="Light"/>
         <Fields Id="LightNight" Type="GameLink" GameLinkType="Light"/>
-        <Fields Id="SoundDay" Type="GameLink" GameLinkType="Sound"/>
-        <Fields Id="SoundDusk" Type="GameLink" GameLinkType="Sound"/>
-        <Fields Id="SoundNight" Type="GameLink" GameLinkType="Sound"/>
         <Fields Id="IconDay" Type="String"/>
         <Fields Id="IconDusk" Type="String"/>
         <Fields Id="IconNight" Type="String"/>
-        
+
         <Instances Id="Default">
-            <Fixed Fixed="10.0"><Field Id="PhaseDuration"/></Fixed>
+            <Fixed Fixed="45.0"><Field Id="PhaseDuration"/></Fixed>
             <Fixed Fixed="2.0"><Field Id="TransitionDuration"/></Fixed>
             <GameLink GameLink="MarSaraDayTest"><Field Id="LightDay"/></GameLink>
             <GameLink GameLink="BelShirSunset"><Field Id="LightDusk"/></GameLink>
             <GameLink GameLink="MarSaraNightTest"><Field Id="LightNight"/></GameLink>
-            <GameLink GameLink="UI_ObjectiveComplete"><Field Id="SoundDay"/></GameLink>
-            <GameLink GameLink="UI_ObjectiveUpdate"><Field Id="SoundDusk"/></GameLink>
-            <GameLink GameLink="UI_TerranKlaxonAlert"><Field Id="SoundNight"/></GameLink>
             <String String="Assets\Textures\UI_Battlenet_Glue_MiniButton_Green_NormalPressed.dds"><Field Id="IconDay"/></String>
             <String String="Assets\Textures\UI_Battlenet_Glue_MiniButton_Orange_NormalPressed.dds"><Field Id="IconDusk"/></String>
             <String String="Assets\Textures\UI_Battlenet_Glue_MiniButton_Blue_NormalPressed.dds"><Field Id="IconNight"/></String>

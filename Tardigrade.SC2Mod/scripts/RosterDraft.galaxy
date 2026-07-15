@@ -61,12 +61,12 @@ string GetRosterCoreUnit(int race, int slot) {
 
 // Pool fields are named Pool1..Pool8 (explicit, avoids CUser array-syntax uncertainty)
 string GetRosterPoolUnit(int race, int index) {
-    return UserDataGetGameLink("PeregrineRosterConfig", GetRaceConfigId(race),
+    return UserDataGetGameLink("TardigradeRosterConfig", GetRaceConfigId(race),
         "Pool" + IntToString(index), 1);
 }
 
 int GetRosterPoolCount(int race) {
-    return UserDataGetInt("PeregrineRosterConfig", GetRaceConfigId(race), "PoolCount", 1);
+    return UserDataGetInt("TardigradeRosterConfig", GetRaceConfigId(race), "PoolCount", 1);
 }
 
 // Human-readable display name for a unit type string.
@@ -368,8 +368,8 @@ void RosterDraft_Finish() {
     }
     DialogDestroy(g_roster_dialog);
 
-    // NOTE: Do NOT unpause here. AdvantageDraft_Finish() will unpause when all
-    // pre-game drafts are complete.
+    // NOTE: Do NOT unpause here. Tardigrade_StartGame() unpauses once the
+    // final Cycle-modifier draft completes.
 
     // Debug log
     logMsg = "=== Roster Draft Complete ===\nP1 Roster:";

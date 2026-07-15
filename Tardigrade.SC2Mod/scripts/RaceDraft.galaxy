@@ -3,9 +3,9 @@
 //--------------------------------------------------------------------------------------------------
 
 // Constants
-const int c_peregrine_raceTerran = 1;
-const int c_peregrine_raceProtoss = 2;
-const int c_peregrine_raceZerg = 3;
+const int c_tardigrade_raceTerran = 1;
+const int c_tardigrade_raceProtoss = 2;
+const int c_tardigrade_raceZerg = 3;
 
 // State
 int g_draft_p1; // The banning player
@@ -37,20 +37,20 @@ int g_draft_btnAutoZerg = c_invalidDialogControlId;
 // Helper: Get Race Config ID
 //--------------------------------------------------------------------------------------------------
 string GetRaceConfigId(int race) {
-    if (race == c_peregrine_raceTerran) { return "Terran"; }
-    if (race == c_peregrine_raceProtoss) { return "Protoss"; }
-    if (race == c_peregrine_raceZerg) { return "Zerg"; }
+    if (race == c_tardigrade_raceTerran) { return "Terran"; }
+    if (race == c_tardigrade_raceProtoss) { return "Protoss"; }
+    if (race == c_tardigrade_raceZerg) { return "Zerg"; }
     return "";
 }
 
 //--------------------------------------------------------------------------------------------------
 // Helper: Get Core Unit
-// Single access point for core unit definitions (GameData.xml / PeregrineRosterConfig).
+// Single access point for core unit definitions (GameData.xml / TardigradeRosterConfig).
 // To change a race's core units, edit CoreUnit1 / CoreUnit2 in GameData.xml ? all draft
 // phases (race announcement, roster panel, pool filtering) update automatically.
 //--------------------------------------------------------------------------------------------------
 string GetCoreUnit(int race, int slot) {
-    return UserDataGetGameLink("PeregrineRosterConfig", GetRaceConfigId(race),
+    return UserDataGetGameLink("TardigradeRosterConfig", GetRaceConfigId(race),
         "CoreUnit" + IntToString(slot), 1);
 }
 
@@ -67,7 +67,7 @@ string RaceName(int race) {
 string GetRaceUnitType(int race, string field) {
     string raceId = GetRaceConfigId(race);
     if (raceId == "") { return ""; }
-    return UserDataGetGameLink("PeregrineRaceStartConfig", raceId, field, 1);
+    return UserDataGetGameLink("TardigradeRaceStartConfig", raceId, field, 1);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -76,7 +76,7 @@ string GetRaceUnitType(int race, string field) {
 int GetRaceStartConfigInt(int race, string field) {
     string raceId = GetRaceConfigId(race);
     if (raceId == "") { return 0; }
-    return UserDataGetInt("PeregrineRaceStartConfig", raceId, field, 1);
+    return UserDataGetInt("TardigradeRaceStartConfig", raceId, field, 1);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -114,7 +114,7 @@ void SetPlayerRace(int player, int race) {
     townHallType = GetRaceUnitType(race, "TownHall");
     workerType = GetRaceUnitType(race, "Worker");
     extraUnitType = GetRaceUnitType(race, "ExtraUnit");
-    skipStartPack = (race == c_peregrine_raceZerg);
+    skipStartPack = false; // every race gets a normal melee opening
 
     // 2. Find Start Location (where the current Town Hall is)
     existingUnits = UnitGroup(null, player, RegionEntireMap(), UnitFilter(0, 0, (1 << c_targetFilterMissile), (1 << (c_targetFilterDead - 32)) | (1 << (c_targetFilterHidden - 32))), 0);
@@ -139,9 +139,7 @@ void SetPlayerRace(int player, int race) {
     }
     UnitGroupLoopEnd();
 
-    // 4. Spawn New Units
-    // Zerg startpack is intentionally skipped; Peregrine_StartGame performs a
-    // deterministic Hive-only setup directly at the start location.
+    // 4. Spawn New Units (town hall + workers + optional extra unit, e.g. Overlord)
     if (!skipStartPack) {
         libNtve_gf_CreateUnitsWithDefaultFacing(1, townHallType, 0, player, startLoc);
         libNtve_gf_CreateUnitsWithDefaultFacing(workerCount, workerType, 0, player, startLoc);
@@ -209,9 +207,9 @@ void RaceDraft_Finish(int pickedRace) {
     string msg;
     
     // Determine P1's race (The one that wasn't banned and wasn't picked)
-    if (g_draft_bannedRace != c_peregrine_raceTerran && pickedRace != c_peregrine_raceTerran) { p1Race = c_peregrine_raceTerran; }
-    else if (g_draft_bannedRace != c_peregrine_raceProtoss && pickedRace != c_peregrine_raceProtoss) { p1Race = c_peregrine_raceProtoss; }
-    else { p1Race = c_peregrine_raceZerg; }
+    if (g_draft_bannedRace != c_tardigrade_raceTerran && pickedRace != c_tardigrade_raceTerran) { p1Race = c_tardigrade_raceTerran; }
+    else if (g_draft_bannedRace != c_tardigrade_raceProtoss && pickedRace != c_tardigrade_raceProtoss) { p1Race = c_tardigrade_raceProtoss; }
+    else { p1Race = c_tardigrade_raceZerg; }
 
     // Apply to Teams
     // P1 is the Banner. They get the "Remainder" race (p1Race).
@@ -235,7 +233,7 @@ void RaceDraft_Finish(int pickedRace) {
     DialogDestroy(g_draft_dialog);
 
     // NOTE: Do NOT unpause here. The chained draft phases manage pausing.
-    // AdvantageDraft_Finish() ? the final phase ? calls GameSetMissionTimePaused(false).
+    // Tardigrade_StartGame() -- after the final Cycle draft -- unpauses the game.
 
     // Run Callback
     if (g_draft_callback != null) {
@@ -285,9 +283,9 @@ void RaceDraft_UpdateUI() {
         DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p2), StringToText("PICK your Race"));
 
         // Show available buttons to P2
-        DialogControlSetVisible(g_draft_btnTerran, PlayerGroupSingle(g_draft_p2), (g_draft_bannedRace != c_peregrine_raceTerran));
-        DialogControlSetVisible(g_draft_btnProtoss, PlayerGroupSingle(g_draft_p2), (g_draft_bannedRace != c_peregrine_raceProtoss));
-        DialogControlSetVisible(g_draft_btnZerg, PlayerGroupSingle(g_draft_p2), (g_draft_bannedRace != c_peregrine_raceZerg));
+        DialogControlSetVisible(g_draft_btnTerran, PlayerGroupSingle(g_draft_p2), (g_draft_bannedRace != c_tardigrade_raceTerran));
+        DialogControlSetVisible(g_draft_btnProtoss, PlayerGroupSingle(g_draft_p2), (g_draft_bannedRace != c_tardigrade_raceProtoss));
+        DialogControlSetVisible(g_draft_btnZerg, PlayerGroupSingle(g_draft_p2), (g_draft_bannedRace != c_tardigrade_raceZerg));
 
         // Only update P1 view if P1 is a different player
         if (g_draft_p1 != g_draft_p2) {
@@ -309,9 +307,9 @@ bool RaceDraft_OnClicked(bool testConds, bool runActions) {
     int player = EventPlayer();
     int selectedRace = 0;
 
-    if (control == g_draft_btnTerran) { selectedRace = c_peregrine_raceTerran; }
-    else if (control == g_draft_btnProtoss) { selectedRace = c_peregrine_raceProtoss; }
-    else if (control == g_draft_btnZerg) { selectedRace = c_peregrine_raceZerg; }
+    if (control == g_draft_btnTerran) { selectedRace = c_tardigrade_raceTerran; }
+    else if (control == g_draft_btnProtoss) { selectedRace = c_tardigrade_raceProtoss; }
+    else if (control == g_draft_btnZerg) { selectedRace = c_tardigrade_raceZerg; }
 
     if (control == g_draft_btnAutoRun) {
         Debug_SetForcedRace(0);
@@ -322,9 +320,9 @@ bool RaceDraft_OnClicked(bool testConds, bool runActions) {
     }
 
     if (control == g_draft_btnAutoTerran || control == g_draft_btnAutoProtoss || control == g_draft_btnAutoZerg) {
-        if (control == g_draft_btnAutoTerran) { Debug_SetForcedRace(c_peregrine_raceTerran); }
-        if (control == g_draft_btnAutoProtoss) { Debug_SetForcedRace(c_peregrine_raceProtoss); }
-        if (control == g_draft_btnAutoZerg) { Debug_SetForcedRace(c_peregrine_raceZerg); }
+        if (control == g_draft_btnAutoTerran) { Debug_SetForcedRace(c_tardigrade_raceTerran); }
+        if (control == g_draft_btnAutoProtoss) { Debug_SetForcedRace(c_tardigrade_raceProtoss); }
+        if (control == g_draft_btnAutoZerg) { Debug_SetForcedRace(c_tardigrade_raceZerg); }
         if (g_debug_autoRunTrigger != null) {
             TriggerExecute(g_debug_autoRunTrigger, false, false);
         }
@@ -459,7 +457,7 @@ void RaceDraft_Start(trigger callback) {
 
     // Create UI
     g_draft_dialog = DialogCreate(500, 500, c_anchorCenter, 0, 0, true);
-    DialogSetTitle(g_draft_dialog, StringToText("Peregrine Draft"));
+    DialogSetTitle(g_draft_dialog, StringToText("Tardigrade  -  Race Draft"));
     DialogSetVisible(g_draft_dialog, PlayerGroupAll(), true);
 
     // Label

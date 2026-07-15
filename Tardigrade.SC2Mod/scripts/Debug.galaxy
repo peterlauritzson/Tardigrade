@@ -9,7 +9,7 @@ const int c_debug_All = 1;
 // Global State
 int g_debugLevel = c_debug_None;
 trigger g_debug_autoRunTrigger = null;
-int g_debug_forcedRace = 0; // 0 = none, else c_peregrine_race*
+int g_debug_forcedRace = 0; // 0 = none, else c_tardigrade_race*
 
 void Debug_SetAutoRunTrigger(trigger t) {
     g_debug_autoRunTrigger = t;

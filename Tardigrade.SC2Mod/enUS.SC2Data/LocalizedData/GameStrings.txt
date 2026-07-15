@@ -1,0 +1,3 @@
+﻿DocInfo/DescLong=Tardigrade<n/><n/>A lightweight melee mod with a three-part pre-game draft:<n/><n/>1. Race Draft - ban a race, pick a race, get the remainder (teams share one race).<n/>2. Unit Draft - ban and snake-pick a 6-unit roster; you can only build what you draft.<n/>3. Cycle Draft - pick from 10 global modifiers; three rotate as Day, Dusk, and Night, buffing every unit on the map.<n/><n/>Standard SC2 melee otherwise.
+DocInfo/DescShort=1-8
+DocInfo/Name=Tardigrade

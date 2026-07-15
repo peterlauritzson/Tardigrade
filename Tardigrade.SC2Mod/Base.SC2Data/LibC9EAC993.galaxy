@@ -3,7 +3,7 @@ include "TriggerLibs/NativeLib"
 include "LibC9EAC993_h"
 
 //--------------------------------------------------------------------------------------------------
-// Library: Peregrine
+// Library: Tardigrade
 //--------------------------------------------------------------------------------------------------
 // External Library Initialization
 void libC9EAC993_InitLibraries () {
@@ -14,34 +14,34 @@ void libC9EAC993_InitLibraries () {
 //--------------------------------------------------------------------------------------------------
 // Custom Script: IncludeScripts
 //--------------------------------------------------------------------------------------------------
-include "scripts/PeregrineLogic"
+include "scripts/TardigradeLogic"
 
 void libC9EAC993_InitCustomScript () {
 }
 
 // Triggers
 //--------------------------------------------------------------------------------------------------
-// Trigger: PeregrineBoot
+// Trigger: TardigradeBoot
 //--------------------------------------------------------------------------------------------------
-bool libC9EAC993_gt_PeregrineBoot_Func (bool testConds, bool runActions) {
+bool libC9EAC993_gt_TardigradeBoot_Func (bool testConds, bool runActions) {
     // Automatic Variable Declarations
     // Actions
     if (!runActions) {
         return true;
     }
 
-    Peregrine_Init();
+    Tardigrade_Init();
     return true;
 }
 
 //--------------------------------------------------------------------------------------------------
-void libC9EAC993_gt_PeregrineBoot_Init () {
-    libC9EAC993_gt_PeregrineBoot = TriggerCreate("libC9EAC993_gt_PeregrineBoot_Func");
-    TriggerAddEventMapInit(libC9EAC993_gt_PeregrineBoot);
+void libC9EAC993_gt_TardigradeBoot_Init () {
+    libC9EAC993_gt_TardigradeBoot = TriggerCreate("libC9EAC993_gt_TardigradeBoot_Func");
+    TriggerAddEventMapInit(libC9EAC993_gt_TardigradeBoot);
 }
 
 void libC9EAC993_InitTriggers () {
-    libC9EAC993_gt_PeregrineBoot_Init();
+    libC9EAC993_gt_TardigradeBoot_Init();
 }
 
 //--------------------------------------------------------------------------------------------------

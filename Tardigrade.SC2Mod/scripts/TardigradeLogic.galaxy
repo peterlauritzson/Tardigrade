@@ -1,0 +1,194 @@
+//--------------------------------------------------------------------------------------------------
+// Tardigrade Logic  (main orchestration)
+//
+// Pre-game draft chain, run on map init:
+//
+//   1. Race Draft    - P1 bans a race, P2 picks, P1 gets the remainder.
+//                      Each team is set to a single race.
+//   2. Unit Draft    - ban phase + snake pick; each side ends with 6 units
+//                      (2 core + 4 drafted). Enforced in-game.
+//   3. Cycle Draft   - P1 picks 1 of 10 global modifiers, P2 picks another,
+//                      the 3rd is random. The three rotate as Day/Dusk/Night.
+//
+// Then the game starts: rosters are enforced and the cycle begins.
+//--------------------------------------------------------------------------------------------------
+
+include "scripts/Debug"
+include "scripts/RaceDraft"
+include "scripts/RosterDraft"
+include "scripts/RosterEnforce"
+include "scripts/CycleMod"
+
+//--------------------------------------------------------------------------------------------------
+// Core game-start logic - shared by the normal draft chain and the debug auto-run.
+//--------------------------------------------------------------------------------------------------
+void Tardigrade_StartGame() {
+    RosterEnforce_ApplyAll();
+    CycleMod_StartCycle();
+    GameSetMissionTimePaused(false);
+
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat,
+        StringToText("<c val=\"FFD700\">The battle begins.</c>"));
+}
+
+//--------------------------------------------------------------------------------------------------
+// Debug: skip all draft UIs, randomly assign races / rosters / cycle, start game.
+// Wired to the [DEBUG: Random All] button shown in RaceDraft in debug mode.
+//--------------------------------------------------------------------------------------------------
+bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
+    int banRace;
+    int pickRace;
+    int p1Race;
+    int otherRace1;
+    int otherRace2;
+    int forcedRace;
+    int t1Race;
+    int t2Race;
+    int usedMask;
+    int poolCount;
+    int pick;
+    int pickCount;
+
+    forcedRace = Debug_GetForcedRace();
+
+    // If a forced race is set, lock P1 to that race and randomize the opponent.
+    if (forcedRace >= c_tardigrade_raceTerran && forcedRace <= c_tardigrade_raceZerg) {
+        p1Race = forcedRace;
+        if (p1Race == c_tardigrade_raceTerran) {
+            otherRace1 = c_tardigrade_raceProtoss; otherRace2 = c_tardigrade_raceZerg;
+        } else if (p1Race == c_tardigrade_raceProtoss) {
+            otherRace1 = c_tardigrade_raceTerran;  otherRace2 = c_tardigrade_raceZerg;
+        } else {
+            otherRace1 = c_tardigrade_raceTerran;  otherRace2 = c_tardigrade_raceProtoss;
+        }
+        if (RandomInt(0, 1) == 0) { pickRace = otherRace1; } else { pickRace = otherRace2; }
+        if (pickRace == otherRace1) { banRace = otherRace2; } else { banRace = otherRace1; }
+    } else {
+        // Random race: ban one, P2 picks one of the remaining two, P1 gets the third.
+        banRace = RandomInt(1, 3);
+        if (banRace == c_tardigrade_raceTerran) {
+            otherRace1 = c_tardigrade_raceProtoss; otherRace2 = c_tardigrade_raceZerg;
+        } else if (banRace == c_tardigrade_raceProtoss) {
+            otherRace1 = c_tardigrade_raceTerran;  otherRace2 = c_tardigrade_raceZerg;
+        } else {
+            otherRace1 = c_tardigrade_raceTerran;  otherRace2 = c_tardigrade_raceProtoss;
+        }
+        if (RandomInt(0, 1) == 0) { pickRace = otherRace1; p1Race = otherRace2; }
+        else                       { pickRace = otherRace2; p1Race = otherRace1; }
+    }
+    Debug_SetForcedRace(0);
+
+    if (g_draft_p1_is_team1) { t1Race = p1Race; t2Race = pickRace; }
+    else                     { t1Race = pickRace; t2Race = p1Race; }
+    SetTeamRace(g_draft_team1, t1Race);
+    SetTeamRace(g_draft_team2, t2Race);
+    g_draft_bannedRace = banRace;
+    g_draft_p1Race     = p1Race;
+    g_draft_p2Race     = pickRace;
+
+    // Roster globals (normally set by RosterDraft_Start).
+    g_roster_p1     = g_draft_p1;
+    g_roster_p2     = g_draft_p2;
+    g_roster_p1Race = g_draft_p1Race;
+    g_roster_p2Race = g_draft_p2Race;
+
+    // Random roster for P1: 2 core units + 4 random pool picks.
+    g_roster_p1Units[1] = GetCoreUnit(g_roster_p1Race, 1);
+    g_roster_p1Units[2] = GetCoreUnit(g_roster_p1Race, 2);
+    poolCount = GetRosterPoolCount(g_roster_p1Race);
+    usedMask  = 0;
+    pickCount = 3;
+    while (pickCount <= c_rosterRosterSize) {
+        pick = RandomInt(1, poolCount);
+        if ((usedMask & (1 << (pick - 1))) == 0) {
+            usedMask = usedMask | (1 << (pick - 1));
+            g_roster_p1Units[pickCount] = GetRosterPoolUnit(g_roster_p1Race, pick);
+            pickCount = pickCount + 1;
+        }
+    }
+
+    // Random roster for P2.
+    g_roster_p2Units[1] = GetCoreUnit(g_roster_p2Race, 1);
+    g_roster_p2Units[2] = GetCoreUnit(g_roster_p2Race, 2);
+    poolCount = GetRosterPoolCount(g_roster_p2Race);
+    usedMask  = 0;
+    pickCount = 3;
+    while (pickCount <= c_rosterRosterSize) {
+        pick = RandomInt(1, poolCount);
+        if ((usedMask & (1 << (pick - 1))) == 0) {
+            usedMask = usedMask | (1 << (pick - 1));
+            g_roster_p2Units[pickCount] = GetRosterPoolUnit(g_roster_p2Race, pick);
+            pickCount = pickCount + 1;
+        }
+    }
+
+    // Random cycle: 3 distinct modifiers.
+    usedMask  = 0;
+    pickCount = 1;
+    while (pickCount <= c_cyclePhaseCount) {
+        pick = RandomInt(1, c_cycleModCount);
+        if ((usedMask & (1 << (pick - 1))) == 0) {
+            usedMask = usedMask | (1 << (pick - 1));
+            g_cycle_chosen[pickCount] = pick;
+            pickCount = pickCount + 1;
+        }
+    }
+
+    // Tear down the race draft UI and trigger.
+    if (g_draft_trigger != null) { TriggerDestroy(g_draft_trigger); g_draft_trigger = null; }
+    if (g_draft_dialog != c_invalidDialogId) { DialogDestroy(g_draft_dialog); g_draft_dialog = c_invalidDialogId; }
+
+    Debug_Log("AUTO DRAFT: Ban=" + RaceName(banRace) + " P1=" + RaceName(g_draft_p1Race)
+        + " P2=" + RaceName(g_draft_p2Race));
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat,
+        StringToText("AUTO DRAFT: P1=" + RaceName(g_draft_p1Race) + "  P2=" + RaceName(g_draft_p2Race)));
+
+    Tardigrade_StartGame();
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Callback: cycle draft complete -> start the game.
+//--------------------------------------------------------------------------------------------------
+bool Tardigrade_OnCycleFinished(bool testConds, bool runActions) {
+    Tardigrade_StartGame();
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Callback: unit draft complete -> start the cycle-modifier draft.
+//--------------------------------------------------------------------------------------------------
+bool Tardigrade_OnRosterFinished(bool testConds, bool runActions) {
+    trigger cycleCallback;
+    cycleCallback = TriggerCreate("Tardigrade_OnCycleFinished");
+    CycleMod_StartDraft(cycleCallback, g_roster_p1, g_roster_p2);
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Callback: race draft complete -> start the unit draft.
+//--------------------------------------------------------------------------------------------------
+bool Tardigrade_OnDraftFinished(bool testConds, bool runActions) {
+    trigger rosterCallback;
+    rosterCallback = TriggerCreate("Tardigrade_OnRosterFinished");
+    RosterDraft_Start(rosterCallback,
+        g_draft_p1, g_draft_p2,
+        g_draft_p1Race, g_draft_p2Race);
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Entry point - called from the map-init boot trigger.
+//--------------------------------------------------------------------------------------------------
+void Tardigrade_Init() {
+    trigger t;
+    Debug_Init();
+    if (g_debugLevel > c_debug_None) {
+        Debug_SetAutoRunTrigger(TriggerCreate("Tardigrade_DebugAutoRun"));
+    }
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText("Tardigrade Loaded."));
+
+    // Start the draft chain: Race -> Unit -> Cycle -> Game
+    t = TriggerCreate("Tardigrade_OnDraftFinished");
+    RaceDraft_Start(t);
+}

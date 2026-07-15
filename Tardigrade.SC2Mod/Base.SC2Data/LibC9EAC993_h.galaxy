@@ -1,8 +1,8 @@
 include "TriggerLibs/natives"
 
 //--------------------------------------------------------------------------------------------------
-// Library: Peregrine
+// Library: Tardigrade
 //--------------------------------------------------------------------------------------------------
 // Trigger Declarations
-trigger libC9EAC993_gt_PeregrineBoot;
+trigger libC9EAC993_gt_TardigradeBoot;
 

@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Catalog>
+
+    <!-- =====================================================================
+         TARDIGRADE: GLOBAL CYCLE MODIFIERS
+         Ten global battlefield modifiers. Three are drafted before the match
+         (Player A picks one, Player B picks one, the third is random) and then
+         rotate as the Day / Dusk / Night phases.
+
+         The active phase's buff is applied to EVERY unit on the map (both
+         teams) by CycleMod.galaxy's scan loop, which re-applies every couple
+         of seconds and removes the other two chosen buffs on phase change.
+
+         Duration is long (8s) so the buff never lapses between scans; the
+         scan actively swaps buffs the instant a phase changes.
+    ===================================================================== -->
+
+    <!-- 1: Fleet-Footed  -  +50% move speed -->
+    <CBehaviorBuff id="TardigradeMod_FleetFooted">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="1.5"/>
+    </CBehaviorBuff>
+
+    <!-- 2: Adrenal Frenzy  -  +30% attack speed -->
+    <CBehaviorBuff id="TardigradeMod_AdrenalFrenzy">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="1.3"/>
+    </CBehaviorBuff>
+
+    <!-- 3: Extended Optics  -  +2 weapon range -->
+    <CBehaviorBuff id="TardigradeMod_ExtendedOptics">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification WeaponRange="2" WeaponScanBonus="2"/>
+    </CBehaviorBuff>
+
+    <!-- 4: Ironhide  -  +3 life and shield armor -->
+    <CBehaviorBuff id="TardigradeMod_Ironhide">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification ShieldArmorBonus="3">
+            <LifeArmorBonus value="3"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 5: Juggernaut  -  +50 maximum life -->
+    <CBehaviorBuff id="TardigradeMod_Juggernaut">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxArray index="Life" value="50"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 6: Rapid Regeneration  -  +5 life per second -->
+    <CBehaviorBuff id="TardigradeMod_RapidRegen">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalRegenArray index="Life" value="5"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 7: Overcharged Munitions  -  +20% weapon damage -->
+    <CBehaviorBuff id="TardigradeMod_Overcharged">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <DamageDealtFraction index="Melee" value="0.2"/>
+            <DamageDealtFraction index="Ranged" value="0.2"/>
+            <DamageDealtFraction index="Splash" value="0.2"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 8: Blitz Doctrine  -  +25% move speed, +15% attack speed -->
+    <CBehaviorBuff id="TardigradeMod_Blitz">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="1.25" AttackSpeedMultiplier="1.15"/>
+    </CBehaviorBuff>
+
+    <!-- 9: Siege Protocol  -  +1 weapon range, +15% weapon damage -->
+    <CBehaviorBuff id="TardigradeMod_SiegeProtocol">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification WeaponRange="1" WeaponScanBonus="1">
+            <DamageDealtFraction index="Melee" value="0.15"/>
+            <DamageDealtFraction index="Ranged" value="0.15"/>
+            <DamageDealtFraction index="Splash" value="0.15"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 10: Bulwark  -  +2 armor, +30 maximum life -->
+    <CBehaviorBuff id="TardigradeMod_Bulwark">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification ShieldArmorBonus="2">
+            <LifeArmorBonus value="2"/>
+            <VitalMaxArray index="Life" value="30"/>
+        </Modification>
+    </CBehaviorBuff>
+
+</Catalog>

@@ -1,111 +1,113 @@
-# 🦅 Peregrine: The Momentum Doctrine
-*"Static defense is a slow death."*
+# Tardigrade
 
-Peregrine is a StarCraft II Extension Mod that fundamentally changes the rules of engagement. It enforces the **Momentum Doctrine**: a set of systemic mechanics where speed equals power, stillness equals vulnerability, and map control is paramount. 
+A lightweight StarCraft II Extension Mod for 1v1 (and team) melee games. It adds
+a short, three-part **draft** before the match, then plays out as standard melee
+under a rotating set of global battlefield modifiers.
 
-In Peregrine, mechanical execution (chore APM) is entirely systemic. Victory belongs to the player who out-drafts their opponent, curates tactical behaviors, and strikes from multiple angles.
-
-## 🎲 Phase 1: The Pre-Game Drafts
-Before the momentum begins, players engage in a three-part strategic drafting phase. This establishes the asymmetrical matchup, the unit rosters, and the territorial rules of engagement.
-
-### 1. The Faction Draft
-You don't just blindly pick your race. Factions are drafted:
-*   Player 1 bans one of the three races.
-*   Player 2 selects their race from the remaining two.
-*   Player 1 is assigned the final remaining race.
-
-### 2. The Roster Draft (Deckbuilding)
-You do not have access to the full StarCraft II tech tree. Instead, you build a custom 6-unit "deck" for the match.
-*   **The Core:** Each player automatically receives a foundational "Core" of 2 essential units ensuring basic anti-ground and anti-air capabilities (e.g., Terran always gets Marines and Medivacs).
-*   **The Ban Phase:** Before picking begins, players alternate banning 2 units each from their *opponent's* pool (4 bans total). You're not weakening yourself — you're denying the enemy their most dangerous tools.
-*   **The Snake Draft:** After bans, players alternate drafting 4 specialized units from their own faction's remaining roster in a 1-2-2-1 snake format. (If your opponent drafted heavy armor early, you can immediately pivot to armor-piercing or high-mobility units).
-
-### 3. The Advantage Draft
-Finally, players draft their "Zone Buff." Map control in Peregrine projects a faction-specific zone (Zerg Creep, Protoss Power Fields, Terran Sensor Networks). The Advantage you draft is a game-changing mechanical buff your units receive *only* when fighting inside your territory. 
-
-**Zerg (The Biomass Engine)**
-*   **Feral Reclamation:** Units dying on the zone refund 30% of their cost or spawn autonomous broodlings. Trades fuel the frontline.
-*   **Hyper-Metabolic Overheal:** Units regenerate rapidly on the zone, over-healing up to 150% max HP as a decaying "blood shield."
-*   **Adaptive Camouflage:** Units standing perfectly still on the zone automatically burrow/cloak, turning defensive territory into a minefield.
-
-**Protoss (The Psionic Matrix)**
-*   **Quantum Relocation:** Squads can instantly teleport to any other point within the same continuous power field. 
-*   **Harmonic Shielding:** Individual unit shields are disabled. The zone projects a massive, collective shield pool that absorbs damage for all friendly units inside it.
-*   **Chronological Override:** Local time is sped up. Attack cooldowns, turn rates, and spell casting times are reduced by 40%.
-
-**Terran (The Industrial War Machine)**
-*   **Orbital Munitions:** The zone automatically calls down artillery strikes on spotted enemy units.
-*   **Kinetic Overdrive:** Moving in a straight line builds momentum stacks, granting bonus speed and kinetic knockback damage on the next impact.
-*   **Scrap Scavenging:** Enemy units killed inside the zone instantly convert into stationary, automated auto-turrets lasting 30 seconds.
-
-**Wildcard (Draftable by any Faction)**
-*   **Phase Shifting:** Units in the zone ignore collision, allowing bruisers to march directly through the enemy vanguard to crush the backline.
+Everything else is vanilla SC2: normal economy, normal tech, normal win
+conditions. The mod only touches three things.
 
 ---
 
-## ⚔️ Phase 2: Tactical Orchestration (The Game Loop)
-Once the game loads, standard "chore APM" vanishes. You play as the general, not the foot soldier.
+## The three phases
 
-*   **Autonomous Macro:** You do not inject larva, drop mules, or babysit worker lines. You designate zones for expansion, and the underlying systems handle the saturation and harvesting. Your production structures only build the units you drafted, allowing you to focus entirely on logistics and frontlines.
-*   **Commanders & Squads:** You do not lasso-select units and right-click enemies. Units are permanently leashed to "Commanders" on the field. 
-*   **Stance Programming:** You issue high-level directives to your Commanders. If you order a Commander to execute an "Aggressive Flank," the attached squad autonomously calculates wide pathing arcs, skirts the enemy frontline, and dives the backline. If you order a "Phalanx," the units find the nearest choke point, root themselves, and brace for impact.
-*   **Command Latency:** Commands take 2 seconds to execute. You cannot twitch-react or stutter-step out of bad positioning. You must anticipate where the enemy's momentum is carrying them and commit to your orders ahead of time.
+### 1. Race Draft
+Players draft their races instead of choosing them:
 
-## 🌍 The Battlefield Ecosystem
-The map itself is a weapon. The physics and geometry of Peregrine naturally destroy the traditional SC2 "Deathball."
+- **Player 1 bans** one of the three races.
+- **Player 2 picks** their race from the remaining two.
+- **Player 1** is assigned the last remaining race.
 
-*   **Emergent Flanking:** Because your units are autonomous, they have distinct target priorities. When your army meets the enemy, it instantly shatters. Bruisers lock onto the frontline, assassins dive the casters, and skirmishers orbit the edges. The battle naturally fans out into multi-pronged skirmishes.
-*   **The Agitation Mechanic:** Units hate standing still. If an army idles for too long, they become "Agitated," naturally drifting toward contested zones or objectives. To stop moving is to invite death. 
+In team games (2v2, 3v3, …) each team plays a **single shared race** — the whole
+team is set to the drafted race.
+
+### 2. Unit Draft
+Instead of the full tech tree, each side fields a small custom roster of **6 unit
+types** (2 fixed "core" units + 4 drafted):
+
+- **Ban phase:** players alternate banning units from their opponent's pool.
+- **Snake pick:** players alternate drafting units from their own pool until each
+  side has 4 picks (plus the 2 core units).
+
+The roster is **hard-enforced** in-game: you can only build the units you
+drafted. Workers, town halls, production/tech structures, and supply are always
+available, so your economy and tech tree work normally.
+
+Core units per race:
+
+| Race | Core 1 | Core 2 |
+|---|---|---|
+| Terran | Marine | Medivac |
+| Protoss | Stalker | Observer |
+| Zerg | Zergling | Queen |
+
+(The draftable pools and core units are data-driven — see
+`TardigradeRosterConfig` in `GameData.xml`.)
+
+### 3. Cycle Modifier Draft
+There are **10 global battlefield modifiers**. Three are drafted:
+
+- **Player 1 picks one**, **Player 2 picks a second**, and the **third is random**.
+
+The three chosen modifiers then rotate as the **Day → Dusk → Night** cycle. The
+active phase's modifier applies to **every unit on the map, on both teams**. A
+bottom-left HUD shows the current modifier and a countdown to the next phase.
+
+The 10 modifiers:
+
+| # | Modifier | Effect |
+|---|---|---|
+| 1 | Fleet-Footed | +50% move speed |
+| 2 | Adrenal Frenzy | +30% attack speed |
+| 3 | Extended Optics | +2 weapon range |
+| 4 | Ironhide | +3 armor |
+| 5 | Juggernaut | +50 max life |
+| 6 | Rapid Regeneration | +5 life / second |
+| 7 | Overcharged Munitions | +20% weapon damage |
+| 8 | Blitz Doctrine | +25% move & +15% attack speed |
+| 9 | Siege Protocol | +1 range & +15% damage |
+| 10 | Bulwark | +2 armor & +30 max life |
+
+Phase length is data-driven (`TardigradeCycleConfig > PhaseDuration` in
+`GameData.xml`, default 45s).
 
 ---
 
-## � The Tidal Cycle
-Peregrine features a persistent **3-phase Tidal Cycle** that pulses throughout the entire match, shifting the battlefield's ambient conditions and empowering a different faction each phase. The cycle is always visible in the bottom-left HUD — showing the current phase, a countdown timer, and an icon of the incoming phase.
+## How to play
+Tardigrade is an Extension Mod, so it runs on any standard Melee map.
 
-The three phases rotate continuously in order:
+1. Open StarCraft II.
+2. Go to **Custom → Melee**.
+3. Select a map.
+4. Click **Create with Mod**.
+5. Search for **Tardigrade** and launch the lobby.
 
-| Phase | Color | Favored Faction | Example Buff |
-|---|---|---|---|
-| **The Khala Surge** | 🟡 Yellow | Protoss | Psionic resonance strengthens shields — all Protoss units regenerate a portion of their shields passively, even in combat. |
-| **The Swarm Tide** | 🔴 Red | Zerg | Bio-spores saturate the air — Zerg units gain bonus movement speed and their regeneration rate is doubled. |
-| **The Iron Hour** | 🔵 Blue | Terran | The electromagnetic atmosphere supercharges munitions — Terran units deal bonus damage and repair costs are reduced. |
-
-> **Note:** These are illustrative examples of what each phase *could* do. Exact buffs are still being designed and balanced.
-
-No faction is permanently dominant. Smart players will time their pushes to coincide with their own phase, or bait enemies into over-committing during an unfavorable one.
+On game start the three drafts run in sequence (the game is paused during
+drafting). When testing solo, a debug panel appears with buttons to skip the
+drafts and randomize everything.
 
 ---
 
-## �🎮 How to Play
-Peregrine is an Extension Mod, meaning it can be played on any standard Melee Map.
+## Project layout
+- **`Tardigrade.SC2Mod/`** — the mod source.
+  - **`Base.SC2Data/GameData/`** — XML data (cycle-modifier behaviors + config).
+  - **`scripts/`** — Galaxy scripts (see below).
+- **`references/`** — extracted Blizzard game data, for lookup only (gitignored).
 
-1.  Open StarCraft II.
-2.  Go to **Custom > Melee**.
-3.  Select a map (e.g., "Site Delta").
-4.  Click **"Create with Mod"** in the bottom right.
-5.  Search for **"Peregrine"**.
-6.  Launch the lobby!
+### Scripts
+| File | Role |
+|---|---|
+| `TardigradeLogic.galaxy` | Entry point + draft-chain orchestration. |
+| `RaceDraft.galaxy` | Phase 1 — race ban/pick, sets each team's race. |
+| `RosterDraft.galaxy` | Phase 2 — unit ban + snake pick UI. |
+| `RosterEnforce.galaxy` | Disables every non-drafted unit per team at game start. |
+| `CycleMod.galaxy` | Phase 3 — modifier draft + the in-game Day/Dusk/Night cycle. |
+| `Debug.galaxy` | Solo-test detection and logging helpers. |
 
-## 🛠️ Development Setup
-This project uses a **Hybrid Workflow** combining the SC2 Editor for data discovery and VS Code for mass editing and scripting.
+> Note: internal identifiers (the library `LibC9EAC993`, the `Tardigrade*` config
+> IDs, and the `Tardigrade.SC2Mod` folder) still carry the original project name
+> to keep the SC2 build stable. Only the player-facing name is "Tardigrade".
 
-### Prerequisites
-*   StarCraft II (installed via Battle.net)
-*   Visual Studio Code
-*   **Recommended Extensions:**
-    *   *XML* by Red Hat
-    *   *SC2 Galaxy* by Talv
-
-### Directory Structure & Workflow
-*   **`Peregrine.SC2Mod/`**: The actual mod source.
-    *   **`Base.SC2Data/GameData/`**: XML data files for custom behaviors, autonomous logic, and Commander auras.
-    *   **`scripts/`**: Custom Galaxy scripts. `PeregrineLogic.galaxy` handles the UI for the Draft Phase and macroscopic territorial logic.
-*   **`references/`**: Extracted game data for reference.
-
-## 🤝 Contributing
-We welcome pull requests that align with the **Momentum Doctrine**.
-*   **Do:** Suggest autonomous behaviors, emergent pathing ideas, and draftable Territorial Advantages.
-*   **Don't:** Suggest static defensive buffs, micro-intensive abilities, or mechanics that reward extreme APM.
-
-## 📜 License
-This project is an unofficial mod for StarCraft II. All assets are property of Blizzard Entertainment. Code is provided under the MIT License.
+## License
+Unofficial mod for StarCraft II. All assets are property of Blizzard
+Entertainment. Code is provided under the MIT License.

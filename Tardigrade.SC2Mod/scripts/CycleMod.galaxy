@@ -1,0 +1,445 @@
+//--------------------------------------------------------------------------------------------------
+// Cycle Modifier System
+//
+// Phase 3 of the pre-game draft, plus the in-game Day / Dusk / Night cycle.
+//
+//   DRAFT: There are 10 global battlefield modifiers. Player A (the race
+//   banner) picks one, Player B (the picker) picks a second, and the third is
+//   chosen at random from the remaining eight.
+//
+//   CYCLE: In-game the three chosen modifiers rotate as the Day, Dusk, and
+//   Night phases. The active phase's modifier is applied to EVERY unit on the
+//   map (both teams). A bottom-left HUD widget shows the active modifier and a
+//   countdown to the next phase.
+//
+// Requires: Debug.galaxy, TriggerLibs/NativeLib
+//--------------------------------------------------------------------------------------------------
+
+include "TriggerLibs/NativeLib"
+include "scripts/Debug"
+
+// Number of modifiers in the pool and how many are drafted (= number of phases).
+const int c_cycleModCount   = 10;
+const int c_cyclePhaseCount = 3;
+
+// ── Draft state ──────────────────────────────────────────────────────────────
+trigger g_cycle_callback = null;
+int     g_cycle_p1;                 // Player A (picks first)
+int     g_cycle_p2;                 // Player B (picks second)
+int     g_cycle_pickIndex = 0;      // 0 = A picking, 1 = B picking
+bool[11] g_cycle_taken;             // [1..10] which mods are already claimed
+int[4]  g_cycle_chosen;             // [1..3] chosen mod indices (phase order)
+
+// Draft UI
+int    g_cycle_dialog   = c_invalidDialogId;
+int    g_cycle_lblTitle = c_invalidDialogControlId;
+int    g_cycle_lblSub   = c_invalidDialogControlId;
+int[11] g_cycle_btnMod;             // [1..10] modifier buttons
+trigger g_cycle_draftTrig = null;
+
+// ── Cycle (in-game) state ───────────────────────────────────────────────────
+fixed  g_cycle_phaseDuration;
+fixed  g_cycle_transitionDuration;
+string[4] g_cycle_lightPhase;       // [1..3] lighting per phase
+string[4] g_cycle_iconPhase;        // [1..3] icon per phase
+string g_cycle_activeBehavior = ""; // currently applied buff (read by scan loop)
+int    g_cycle_curPhase = 0;
+
+// Cycle HUD
+int  g_cycle_hud        = c_invalidDialogId;
+int  g_cycle_hudTitle   = c_invalidDialogControlId;
+int  g_cycle_hudImgCur  = c_invalidDialogControlId;
+int  g_cycle_hudImgNext = c_invalidDialogControlId;
+int  g_cycle_hudTimer   = c_invalidDialogControlId;
+
+//--------------------------------------------------------------------------------------------------
+// Data: modifier behavior link, display name, and effect description.
+//--------------------------------------------------------------------------------------------------
+string CycleMod_Behavior(int idx) {
+    if (idx == 1)  { return "TardigradeMod_FleetFooted"; }
+    if (idx == 2)  { return "TardigradeMod_AdrenalFrenzy"; }
+    if (idx == 3)  { return "TardigradeMod_ExtendedOptics"; }
+    if (idx == 4)  { return "TardigradeMod_Ironhide"; }
+    if (idx == 5)  { return "TardigradeMod_Juggernaut"; }
+    if (idx == 6)  { return "TardigradeMod_RapidRegen"; }
+    if (idx == 7)  { return "TardigradeMod_Overcharged"; }
+    if (idx == 8)  { return "TardigradeMod_Blitz"; }
+    if (idx == 9)  { return "TardigradeMod_SiegeProtocol"; }
+    if (idx == 10) { return "TardigradeMod_Bulwark"; }
+    return "";
+}
+
+string CycleMod_Name(int idx) {
+    if (idx == 1)  { return "Fleet-Footed"; }
+    if (idx == 2)  { return "Adrenal Frenzy"; }
+    if (idx == 3)  { return "Extended Optics"; }
+    if (idx == 4)  { return "Ironhide"; }
+    if (idx == 5)  { return "Juggernaut"; }
+    if (idx == 6)  { return "Rapid Regeneration"; }
+    if (idx == 7)  { return "Overcharged Munitions"; }
+    if (idx == 8)  { return "Blitz Doctrine"; }
+    if (idx == 9)  { return "Siege Protocol"; }
+    if (idx == 10) { return "Bulwark"; }
+    return "";
+}
+
+string CycleMod_Desc(int idx) {
+    if (idx == 1)  { return "+50% move speed"; }
+    if (idx == 2)  { return "+30% attack speed"; }
+    if (idx == 3)  { return "+2 weapon range"; }
+    if (idx == 4)  { return "+3 armor"; }
+    if (idx == 5)  { return "+50 max life"; }
+    if (idx == 6)  { return "+5 life / second"; }
+    if (idx == 7)  { return "+20% weapon damage"; }
+    if (idx == 8)  { return "+25% move, +15% attack speed"; }
+    if (idx == 9)  { return "+1 range, +15% damage"; }
+    if (idx == 10) { return "+2 armor, +30 max life"; }
+    return "";
+}
+
+//==================================================================================================
+// DRAFT
+//==================================================================================================
+
+//--------------------------------------------------------------------------------------------------
+// Refresh the draft UI for the active picker and the waiting player.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_UpdateUI() {
+    int         picker;
+    int         waiter;
+    int         i;
+    string      titleText;
+    string      btnTxt;
+    playergroup pickGroup;
+    playergroup waitGroup;
+
+    if (g_cycle_pickIndex == 0) { picker = g_cycle_p1; }
+    else                        { picker = g_cycle_p2; }
+    pickGroup = PlayerGroupSingle(picker);
+
+    titleText = "<c val=\"FFD700\">CYCLE MODIFIER DRAFT</c>   -   Pick "
+        + IntToString(g_cycle_pickIndex + 1) + " of 2";
+    if (g_cycle_pickIndex == 0) { titleText = titleText + "      <c val=\"888888\">(the 3rd phase is random)</c>"; }
+
+    DialogControlSetPropertyAsText(g_cycle_lblTitle, c_triggerControlPropertyText,
+        PlayerGroupAll(), StringToText(titleText));
+    DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+        pickGroup, StringToText("<c val=\"00FF88\">YOUR TURN  -  Choose a battlefield modifier</c>"));
+
+    // Buttons for the active picker: hide already-taken mods.
+    i = 1;
+    while (i <= c_cycleModCount) {
+        btnTxt = "<c val=\"FFFFFF\">" + CycleMod_Name(i) + "</c>"
+            + "\n<c val=\"888888\">" + CycleMod_Desc(i) + "</c>";
+        DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
+            pickGroup, StringToText(btnTxt));
+        DialogControlSetVisible(g_cycle_btnMod[i], pickGroup, !g_cycle_taken[i]);
+        i = i + 1;
+    }
+
+    // Waiting player (if distinct): hide all buttons, show a wait message.
+    if (g_cycle_p1 != g_cycle_p2) {
+        if (picker == g_cycle_p1) { waiter = g_cycle_p2; }
+        else                      { waiter = g_cycle_p1; }
+        waitGroup = PlayerGroupSingle(waiter);
+
+        i = 1;
+        while (i <= c_cycleModCount) {
+            DialogControlSetVisible(g_cycle_btnMod[i], waitGroup, false);
+            i = i + 1;
+        }
+        DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+            waitGroup, StringToText("<c val=\"888888\">Opponent is choosing a modifier...</c>"));
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Finish the draft: pick the random third phase, clean up, run the callback.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_FinishDraft() {
+    int remaining;
+    int i;
+
+    // Third phase: pick a random still-available modifier.
+    remaining = RandomInt(1, c_cycleModCount - 2);
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (!g_cycle_taken[i]) {
+            remaining = remaining - 1;
+            if (remaining == 0) {
+                g_cycle_chosen[3] = i;
+                g_cycle_taken[i]  = true;
+                break;
+            }
+        }
+        i = i + 1;
+    }
+
+    if (g_cycle_draftTrig != null) {
+        TriggerDestroy(g_cycle_draftTrig);
+        g_cycle_draftTrig = null;
+    }
+    if (g_cycle_dialog != c_invalidDialogId) {
+        DialogDestroy(g_cycle_dialog);
+        g_cycle_dialog = c_invalidDialogId;
+    }
+
+    Debug_Log("Cycle Draft: Day=" + CycleMod_Name(g_cycle_chosen[1])
+        + " Dusk=" + CycleMod_Name(g_cycle_chosen[2])
+        + " Night=" + CycleMod_Name(g_cycle_chosen[3]));
+
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
+        "<c val=\"FFD700\">Cycle:</c>  Day = " + CycleMod_Name(g_cycle_chosen[1])
+        + "   |   Dusk = " + CycleMod_Name(g_cycle_chosen[2])
+        + "   |   Night = " + CycleMod_Name(g_cycle_chosen[3])));
+
+    if (g_cycle_callback != null) {
+        TriggerExecute(g_cycle_callback, false, false);
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Handler: modifier button clicked.
+//--------------------------------------------------------------------------------------------------
+bool CycleMod_OnClicked(bool testConds, bool runActions) {
+    int control;
+    int player;
+    int picker;
+    int idx;
+    int i;
+
+    control = EventDialogControl();
+    player  = EventPlayer();
+
+    if (g_cycle_pickIndex == 0) { picker = g_cycle_p1; }
+    else                        { picker = g_cycle_p2; }
+    if (player != picker) { return true; }
+
+    // Which modifier button was clicked?
+    idx = 0;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (control == g_cycle_btnMod[i]) { idx = i; break; }
+        i = i + 1;
+    }
+    if (idx == 0 || g_cycle_taken[idx]) { return true; }
+
+    g_cycle_taken[idx] = true;
+    g_cycle_chosen[g_cycle_pickIndex + 1] = idx;
+
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
+        "<c val=\"00FF88\">Picked:</c> " + CycleMod_Name(idx) + "  (" + CycleMod_Desc(idx) + ")"));
+
+    g_cycle_pickIndex = g_cycle_pickIndex + 1;
+    if (g_cycle_pickIndex >= 2) {
+        CycleMod_FinishDraft();
+    } else {
+        CycleMod_UpdateUI();
+    }
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Public: start the cycle-modifier draft.
+//   p1 = Player A (picks first), p2 = Player B (picks second).
+//--------------------------------------------------------------------------------------------------
+void CycleMod_StartDraft(trigger callback, int p1, int p2) {
+    int i;
+    int col;
+    int row;
+
+    g_cycle_callback  = callback;
+    g_cycle_p1        = p1;
+    g_cycle_p2        = p2;
+    g_cycle_pickIndex = 0;
+
+    i = 1;
+    while (i <= c_cycleModCount) { g_cycle_taken[i] = false; i = i + 1; }
+
+    // Dialog: 640 x 420, two columns of five buttons.
+    g_cycle_dialog = DialogCreate(640, 420, c_anchorCenter, 0, 0, true);
+    DialogSetVisible(g_cycle_dialog, PlayerGroupAll(), true);
+
+    g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblTitle, PlayerGroupAll(), 600, 26);
+    DialogControlSetPosition(g_cycle_lblTitle, PlayerGroupAll(), c_anchorTop, 0, 12);
+
+    g_cycle_lblSub = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblSub, PlayerGroupAll(), 600, 20);
+    DialogControlSetPosition(g_cycle_lblSub, PlayerGroupAll(), c_anchorTop, 0, 42);
+
+    i = 1;
+    while (i <= c_cycleModCount) {
+        g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
+        DialogControlSetSize(g_cycle_btnMod[i], PlayerGroupAll(), 280, 56);
+        if (i <= 5) { col = -150; row = i - 1; }
+        else        { col =  150; row = i - 6; }
+        DialogControlSetPosition(g_cycle_btnMod[i], PlayerGroupAll(),
+            c_anchorTop, col, 80 + row * 64);
+        DialogControlSetVisible(g_cycle_btnMod[i], PlayerGroupAll(), false);
+        i = i + 1;
+    }
+
+    g_cycle_draftTrig = TriggerCreate("CycleMod_OnClicked");
+    i = 1;
+    while (i <= c_cycleModCount) {
+        TriggerAddEventDialogControl(g_cycle_draftTrig, c_playerAny,
+            g_cycle_btnMod[i], c_triggerControlEventTypeClick);
+        i = i + 1;
+    }
+
+    CycleMod_UpdateUI();
+}
+
+//==================================================================================================
+// IN-GAME CYCLE
+//==================================================================================================
+
+//--------------------------------------------------------------------------------------------------
+// Load timing / lighting / icons and map them to phases in draft order.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_LoadConfig() {
+    string cfg = "TardigradeCycleConfig";
+    string inst = "Default";
+
+    g_cycle_phaseDuration      = UserDataGetFixed(cfg, inst, "PhaseDuration", 1);
+    g_cycle_transitionDuration = UserDataGetFixed(cfg, inst, "TransitionDuration", 1);
+
+    g_cycle_lightPhase[1] = UserDataGetGameLink(cfg, inst, "LightDay", 1);
+    g_cycle_lightPhase[2] = UserDataGetGameLink(cfg, inst, "LightDusk", 1);
+    g_cycle_lightPhase[3] = UserDataGetGameLink(cfg, inst, "LightNight", 1);
+
+    g_cycle_iconPhase[1] = UserDataGetString(cfg, inst, "IconDay", 1);
+    g_cycle_iconPhase[2] = UserDataGetString(cfg, inst, "IconDusk", 1);
+    g_cycle_iconPhase[3] = UserDataGetString(cfg, inst, "IconNight", 1);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Build the bottom-left HUD widget.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_InitHUD() {
+    g_cycle_hud = DialogCreate(320, 96, c_anchorBottomLeft, 20, 300, false);
+    DialogSetVisible(g_cycle_hud, PlayerGroupAll(), true);
+    DialogSetImageVisible(g_cycle_hud, true);
+
+    g_cycle_hudTitle = DialogControlCreate(g_cycle_hud, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_hudTitle, PlayerGroupAll(), 300, 22);
+    DialogControlSetPosition(g_cycle_hudTitle, PlayerGroupAll(), c_anchorTop, 0, 8);
+
+    g_cycle_hudImgCur = DialogControlCreate(g_cycle_hud, c_triggerControlTypeImage);
+    DialogControlSetSize(g_cycle_hudImgCur, PlayerGroupAll(), 44, 44);
+    DialogControlSetPosition(g_cycle_hudImgCur, PlayerGroupAll(), c_anchorTopLeft, 30, 40);
+
+    g_cycle_hudTimer = DialogControlCreate(g_cycle_hud, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_hudTimer, PlayerGroupAll(), 120, 30);
+    DialogControlSetPosition(g_cycle_hudTimer, PlayerGroupAll(), c_anchorTop, 0, 48);
+
+    g_cycle_hudImgNext = DialogControlCreate(g_cycle_hud, c_triggerControlTypeImage);
+    DialogControlSetSize(g_cycle_hudImgNext, PlayerGroupAll(), 28, 28);
+    DialogControlSetPosition(g_cycle_hudImgNext, PlayerGroupAll(), c_anchorTopRight, 30, 48);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Scan loop: apply the active modifier to every unit, remove the other two.
+// Runs continuously; picks up newly created units within one interval.
+//--------------------------------------------------------------------------------------------------
+bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
+    unitgroup ug;
+    unit      u;
+    int       count;
+    int       i;
+    int       p;
+    string    beh;
+
+    while (true) {
+        if (g_cycle_activeBehavior != "") {
+            ug = UnitGroup(null, c_playerAny, RegionEntireMap(),
+                UnitFilter(0, 0, (1 << c_targetFilterMissile),
+                    (1 << (c_targetFilterDead - 32)) | (1 << (c_targetFilterHidden - 32))), 0);
+            count = UnitGroupCount(ug, c_unitCountAll);
+            i = 1;
+            while (i <= count) {
+                u = UnitGroupUnit(ug, i);
+                p = 1;
+                while (p <= c_cyclePhaseCount) {
+                    beh = CycleMod_Behavior(g_cycle_chosen[p]);
+                    if (beh == g_cycle_activeBehavior) {
+                        UnitBehaviorAdd(u, beh, u, 1);
+                    } else {
+                        UnitBehaviorRemove(u, beh, 1);
+                    }
+                    p = p + 1;
+                }
+                i = i + 1;
+            }
+        }
+        Wait(2.0, c_timeGame);
+    }
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Phase loop: rotate Day -> Dusk -> Night, updating lighting, HUD, and the
+// active modifier that the scan loop applies.
+//--------------------------------------------------------------------------------------------------
+bool CycleMod_PhaseTrigger(bool testConds, bool runActions) {
+    int phase;
+    int nextPhase;
+    int secs;
+    int modIdx;
+
+    phase = 1;
+    while (true) {
+        g_cycle_curPhase        = phase;
+        modIdx                  = g_cycle_chosen[phase];
+        g_cycle_activeBehavior  = CycleMod_Behavior(modIdx);
+
+        if (phase >= c_cyclePhaseCount) { nextPhase = 1; }
+        else                            { nextPhase = phase + 1; }
+
+        // Lighting
+        if (CatalogEntryIsValid(c_gameCatalogLight, g_cycle_lightPhase[phase])) {
+            GameSetLighting(g_cycle_lightPhase[phase], g_cycle_transitionDuration);
+        }
+
+        // HUD
+        DialogControlSetPropertyAsText(g_cycle_hudTitle, c_triggerControlPropertyText,
+            PlayerGroupAll(), StringToText("<c val=\"FFD700\">" + CycleMod_Name(modIdx)
+                + "</c>  <c val=\"888888\">(" + CycleMod_Desc(modIdx) + ")</c>"));
+        DialogControlSetPropertyAsString(g_cycle_hudImgCur, c_triggerControlPropertyImage,
+            PlayerGroupAll(), g_cycle_iconPhase[phase]);
+        DialogControlSetPropertyAsString(g_cycle_hudImgNext, c_triggerControlPropertyImage,
+            PlayerGroupAll(), g_cycle_iconPhase[nextPhase]);
+
+        // Countdown
+        secs = FixedToInt(g_cycle_phaseDuration);
+        while (secs > 0) {
+            DialogControlSetPropertyAsText(g_cycle_hudTimer, c_triggerControlPropertyText,
+                PlayerGroupAll(), StringToText(IntToString(secs) + "s"));
+            Wait(1.0, c_timeGame);
+            secs = secs - 1;
+        }
+
+        phase = nextPhase;
+    }
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Public: start the in-game cycle (called at game start, after the draft).
+//--------------------------------------------------------------------------------------------------
+void CycleMod_StartCycle() {
+    trigger tScan;
+    trigger tPhase;
+
+    if (g_cycle_hud != c_invalidDialogId) { return; }
+
+    CycleMod_LoadConfig();
+    CycleMod_InitHUD();
+
+    tScan = TriggerCreate("CycleMod_ScanTrigger");
+    TriggerExecute(tScan, false, false);
+
+    tPhase = TriggerCreate("CycleMod_PhaseTrigger");
+    TriggerExecute(tPhase, false, false);
+}

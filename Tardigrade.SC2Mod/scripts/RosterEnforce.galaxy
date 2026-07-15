@@ -1,0 +1,133 @@
+//--------------------------------------------------------------------------------------------------
+// Roster Enforcement
+//
+// After the drafts resolve, each team may only build the units it drafted
+// (2 core + 4 drafted = 6 unit types). Every other combat unit in the race's
+// arsenal is disabled for that team via TechTreeUnitAllow(..., false).
+//
+// Workers, town halls, tech/production structures, and supply units are never
+// touched, so the economy and tech tree still function normally.
+//
+// Requires: RaceDraft.galaxy (race constants, team globals),
+//           RosterDraft.galaxy (g_roster_* roster globals)
+//--------------------------------------------------------------------------------------------------
+
+// Master combat-unit lists per race. Any unit here that is NOT in a team's
+// roster is disabled for that team. Core units are always in the roster, so
+// listing them here would be harmless, but they are omitted for clarity.
+string[24] g_enfTerran; int g_enfTerranN;
+string[24] g_enfProtoss; int g_enfProtossN;
+string[24] g_enfZerg; int g_enfZergN;
+bool g_enfInit = false;
+
+void RosterEnforce_InitLists() {
+    if (g_enfInit) { return; }
+    g_enfInit = true;
+
+    g_enfTerranN = 16;
+    g_enfTerran[1]  = "Marine";        g_enfTerran[2]  = "Marauder";
+    g_enfTerran[3]  = "Reaper";        g_enfTerran[4]  = "Ghost";
+    g_enfTerran[5]  = "Hellion";       g_enfTerran[6]  = "HellionTank";
+    g_enfTerran[7]  = "WidowMine";     g_enfTerran[8]  = "Cyclone";
+    g_enfTerran[9]  = "SiegeTank";     g_enfTerran[10] = "Thor";
+    g_enfTerran[11] = "VikingFighter"; g_enfTerran[12] = "Medivac";
+    g_enfTerran[13] = "Liberator";     g_enfTerran[14] = "Raven";
+    g_enfTerran[15] = "Banshee";       g_enfTerran[16] = "Battlecruiser";
+
+    g_enfProtossN = 18;
+    g_enfProtoss[1]  = "Zealot";       g_enfProtoss[2]  = "Stalker";
+    g_enfProtoss[3]  = "Sentry";       g_enfProtoss[4]  = "Adept";
+    g_enfProtoss[5]  = "HighTemplar";  g_enfProtoss[6]  = "DarkTemplar";
+    g_enfProtoss[7]  = "Immortal";     g_enfProtoss[8]  = "Colossus";
+    g_enfProtoss[9]  = "Disruptor";    g_enfProtoss[10] = "Archon";
+    g_enfProtoss[11] = "Observer";     g_enfProtoss[12] = "WarpPrism";
+    g_enfProtoss[13] = "Phoenix";      g_enfProtoss[14] = "VoidRay";
+    g_enfProtoss[15] = "Oracle";       g_enfProtoss[16] = "Carrier";
+    g_enfProtoss[17] = "Tempest";      g_enfProtoss[18] = "Mothership";
+
+    g_enfZergN = 14;
+    g_enfZerg[1]  = "Zergling";  g_enfZerg[2]  = "Baneling";
+    g_enfZerg[3]  = "Roach";     g_enfZerg[4]  = "Ravager";
+    g_enfZerg[5]  = "Hydralisk"; g_enfZerg[6]  = "LurkerMP";
+    g_enfZerg[7]  = "Infestor";  g_enfZerg[8]  = "SwarmHost";
+    g_enfZerg[9]  = "Ultralisk"; g_enfZerg[10] = "Mutalisk";
+    g_enfZerg[11] = "Corruptor"; g_enfZerg[12] = "BroodLord";
+    g_enfZerg[13] = "Viper";     g_enfZerg[14] = "Overseer";
+}
+
+// Is unitType present in the given decider's roster (1 = P1, 2 = P2)?
+bool RosterEnforce_InRoster(int whichRoster, string unitType) {
+    int i;
+    i = 1;
+    while (i <= c_rosterRosterSize) {
+        if (whichRoster == 1) {
+            if (g_roster_p1Units[i] == unitType) { return true; }
+        } else {
+            if (g_roster_p2Units[i] == unitType) { return true; }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Disable every non-rostered master unit for a single player.
+void RosterEnforce_ApplyToPlayer(int player, int race, int whichRoster) {
+    int    n;
+    int    i;
+    string unitType;
+
+    if (race == c_tardigrade_raceTerran)      { n = g_enfTerranN; }
+    else if (race == c_tardigrade_raceProtoss) { n = g_enfProtossN; }
+    else                                      { n = g_enfZergN; }
+
+    i = 1;
+    while (i <= n) {
+        if (race == c_tardigrade_raceTerran)       { unitType = g_enfTerran[i]; }
+        else if (race == c_tardigrade_raceProtoss) { unitType = g_enfProtoss[i]; }
+        else                                      { unitType = g_enfZerg[i]; }
+
+        if (!RosterEnforce_InRoster(whichRoster, unitType)) {
+            TechTreeUnitAllow(player, unitType, false);
+        }
+        i = i + 1;
+    }
+}
+
+// Apply enforcement to every player in a team.
+void RosterEnforce_ApplyToTeam(playergroup team, int race, int whichRoster) {
+    int count;
+    int i;
+    int p;
+
+    count = PlayerGroupCount(team);
+    i = 1;
+    while (i <= count) {
+        p = PlayerGroupPlayer(team, i);
+        RosterEnforce_ApplyToPlayer(p, race, whichRoster);
+        i = i + 1;
+    }
+}
+
+// Public: enforce both teams' rosters. Called at game start.
+void RosterEnforce_ApplyAll() {
+    playergroup p1Team;
+    playergroup p2Team;
+
+    RosterEnforce_InitLists();
+
+    // g_draft_p1 (the banner) is P1; map it to its team.
+    if (g_draft_p1_is_team1) {
+        p1Team = g_draft_team1;
+        p2Team = g_draft_team2;
+    } else {
+        p1Team = g_draft_team2;
+        p2Team = g_draft_team1;
+    }
+
+    RosterEnforce_ApplyToTeam(p1Team, g_roster_p1Race, 1);
+    if (g_roster_p2 != g_roster_p1) {
+        RosterEnforce_ApplyToTeam(p2Team, g_roster_p2Race, 2);
+    }
+
+    Debug_Log("Roster enforcement applied to both teams.");
+}
