@@ -3,17 +3,17 @@
 
     <!-- =====================================================================
          TARDIGRADE: DIRECT LARVA-BUILD FOR MORPH UNITS
-         Ravager, Lurker, and Brood Lord normally morph from a base unit
-         (Roach / Hydralisk / Corruptor). Because those parents are draftable
-         (and bannable) in the Unit Draft, a player can end up with the morph
-         unit in their roster but not its parent. To keep every drafted unit
-         buildable, we add a direct "train from larva" path for each — using
-         the standard Zerg Egg and the same tech requirement as the morph.
+         Ravager, Lurker, Brood Lord, and Baneling normally morph from a base
+         unit (Roach / Hydralisk / Corruptor / Zergling). Because those parents
+         are draftable (and bannable) in the Unit Draft, a player can end up
+         with the morph unit in their roster but not its parent. To keep every
+         drafted unit buildable, we add a direct "train from larva" path.
 
-         These extend the inherited LarvaTrain ability (indices 6/9/14 are
+         These extend the inherited LarvaTrain ability (indices 6/9/14/16 are
          free in the LotV data). The normal morph-from-parent path still works
          when the parent IS available. Which units a player may actually build
          is gated per-player by RosterEnforce.galaxy (TechTreeUnitAllow).
+         Command-card buttons for these live in UnitData.xml (on the Larva).
     ===================================================================== -->
     <CAbilTrain id="LarvaTrain">
         <InfoArray index="Train6" Time="12">
@@ -27,6 +27,10 @@
         <InfoArray index="Train14" Time="24">
             <Button DefaultButtonFace="BroodLord" Requirements="HaveGreaterSpire"/>
             <Unit value="BroodLord"/>
+        </InfoArray>
+        <InfoArray index="Train16" Time="14">
+            <Button DefaultButtonFace="Baneling" Requirements="HaveBanelingNest"/>
+            <Unit value="Baneling"/>
         </InfoArray>
     </CAbilTrain>
 

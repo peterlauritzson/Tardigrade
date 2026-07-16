@@ -1,3 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
+
+    <!-- =====================================================================
+         TARDIGRADE: LARVA FALLBACK BUILD BUTTONS
+         The morph units Ravager / Lurker / Brood Lord / Baneling are given a
+         direct larva-build path in AbilData.xml (LarvaTrain Train6/9/14/16) so
+         they stay buildable even if their morph parent was banned. Those train
+         options need command-card buttons on the Larva.
+
+         Each button is placed on its PARENT's cell (Roach / Hydralisk /
+         Corruptor / Zergling). This works because a fallback button only
+         appears when its parent unit is disabled (undrafted) - and when the
+         parent is gone, that cell is free. If both parent and child are
+         drafted (rare, since the child builds directly) the two overlap.
+
+         NOTE: the Larva card is dense and merged across several data layers -
+         VERIFY these slots in the editor's Command Card view and nudge any
+         that overlap an always-present button.
+    ===================================================================== -->
+    <CUnit id="Larva">
+        <CardLayouts index="0">
+            <LayoutButtons Face="Ravager"   Type="AbilCmd" AbilCmd="LarvaTrain,Train6"  Row="1" Column="0"/>
+            <LayoutButtons Face="LurkerMP"  Type="AbilCmd" AbilCmd="LarvaTrain,Train9"  Row="1" Column="1"/>
+            <LayoutButtons Face="BroodLord" Type="AbilCmd" AbilCmd="LarvaTrain,Train14" Row="2" Column="1"/>
+            <LayoutButtons Face="Baneling"  Type="AbilCmd" AbilCmd="LarvaTrain,Train16" Row="0" Column="2"/>
+        </CardLayouts>
+    </CUnit>
+
 </Catalog>

@@ -92,12 +92,10 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
     g_roster_p1Race = g_draft_p1Race;
     g_roster_p2Race = g_draft_p2Race;
 
-    // Random roster for P1: 2 core units + 4 random pool picks.
-    g_roster_p1Units[1] = GetCoreUnit(g_roster_p1Race, 1);
-    g_roster_p1Units[2] = GetCoreUnit(g_roster_p1Race, 2);
+    // Random roster for P1: 6 random pool picks (no protected core units).
     poolCount = GetRosterPoolCount(g_roster_p1Race);
     usedMask  = 0;
-    pickCount = 3;
+    pickCount = 1;
     while (pickCount <= c_rosterRosterSize) {
         pick = RandomInt(1, poolCount);
         if ((usedMask & (1 << (pick - 1))) == 0) {
@@ -108,11 +106,9 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
     }
 
     // Random roster for P2.
-    g_roster_p2Units[1] = GetCoreUnit(g_roster_p2Race, 1);
-    g_roster_p2Units[2] = GetCoreUnit(g_roster_p2Race, 2);
     poolCount = GetRosterPoolCount(g_roster_p2Race);
     usedMask  = 0;
-    pickCount = 3;
+    pickCount = 1;
     while (pickCount <= c_rosterRosterSize) {
         pick = RandomInt(1, poolCount);
         if ((usedMask & (1 << (pick - 1))) == 0) {

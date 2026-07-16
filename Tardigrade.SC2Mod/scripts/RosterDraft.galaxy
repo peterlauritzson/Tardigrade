@@ -10,10 +10,10 @@
 //--------------------------------------------------------------------------------------------------
 
 // Constants
-const int c_rosterPoolMax    = 16; // max draftable units per race (2 columns of 8)
+const int c_rosterPoolMax    = 18; // max draftable units per race (2 columns of 9)
 const int c_rosterBanTotal   = 4;  // total cross-bans (2 per player)
-const int c_rosterPickTotal  = 8;  // total snake picks (4 per player)
-const int c_rosterRosterSize = 6;  // 2 core + 4 drafted
+const int c_rosterPickTotal  = 12; // total snake picks (6 per player)
+const int c_rosterRosterSize = 6;  // drafted units per player (no protected core)
 
 // State
 trigger g_roster_callback    = null;
@@ -22,7 +22,7 @@ int     g_roster_p2;
 int     g_roster_p1Race;
 int     g_roster_p2Race;
 
-// Roster results — index 1..6 (1-2 = core units, 3-6 = drafted units)
+// Roster results — index 1..6 (all drafted; no protected core units)
 // Accessible globally for later systems (roster enforcement, etc.)
 string[7] g_roster_p1Units;
 string[7] g_roster_p2Units;
@@ -32,13 +32,13 @@ int       g_roster_phase       = 0;   // 0 = ban phase, 1 = pick phase
 int       g_roster_banIndex    = 0;
 int[5]    g_roster_banOrder;          // [1..4] who is doing the banning
 bool[5]   g_roster_banIsP1;           // [1..4] true = P1 is banning (from P2's pool)
-bool[17]  g_roster_p1Banned;          // units banned FROM P1's pool (by P2)
-bool[17]  g_roster_p2Banned;          // units banned FROM P2's pool (by P1)
+bool[19]  g_roster_p1Banned;          // units banned FROM P1's pool (by P2)
+bool[19]  g_roster_p2Banned;          // units banned FROM P2's pool (by P1)
 int       g_roster_pickIndex   = 0;
-int[9]    g_roster_pickOrder;
-bool[9]   g_roster_pickIsP1;
-bool[17]  g_roster_p1Picked;          // [1..16] which pool slots P1 has taken
-bool[17]  g_roster_p2Picked;          // [1..16] which pool slots P2 has taken
+int[13]   g_roster_pickOrder;
+bool[13]  g_roster_pickIsP1;
+bool[19]  g_roster_p1Picked;          // [1..18] which pool slots P1 has taken
+bool[19]  g_roster_p2Picked;          // [1..18] which pool slots P2 has taken
 int       g_roster_p1PickCount = 0;
 int       g_roster_p2PickCount = 0;
 
@@ -46,7 +46,7 @@ int       g_roster_p2PickCount = 0;
 int       g_roster_dialog      = c_invalidDialogId;
 int       g_roster_lblTitle    = c_invalidDialogControlId;
 int       g_roster_lblSubtitle = c_invalidDialogControlId; // "YOUR TURN" or "waiting..."
-int[17]   g_roster_btnPool;                                // [1..16] unit pool buttons
+int[19]   g_roster_btnPool;                                // [1..18] unit pool buttons
 int[7]    g_roster_lblSlot;                                // [1..6] right-panel roster slots
 trigger   g_roster_trigger     = null;
 
@@ -54,10 +54,6 @@ trigger   g_roster_trigger     = null;
 // Data Helpers
 //--------------------------------------------------------------------------------------------------
 
-// Delegates to GetCoreUnit in RaceDraft.galaxy — the single source of truth.
-string GetRosterCoreUnit(int race, int slot) {
-    return GetCoreUnit(race, slot);
-}
 
 // Pool fields are named Pool1..Pool8 (explicit, avoids CUser array-syntax uncertainty)
 string GetRosterPoolUnit(int race, int index) {
@@ -129,12 +125,12 @@ string RosterUnitDisplayName(string unitType) {
 // Short role/archetype tag shown on the second line of each unit button.
 string RosterUnitRole(string unitType) {
     // Terran
-    if (unitType == "Marine")       { return "Core  ·  Infantry"; }
-    if (unitType == "Medivac")      { return "Core  ·  Healer"; }
+    if (unitType == "Marine")       { return "Infantry  ·  Bio"; }
+    if (unitType == "Medivac")      { return "Healer  ·  Dropship"; }
     if (unitType == "Marauder")     { return "Anti-Armor  ·  Slow"; }
     if (unitType == "Reaper")       { return "Scout  ·  Raider"; }
     if (unitType == "Ghost")        { return "Sniper  ·  EMP"; }
-    if (unitType == "Hellion")      { return "AoE  ·  Harassment"; }
+    if (unitType == "Hellion")      { return "AoE  ·  + Hellbat"; }
     if (unitType == "SiegeTank")    { return "Siege  ·  Artillery"; }
     if (unitType == "Thor")         { return "Heavy Assault  ·  AA"; }
     if (unitType == "VikingFighter"){ return "Air Superiority"; }
@@ -146,8 +142,8 @@ string RosterUnitRole(string unitType) {
     if (unitType == "WidowMine")    { return "Hidden  ·  Anti Ground/Air"; }
     if (unitType == "Battlecruiser"){ return "Capital Ship  ·  Yamato"; }
     // Protoss
-    if (unitType == "Stalker")      { return "Core  ·  Blink"; }
-    if (unitType == "Observer")     { return "Core  ·  Detector"; }
+    if (unitType == "Stalker")      { return "Blink  ·  Ranged"; }
+    if (unitType == "Observer")     { return "Detector  ·  Cloaked"; }
     if (unitType == "Zealot")       { return "Frontline  ·  Charge"; }
     if (unitType == "Sentry")       { return "Force Field  ·  Support"; }
     if (unitType == "Immortal")     { return "Hardened Shield  ·  AA"; }
@@ -165,8 +161,8 @@ string RosterUnitRole(string unitType) {
     if (unitType == "Tempest")      { return "Long-Range  ·  Capital"; }
     if (unitType == "Mothership")   { return "Cloak Field  ·  Capital"; }
     // Zerg
-    if (unitType == "Zergling")     { return "Core  ·  Rush"; }
-    if (unitType == "Queen")        { return "Core  ·  Transfuse"; }
+    if (unitType == "Zergling")     { return "Rush  ·  Swarm"; }
+    if (unitType == "Queen")        { return "Inject  ·  Transfuse"; }
     if (unitType == "Roach")        { return "Regen  ·  Tank"; }
     if (unitType == "Hydralisk")    { return "Ranged Swarm"; }
     if (unitType == "Infestor")     { return "Neural Parasite  ·  CC"; }
@@ -201,15 +197,10 @@ void RosterDraft_UpdateRosterPanel() {
     while (i <= c_rosterRosterSize) {
         // P1 view
         if (g_roster_p1Units[i] != "") {
-            if (i <= 2) {
-                txt = "<c val=\"888888\">  [Core]  " + RosterUnitDisplayName(g_roster_p1Units[i]) + "</c>";
-            } else {
-                txt = "<c val=\"00FF88\">  " + IntToString(i - 2) + ".  "
-                    + RosterUnitDisplayName(g_roster_p1Units[i]) + "</c>";
-            }
+            txt = "<c val=\"00FF88\">  " + IntToString(i) + ".  "
+                + RosterUnitDisplayName(g_roster_p1Units[i]) + "</c>";
         } else {
-            if (i <= 2) { txt = "<c val=\"444444\">  [Core]  loading...</c>"; }
-            else        { txt = "<c val=\"333333\">  " + IntToString(i - 2) + ".  — not yet drafted —</c>"; }
+            txt = "<c val=\"333333\">  " + IntToString(i) + ".  — not yet drafted —</c>";
         }
         DialogControlSetPropertyAsText(g_roster_lblSlot[i], c_triggerControlPropertyText,
             p1Group, StringToText(txt));
@@ -217,15 +208,10 @@ void RosterDraft_UpdateRosterPanel() {
         // P2 view (only set if a separate player)
         if (g_roster_p1 != g_roster_p2) {
             if (g_roster_p2Units[i] != "") {
-                if (i <= 2) {
-                    txt = "<c val=\"888888\">  [Core]  " + RosterUnitDisplayName(g_roster_p2Units[i]) + "</c>";
-                } else {
-                    txt = "<c val=\"00FF88\">  " + IntToString(i - 2) + ".  "
-                        + RosterUnitDisplayName(g_roster_p2Units[i]) + "</c>";
-                }
+                txt = "<c val=\"00FF88\">  " + IntToString(i) + ".  "
+                    + RosterUnitDisplayName(g_roster_p2Units[i]) + "</c>";
             } else {
-                if (i <= 2) { txt = "<c val=\"444444\">  [Core]  loading...</c>"; }
-                else        { txt = "<c val=\"333333\">  " + IntToString(i - 2) + ".  — not yet drafted —</c>"; }
+                txt = "<c val=\"333333\">  " + IntToString(i) + ".  — not yet drafted —</c>";
             }
             DialogControlSetPropertyAsText(g_roster_lblSlot[i], c_triggerControlPropertyText,
                 p2Group, StringToText(txt));
@@ -266,7 +252,7 @@ void RosterDraft_UpdateUI() {
 
         titleText = "<c val=\"FF4444\">BAN PHASE</c>"
             + "   —   Ban  " + IntToString(stepNum) + "  of  " + IntToString(stepTotal)
-            + "      <c val=\"888888\">(then: Snake Pick  4 + 4)</c>";
+            + "      <c val=\"888888\">(then: Snake Pick  6 + 6)</c>";
     } else {
         // PICK PHASE: active player picks from their own pool
         stepNum      = g_roster_pickIndex + 1;
@@ -313,15 +299,6 @@ void RosterDraft_UpdateUI() {
                 // Picking from own pool — hide picked AND banned units
                 if (activeIsP1) { unavailable = g_roster_p1Picked[i] || g_roster_p1Banned[i]; }
                 else            { unavailable = g_roster_p2Picked[i] || g_roster_p2Banned[i]; }
-            }
-
-            // Core units are auto-granted and must never appear in the ban or pick pool.
-            // This filter makes the pool self-consistent with whatever CoreUnit1/2 are
-            // defined as in GameData.xml — no manual pool maintenance required.
-            if (!unavailable) {
-                if (unitType == GetCoreUnit(activeRace, 1) || unitType == GetCoreUnit(activeRace, 2)) {
-                    unavailable = true;
-                }
             }
 
             if (g_roster_phase == 0) {
@@ -495,13 +472,13 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
         if (activeIsP1) {
             g_roster_p1Picked[poolIndex] = true;
             g_roster_p1PickCount         = g_roster_p1PickCount + 1;
-            g_roster_p1Units[2 + g_roster_p1PickCount] = unitType;
-            Debug_Log("P1 drafted: " + unitType + " (slot " + IntToString(2 + g_roster_p1PickCount) + ")");
+            g_roster_p1Units[g_roster_p1PickCount] = unitType;
+            Debug_Log("P1 drafted: " + unitType + " (slot " + IntToString(g_roster_p1PickCount) + ")");
         } else {
             g_roster_p2Picked[poolIndex] = true;
             g_roster_p2PickCount         = g_roster_p2PickCount + 1;
-            g_roster_p2Units[2 + g_roster_p2PickCount] = unitType;
-            Debug_Log("P2 drafted: " + unitType + " (slot " + IntToString(2 + g_roster_p2PickCount) + ")");
+            g_roster_p2Units[g_roster_p2PickCount] = unitType;
+            Debug_Log("P2 drafted: " + unitType + " (slot " + IntToString(g_roster_p2PickCount) + ")");
         }
 
         g_roster_pickIndex = g_roster_pickIndex + 1;
@@ -579,23 +556,22 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     g_roster_banOrder[3] = p1;  g_roster_banIsP1[3] = true;
     g_roster_banOrder[4] = p2;  g_roster_banIsP1[4] = false;
 
-    // Snake pick order: P2, P1, P1, P2, P2, P1, P1, P2
-    g_roster_pickOrder[1] = p2;  g_roster_pickIsP1[1] = false;
-    g_roster_pickOrder[2] = p1;  g_roster_pickIsP1[2] = true;
-    g_roster_pickOrder[3] = p1;  g_roster_pickIsP1[3] = true;
-    g_roster_pickOrder[4] = p2;  g_roster_pickIsP1[4] = false;
-    g_roster_pickOrder[5] = p2;  g_roster_pickIsP1[5] = false;
-    g_roster_pickOrder[6] = p1;  g_roster_pickIsP1[6] = true;
-    g_roster_pickOrder[7] = p1;  g_roster_pickIsP1[7] = true;
-    g_roster_pickOrder[8] = p2;  g_roster_pickIsP1[8] = false;
+    // Snake pick order (6 each): P2 P1 P1 P2 P2 P1 P1 P2 P2 P1 P1 P2
+    g_roster_pickOrder[1]  = p2;  g_roster_pickIsP1[1]  = false;
+    g_roster_pickOrder[2]  = p1;  g_roster_pickIsP1[2]  = true;
+    g_roster_pickOrder[3]  = p1;  g_roster_pickIsP1[3]  = true;
+    g_roster_pickOrder[4]  = p2;  g_roster_pickIsP1[4]  = false;
+    g_roster_pickOrder[5]  = p2;  g_roster_pickIsP1[5]  = false;
+    g_roster_pickOrder[6]  = p1;  g_roster_pickIsP1[6]  = true;
+    g_roster_pickOrder[7]  = p1;  g_roster_pickIsP1[7]  = true;
+    g_roster_pickOrder[8]  = p2;  g_roster_pickIsP1[8]  = false;
+    g_roster_pickOrder[9]  = p2;  g_roster_pickIsP1[9]  = false;
+    g_roster_pickOrder[10] = p1;  g_roster_pickIsP1[10] = true;
+    g_roster_pickOrder[11] = p1;  g_roster_pickIsP1[11] = true;
+    g_roster_pickOrder[12] = p2;  g_roster_pickIsP1[12] = false;
 
-    // Auto-assign core units
-    g_roster_p1Units[1] = GetRosterCoreUnit(p1Race, 1);
-    g_roster_p1Units[2] = GetRosterCoreUnit(p1Race, 2);
-    g_roster_p2Units[1] = GetRosterCoreUnit(p2Race, 1);
-    g_roster_p2Units[2] = GetRosterCoreUnit(p2Race, 2);
-    // Initialize drafted slots as empty
-    i = 3;
+    // All roster slots start empty (no protected core units).
+    i = 1;
     while (i <= c_rosterRosterSize) {
         g_roster_p1Units[i] = "";
         g_roster_p2Units[i] = "";
@@ -603,14 +579,12 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     }
 
     Debug_Log("RosterDraft: P1=" + IntToString(p1) + " race=" + GetRaceConfigId(p1Race)
-        + " core=[" + g_roster_p1Units[1] + "," + g_roster_p1Units[2] + "]"
         + " poolCount=" + IntToString(GetRosterPoolCount(p1Race)));
     Debug_Log("RosterDraft: P2=" + IntToString(p2) + " race=" + GetRaceConfigId(p2Race)
-        + " core=[" + g_roster_p2Units[1] + "," + g_roster_p2Units[2] + "]"
         + " poolCount=" + IntToString(GetRosterPoolCount(p2Race)));
 
-    // ── Build Dialog: 860 × 560 ───────────────────────────────────────────────
-    g_roster_dialog = DialogCreate(860, 560, c_anchorCenter, 0, 0, true);
+    // ── Build Dialog: 860 × 600 ───────────────────────────────────────
+    g_roster_dialog = DialogCreate(860, 600, c_anchorCenter, 0, 0, true);
     DialogSetVisible(g_roster_dialog, PlayerGroupAll(), true);
 
     // Title label — centered, top
@@ -645,19 +619,19 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     // Button size: 238 × 56  (2 lines: name + role)
     // Col A (1..6):  xOffset=-290  →  left≈20
     // Col B (7..12): xOffset=-38   →  left≈273
-    // Row step: 56px, starting at y=82.  Two columns of up to 8 buttons each.
+    // Row step: 56px, starting at y=86.  Two columns of up to 9 buttons each.
     i = 1;
     while (i <= c_rosterPoolMax) {
         g_roster_btnPool[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeButton);
         DialogControlSetSize(g_roster_btnPool[i], PlayerGroupAll(), 238, 50);
-        if (i <= 8) {
+        if (i <= 9) {
             row = i - 1;
             DialogControlSetPosition(g_roster_btnPool[i], PlayerGroupAll(),
-                c_anchorTop, -290, 82 + row * 56);
+                c_anchorTop, -290, 86 + row * 56);
         } else {
-            row = i - 9;
+            row = i - 10;
             DialogControlSetPosition(g_roster_btnPool[i], PlayerGroupAll(),
-                c_anchorTop, -38, 82 + row * 56);
+                c_anchorTop, -38, 86 + row * 56);
         }
         // Hidden initially; UpdateUI makes the correct set visible per picker
         DialogControlSetVisible(g_roster_btnPool[i], PlayerGroupAll(), false);
@@ -665,18 +639,12 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     }
 
     // ── Roster slot labels [1..6] — right panel ───────────────────────────────
-    // Each 260 × 52, xOffset=+260  →  left≈560
-    // Slots 1-2 (Core):   y=88, 152   (step 64)
-    // Slots 3-6 (Drafted): y=232, 296, 360, 424  (step 64, with 16px extra gap after core)
+    // Each 260 × 52, xOffset=+260  →  left≈560.  Six drafted slots, step 60 from y=96.
     i = 1;
     while (i <= c_rosterRosterSize) {
         g_roster_lblSlot[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
         DialogControlSetSize(g_roster_lblSlot[i], PlayerGroupAll(), 260, 52);
-        if (i <= 2) {
-            slotY = 88 + (i - 1) * 64;
-        } else {
-            slotY = 232 + (i - 3) * 64;
-        }
+        slotY = 96 + (i - 1) * 60;
         DialogControlSetPosition(g_roster_lblSlot[i], PlayerGroupAll(),
             c_anchorTop, +260, slotY);
         i = i + 1;

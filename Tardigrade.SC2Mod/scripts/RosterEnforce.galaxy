@@ -34,16 +34,16 @@ void RosterEnforce_InitLists() {
     g_enfTerran[13] = "Liberator";     g_enfTerran[14] = "Raven";
     g_enfTerran[15] = "Banshee";       g_enfTerran[16] = "Battlecruiser";
 
-    g_enfProtossN = 18;
+    g_enfProtossN = 17;
     g_enfProtoss[1]  = "Zealot";       g_enfProtoss[2]  = "Stalker";
     g_enfProtoss[3]  = "Sentry";       g_enfProtoss[4]  = "Adept";
     g_enfProtoss[5]  = "HighTemplar";  g_enfProtoss[6]  = "DarkTemplar";
     g_enfProtoss[7]  = "Immortal";     g_enfProtoss[8]  = "Colossus";
     g_enfProtoss[9]  = "Disruptor";    g_enfProtoss[10] = "Archon";
-    g_enfProtoss[11] = "Observer";     g_enfProtoss[12] = "WarpPrism";
-    g_enfProtoss[13] = "Phoenix";      g_enfProtoss[14] = "VoidRay";
-    g_enfProtoss[15] = "Oracle";       g_enfProtoss[16] = "Carrier";
-    g_enfProtoss[17] = "Tempest";      g_enfProtoss[18] = "Mothership";
+    g_enfProtoss[11] = "WarpPrism";    g_enfProtoss[12] = "Phoenix";
+    g_enfProtoss[13] = "VoidRay";      g_enfProtoss[14] = "Oracle";
+    g_enfProtoss[15] = "Carrier";      g_enfProtoss[16] = "Tempest";
+    g_enfProtoss[17] = "Mothership";
 
     g_enfZergN = 14;
     g_enfZerg[1]  = "Zergling";  g_enfZerg[2]  = "Baneling";
@@ -52,7 +52,7 @@ void RosterEnforce_InitLists() {
     g_enfZerg[7]  = "Infestor";  g_enfZerg[8]  = "SwarmHost";
     g_enfZerg[9]  = "Ultralisk"; g_enfZerg[10] = "Mutalisk";
     g_enfZerg[11] = "Corruptor"; g_enfZerg[12] = "BroodLord";
-    g_enfZerg[13] = "Viper";     g_enfZerg[14] = "Overseer";
+    g_enfZerg[13] = "Viper";     g_enfZerg[14] = "Queen";
 }
 
 // Is unitType present in the given decider's roster (1 = P1, 2 = P2)?
@@ -77,6 +77,10 @@ bool RosterEnforce_InRoster(int whichRoster, string unitType) {
 // direct larva-build path in AbilData, so being in the roster is enough.
 bool RosterEnforce_IsAllowed(int whichRoster, string unitType) {
     if (RosterEnforce_InRoster(whichRoster, unitType)) { return true; }
+
+    // Hellbat rides with Hellion: they freely transform into each other, so
+    // drafting Hellion grants both, and banning Hellion removes both.
+    if (unitType == "HellionTank" && RosterEnforce_InRoster(whichRoster, "Hellion")) { return true; }
 
     if (unitType == "Archon"
         && (RosterEnforce_InRoster(whichRoster, "HighTemplar")

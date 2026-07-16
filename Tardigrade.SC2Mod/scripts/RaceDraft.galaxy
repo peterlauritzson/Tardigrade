@@ -44,17 +44,6 @@ string GetRaceConfigId(int race) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Helper: Get Core Unit
-// Single access point for core unit definitions (GameData.xml / TardigradeRosterConfig).
-// To change a race's core units, edit CoreUnit1 / CoreUnit2 in GameData.xml ? all draft
-// phases (race announcement, roster panel, pool filtering) update automatically.
-//--------------------------------------------------------------------------------------------------
-string GetCoreUnit(int race, int slot) {
-    return UserDataGetGameLink("TardigradeRosterConfig", GetRaceConfigId(race),
-        "CoreUnit" + IntToString(slot), 1);
-}
-
-//--------------------------------------------------------------------------------------------------
 // Helper: Get Race Name
 //--------------------------------------------------------------------------------------------------
 string RaceName(int race) {
@@ -243,16 +232,6 @@ void RaceDraft_Finish(int pickedRace) {
     // Announce race outcome
     msg = "Draft Complete! Team 1: " + RaceName(t1Race) + ", Team 2: " + RaceName(t2Race);
     UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(msg));
-
-    // Tell each player their core units (always available, excluded from the draft)
-    msg = "<c val=\"AAAAAA\">Your core units: "
-        + GetCoreUnit(p1Race, 1) + " + " + GetCoreUnit(p1Race, 2) + "</c>";
-    UIDisplayMessage(PlayerGroupSingle(g_draft_p1), c_messageAreaChat, StringToText(msg));
-    if (g_draft_p1 != g_draft_p2) {
-        msg = "<c val=\"AAAAAA\">Your core units: "
-            + GetCoreUnit(pickedRace, 1) + " + " + GetCoreUnit(pickedRace, 2) + "</c>";
-        UIDisplayMessage(PlayerGroupSingle(g_draft_p2), c_messageAreaChat, StringToText(msg));
-    }
 }
 
 //--------------------------------------------------------------------------------------------------
