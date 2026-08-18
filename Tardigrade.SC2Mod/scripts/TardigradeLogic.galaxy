@@ -5,8 +5,9 @@
 //
 //   1. Race Draft    - P1 bans a race, P2 picks, P1 gets the remainder.
 //                      Each team is set to a single race.
-//   2. Cycle Draft   - P1 picks 1 of 10 global modifiers, P2 picks another,
-//                      the 3rd is random. The three rotate as Day/Dusk/Night.
+//   2. Modifier Draft - each player bans 2 of 10 global modifiers, then picks
+//                      3. Each pick is ALWAYS active in-game, but only for the
+//                      drafting player's own units (no rotation, no phases).
 //   3. Unit Draft    - ban phase + snake pick; each side ends with 6 units.
 //                      The chosen cycle phases are shown here. Enforced in-game.
 //
@@ -163,14 +164,23 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
         }
     }
 
-    // Random cycle: 3 distinct modifiers.
+    // Random modifiers: 6 distinct picks - 3 per player (picker-only in draft mode).
+    g_cycle_p1      = g_draft_p1;
+    g_cycle_p2      = g_draft_p2;
+    g_cycle_p1Count = c_cyclePicksEach;
+    g_cycle_p2Count = c_cyclePicksEach;
     usedMask  = 0;
     pickCount = 1;
-    while (pickCount <= c_cyclePhaseCount) {
+    while (pickCount <= c_cyclePickTotal) {
         pick = RandomInt(1, c_cycleModCount);
         if ((usedMask & (1 << (pick - 1))) == 0) {
             usedMask = usedMask | (1 << (pick - 1));
-            g_cycle_chosen[pickCount] = pick;
+            if (pickCount <= c_cyclePicksEach) {
+                g_cycle_p1Mods[pickCount] = pick;
+                g_cycle_chosen[pickCount] = pick;   // keep legacy phase array populated too
+            } else {
+                g_cycle_p2Mods[pickCount - c_cyclePicksEach] = pick;
+            }
             pickCount = pickCount + 1;
         }
     }

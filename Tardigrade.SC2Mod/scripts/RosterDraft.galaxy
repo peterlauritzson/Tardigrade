@@ -207,10 +207,22 @@ string RosterDraft_SlotText(string unitType, int slotNum, bool isYours) {
 }
 
 // One line describing a drafted cycle phase (Day/Dusk/Night) with its effect.
-// Uses CycleMod data - the cycle is drafted BEFORE the unit draft.
+// Uses CycleMod data - the cycle is drafted BEFORE the unit draft. When the
+// per-player draft is active it instead lists each side's always-on picks.
 string RosterDraft_CyclePhaseText(int phase) {
     string tag;
     int    modIdx;
+    if (!c_cyclePhaseMode) {
+        if (phase == 1) {
+            return "<c val=\"FFE24A\">Always active - each side's picks:</c>";
+        }
+        if (phase == 2) {
+            return "<c val=\"7FD0FF\">P1 (" + RaceName(g_draft_p1Race) + "):</c>   <c val=\"FFFFFF\">"
+                + CycleMod_ModNamesJoined(true) + "</c>";
+        }
+        return "<c val=\"FF9F7F\">P2 (" + RaceName(g_draft_p2Race) + "):</c>   <c val=\"FFFFFF\">"
+            + CycleMod_ModNamesJoined(false) + "</c>";
+    }
     if (phase == 1)      { tag = "Day  "; }
     else if (phase == 2) { tag = "Dusk "; }
     else                 { tag = "Night"; }
@@ -750,13 +762,19 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
         i = i + 1;
     }
 
-    // ── Cycle strip (bottom-left): the Day/Dusk/Night modifiers drafted earlier ─
+    // ── Modifier strip (bottom-left): the modifiers drafted earlier ─
     lblSection = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(lblSection, Tardigrade_Viewers(), 500, 14);
     DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, -160, 516);
-    DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
-        Tardigrade_Viewers(),
-        StringToText("<c val=\"555555\">BATTLE CYCLE  (rotates all game) ───────────────</c>"));
+    if (c_cyclePhaseMode) {
+        DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
+            Tardigrade_Viewers(),
+            StringToText("<c val=\"555555\">BATTLE CYCLE  (rotates all game) ───────────────</c>"));
+    } else {
+        DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
+            Tardigrade_Viewers(),
+            StringToText("<c val=\"555555\">MODIFIERS  (always active, per player) ──────────</c>"));
+    }
 
     i = 1;
     while (i <= 3) {

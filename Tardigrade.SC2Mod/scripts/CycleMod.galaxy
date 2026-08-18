@@ -1,17 +1,14 @@
 //--------------------------------------------------------------------------------------------------
 // Cycle Modifier System
 //
-// Phase 3 of the pre-game draft, plus the in-game Day / Dusk / Night cycle.
+// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 10
+//   global battlefield modifiers. Each player bans 2 (10 -> 6), then picks 3.
+//   Every pick is ALWAYS active in-game, but only for the drafting player's own
+//   units. A shared reference panel lists both sides' picks.
 //
-//   DRAFT: There are 10 global battlefield modifiers. Player A (the race
-//   banner) picks one, Player B (the picker) picks a second, and the third is
-//   chosen at random from the remaining eight.
-//
-//   CYCLE: In-game the three chosen modifiers rotate as the Day, Dusk, and
-//   Night phases. The active phase's modifier is applied to EVERY unit on the
-//   map (both teams). A top-center legend panel lists all three phases with
-//   their effects, highlights the one that is active, and counts down to the
-//   next phase.
+// Legacy (c_cyclePhaseMode == true, kept intact behind the gate): the 3 drafted
+//   modifiers rotate as Day/Dusk/Night phases, each applied to EVERY unit on the
+//   map, with a top-center legend panel and per-phase lighting.
 //
 // Requires: Debug.galaxy, TriggerLibs/NativeLib
 //--------------------------------------------------------------------------------------------------
@@ -23,6 +20,17 @@ include "scripts/Debug"
 const int c_cycleModCount   = 10;
 const int c_cyclePhaseCount = 3;
 
+// Master toggle for the legacy rotating-phase system (in-game Day/Dusk/Night
+// rotation, its HUD legend, and per-phase lighting). Set false: the game now
+// uses a per-player modifier draft where each side's 3 picks are ALWAYS active
+// for that side only. The legacy code is kept intact behind this gate.
+const bool c_cyclePhaseMode  = false;
+
+// Per-player draft: 2 bans each (10 -> 6) then 3 picks each.
+const int  c_cycleBanTotal   = 4;   // total bans (2 per player)
+const int  c_cyclePickTotal  = 6;   // total picks (3 per player)
+const int  c_cyclePicksEach  = 3;
+
 // ── Draft state ──────────────────────────────────────────────────────────────
 trigger g_cycle_callback = null;
 int     g_cycle_p1;                 // Player A (picks first)
@@ -30,6 +38,19 @@ int     g_cycle_p2;                 // Player B (picks second)
 int     g_cycle_pickIndex = 0;      // 0 = A picking, 1 = B picking
 bool[11] g_cycle_taken;             // [1..10] which mods are already claimed
 int[4]  g_cycle_chosen;             // [1..3] chosen mod indices (phase order)
+
+// ── Per-player draft state (c_cyclePhaseMode == false) ────────────────────
+int[4]  g_cycle_p1Mods;             // [1..3] modifier indices picked by P1
+int[4]  g_cycle_p2Mods;             // [1..3] modifier indices picked by P2
+int     g_cycle_p1Count    = 0;
+int     g_cycle_p2Count    = 0;
+int     g_cycle_draftPhase = 0;     // 0 = ban, 1 = pick
+int     g_cycle_stepIndex  = 1;     // step within the current phase order
+int[5]  g_cycle_banOrder;           // [1..4] picker per ban step
+bool[5] g_cycle_banIsP1;
+int[7]  g_cycle_pickOrder;          // [1..6] picker per pick step
+bool[7] g_cycle_pickIsP1;
+int     g_cycle_draftPanel = c_invalidDialogId;  // in-game modifier reference panel
 
 // Draft UI
 int    g_cycle_dialog   = c_invalidDialogId;
@@ -122,6 +143,106 @@ string CycleMod_Desc(int idx) {
     if (idx == 9)  { return "low life triggers a speed and attack-speed surge"; }
     if (idx == 10) { return "kills grant permanent damage and attack speed"; }
     return "";
+}
+
+//--------------------------------------------------------------------------------------------------
+// Per-player helpers: map a unit's owner to P1/P2 and test drafted modifiers.
+// In legacy phase mode CycleMod_UnitModActive falls back to the single globally
+// active phase behavior, so all downstream call sites behave identically there.
+//--------------------------------------------------------------------------------------------------
+bool CycleMod_OwnerIsP1(int owner) {
+    if (g_draft_p1_is_team1) { return PlayerGroupHasPlayer(g_draft_team1, owner); }
+    return PlayerGroupHasPlayer(g_draft_team2, owner);
+}
+
+bool CycleMod_OwnerIsP2(int owner) {
+    if (g_draft_p1_is_team1) { return PlayerGroupHasPlayer(g_draft_team2, owner); }
+    return PlayerGroupHasPlayer(g_draft_team1, owner);
+}
+
+playergroup CycleMod_P1Team() {
+    if (g_draft_p1_is_team1) { return g_draft_team1; }
+    return g_draft_team2;
+}
+
+playergroup CycleMod_P2Team() {
+    if (g_draft_p1_is_team1) { return g_draft_team2; }
+    return g_draft_team1;
+}
+
+bool CycleMod_P1HasModIdx(int modIdx) {
+    int i;
+    i = 1;
+    while (i <= c_cyclePicksEach) { if (g_cycle_p1Mods[i] == modIdx) { return true; } i = i + 1; }
+    return false;
+}
+
+bool CycleMod_P2HasModIdx(int modIdx) {
+    int i;
+    i = 1;
+    while (i <= c_cyclePicksEach) { if (g_cycle_p2Mods[i] == modIdx) { return true; } i = i + 1; }
+    return false;
+}
+
+// True if the unit's owning side drafted the given modifier behavior.
+bool CycleMod_UnitHasBehavior(unit u, string beh) {
+    int owner;
+    int i;
+    owner = UnitGetOwner(u);
+    if (CycleMod_OwnerIsP1(owner)) {
+        i = 1;
+        while (i <= c_cyclePicksEach) {
+            if (CycleMod_Behavior(g_cycle_p1Mods[i]) == beh) { return true; }
+            i = i + 1;
+        }
+    } else if (CycleMod_OwnerIsP2(owner)) {
+        i = 1;
+        while (i <= c_cyclePicksEach) {
+            if (CycleMod_Behavior(g_cycle_p2Mods[i]) == beh) { return true; }
+            i = i + 1;
+        }
+    }
+    return false;
+}
+
+bool CycleMod_UnitModActive(unit u, string beh) {
+    if (c_cyclePhaseMode) { return g_cycle_activeBehavior == beh; }
+    return CycleMod_UnitHasBehavior(u, beh);
+}
+
+// Modifier index each TEAM drafted, for the shared in-game panel.
+int CycleMod_Team1Mod(int i) {
+    if (g_draft_p1_is_team1) { return g_cycle_p1Mods[i]; }
+    return g_cycle_p2Mods[i];
+}
+
+int CycleMod_Team2Mod(int i) {
+    if (g_draft_p1_is_team1) { return g_cycle_p2Mods[i]; }
+    return g_cycle_p1Mods[i];
+}
+
+string CycleMod_ModLine(int modIdx) {
+    if (modIdx <= 0) { return "<c val=\"555555\">  -</c>"; }
+    return "<c val=\"FFFFFF\">  " + CycleMod_Name(modIdx) + "</c>  <c val=\"9FB4C7\">- "
+        + CycleMod_Desc(modIdx) + "</c>";
+}
+
+// Comma-joined names of a player's picked modifiers (for reference strips).
+string CycleMod_ModNamesJoined(bool isP1) {
+    string s;
+    int    i;
+    int    idx;
+    s = "";
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        if (isP1) { idx = g_cycle_p1Mods[i]; } else { idx = g_cycle_p2Mods[i]; }
+        if (idx > 0) {
+            if (s != "") { s = s + ", "; }
+            s = s + CycleMod_Name(idx);
+        }
+        i = i + 1;
+    }
+    return s;
 }
 
 //==================================================================================================
@@ -304,6 +425,224 @@ bool CycleMod_OnClicked(bool testConds, bool runActions) {
     return true;
 }
 
+//==================================================================================================
+// PER-PLAYER DRAFT  (c_cyclePhaseMode == false)
+// 2 bans each (10 -> 6) then 3 picks each. Every pick is ALWAYS active in-game,
+// but only for the drafting player's own units.
+//==================================================================================================
+int CycleMod_DraftPicker() {
+    if (g_cycle_draftPhase == 0) { return g_cycle_banOrder[g_cycle_stepIndex]; }
+    return g_cycle_pickOrder[g_cycle_stepIndex];
+}
+
+bool CycleMod_DraftPickerIsP1() {
+    if (g_cycle_draftPhase == 0) { return g_cycle_banIsP1[g_cycle_stepIndex]; }
+    return g_cycle_pickIsP1[g_cycle_stepIndex];
+}
+
+void CycleMod_UpdateDraftUI() {
+    int         picker;
+    int         waiter;
+    int         i;
+    int         total;
+    string      verb;
+    string      titleText;
+    string      btnTxt;
+    playergroup pickGroup;
+    playergroup waitGroup;
+
+    picker    = CycleMod_DraftPicker();
+    pickGroup = PlayerGroupSingle(picker);
+    if (g_cycle_draftPhase == 0) { verb = "BAN";  total = c_cycleBanTotal; }
+    else                         { verb = "PICK"; total = c_cyclePickTotal; }
+
+    titleText = "<c val=\"FFD700\">MODIFIER DRAFT</c>   -   " + verb + "  "
+        + IntToString(g_cycle_stepIndex) + " of " + IntToString(total);
+    DialogControlSetPropertyAsText(g_cycle_lblTitle, c_triggerControlPropertyText,
+        Tardigrade_Viewers(), StringToText(titleText));
+
+    if (g_cycle_draftPhase == 0) {
+        DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+            pickGroup, StringToText("<c val=\"FF6060\">YOUR TURN  -  Ban a modifier</c>"));
+    } else {
+        DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+            pickGroup, StringToText("<c val=\"00FF88\">YOUR TURN  -  Pick a modifier (active for you only)</c>"));
+    }
+
+    // Buttons for the active picker: hide already-taken (banned/picked) mods.
+    i = 1;
+    while (i <= c_cycleModCount) {
+        btnTxt = "<c val=\"FFFFFF\">" + CycleMod_Name(i) + "</c>"
+            + "\n<c val=\"7FD0FF\">" + CycleMod_Desc(i) + "</c>";
+        DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
+            pickGroup, StringToText(btnTxt));
+        DialogControlSetVisible(g_cycle_btnMod[i], pickGroup, !g_cycle_taken[i]);
+        DialogControlSetEnabled(g_cycle_btnMod[i], pickGroup, true);
+        i = i + 1;
+    }
+
+    // Waiting player (if distinct): hide all buttons, show a wait message.
+    if (g_cycle_p1 != g_cycle_p2) {
+        if (picker == g_cycle_p1) { waiter = g_cycle_p2; }
+        else                      { waiter = g_cycle_p1; }
+        waitGroup = PlayerGroupSingle(waiter);
+        i = 1;
+        while (i <= c_cycleModCount) {
+            DialogControlSetVisible(g_cycle_btnMod[i], waitGroup, false);
+            i = i + 1;
+        }
+        DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+            waitGroup, StringToText("<c val=\"888888\">Opponent is drafting a modifier...</c>"));
+    }
+
+    if (Tardigrade_HasAudience()) {
+        CycleMod_UpdateAudienceUI();
+    }
+}
+
+void CycleMod_FinishDraftPerPlayer() {
+    if (g_cycle_draftTrig != null) {
+        TriggerDestroy(g_cycle_draftTrig);
+        g_cycle_draftTrig = null;
+    }
+    if (g_cycle_dialog != c_invalidDialogId) {
+        DialogDestroy(g_cycle_dialog);
+        g_cycle_dialog = c_invalidDialogId;
+    }
+
+    Debug_Log("Modifier Draft: P1=" + CycleMod_ModNamesJoined(true)
+        + " | P2=" + CycleMod_ModNamesJoined(false));
+
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"FFD54A\">MODIFIERS</c>  <c val=\"AAAAAA\">- always active, per player:</c>"));
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"7FD0FF\">  P1 (" + RaceName(g_draft_p1Race) + "):</c>  "
+        + CycleMod_ModNamesJoined(true)));
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"FF9F7F\">  P2 (" + RaceName(g_draft_p2Race) + "):</c>  "
+        + CycleMod_ModNamesJoined(false)));
+
+    if (g_cycle_callback != null) {
+        TriggerExecute(g_cycle_callback, false, false);
+    }
+}
+
+bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
+    int control;
+    int player;
+    int picker;
+    int idx;
+    int i;
+
+    control = EventDialogControl();
+    player  = EventPlayer();
+    picker  = CycleMod_DraftPicker();
+    if (player != picker) { return true; }
+
+    idx = 0;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (control == g_cycle_btnMod[i]) { idx = i; break; }
+        i = i + 1;
+    }
+    if (idx == 0 || g_cycle_taken[idx]) { return true; }
+
+    g_cycle_taken[idx] = true;
+
+    if (g_cycle_draftPhase == 0) {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"FF6060\">Banned:</c> " + CycleMod_Name(idx)));
+        g_cycle_stepIndex = g_cycle_stepIndex + 1;
+        if (g_cycle_stepIndex > c_cycleBanTotal) {
+            g_cycle_draftPhase = 1;
+            g_cycle_stepIndex  = 1;
+        }
+        CycleMod_UpdateDraftUI();
+    } else {
+        if (CycleMod_DraftPickerIsP1()) {
+            g_cycle_p1Count = g_cycle_p1Count + 1;
+            g_cycle_p1Mods[g_cycle_p1Count] = idx;
+        } else {
+            g_cycle_p2Count = g_cycle_p2Count + 1;
+            g_cycle_p2Mods[g_cycle_p2Count] = idx;
+        }
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"00FF88\">Picked:</c> " + CycleMod_Name(idx) + "  (" + CycleMod_Desc(idx) + ")"));
+        g_cycle_stepIndex = g_cycle_stepIndex + 1;
+        if (g_cycle_stepIndex > c_cyclePickTotal) {
+            CycleMod_FinishDraftPerPlayer();
+        } else {
+            CycleMod_UpdateDraftUI();
+        }
+    }
+    return true;
+}
+
+void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
+    int i;
+    int col;
+    int row;
+
+    g_cycle_callback   = callback;
+    g_cycle_p1         = p1;
+    g_cycle_p2         = p2;
+    g_cycle_p1Count    = 0;
+    g_cycle_p2Count    = 0;
+    g_cycle_draftPhase = 0;
+    g_cycle_stepIndex  = 1;
+
+    i = 1;
+    while (i <= c_cycleModCount) { g_cycle_taken[i] = false; i = i + 1; }
+
+    // Ban order: P1, P2, P1, P2  (2 each).
+    g_cycle_banOrder[1] = p1; g_cycle_banIsP1[1] = true;
+    g_cycle_banOrder[2] = p2; g_cycle_banIsP1[2] = false;
+    g_cycle_banOrder[3] = p1; g_cycle_banIsP1[3] = true;
+    g_cycle_banOrder[4] = p2; g_cycle_banIsP1[4] = false;
+
+    // Snake pick order: P1, P2, P2, P1, P1, P2  (3 each).
+    g_cycle_pickOrder[1] = p1; g_cycle_pickIsP1[1] = true;
+    g_cycle_pickOrder[2] = p2; g_cycle_pickIsP1[2] = false;
+    g_cycle_pickOrder[3] = p2; g_cycle_pickIsP1[3] = false;
+    g_cycle_pickOrder[4] = p1; g_cycle_pickIsP1[4] = true;
+    g_cycle_pickOrder[5] = p1; g_cycle_pickIsP1[5] = true;
+    g_cycle_pickOrder[6] = p2; g_cycle_pickIsP1[6] = false;
+
+    // Dialog: 640 x 420, two columns of five buttons (same layout as legacy).
+    g_cycle_dialog = DialogCreate(640, 420, c_anchorCenter, 0, 0, true);
+    DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
+
+    g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblTitle, Tardigrade_Viewers(), 600, 26);
+    DialogControlSetPosition(g_cycle_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 12);
+
+    g_cycle_lblSub = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblSub, Tardigrade_Viewers(), 600, 20);
+    DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 42);
+
+    i = 1;
+    while (i <= c_cycleModCount) {
+        g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
+        DialogControlSetSize(g_cycle_btnMod[i], Tardigrade_Viewers(), 280, 56);
+        if (i <= 5) { col = -150; row = i - 1; }
+        else        { col =  150; row = i - 6; }
+        DialogControlSetPosition(g_cycle_btnMod[i], Tardigrade_Viewers(),
+            c_anchorTop, col, 80 + row * 64);
+        DialogControlSetVisible(g_cycle_btnMod[i], Tardigrade_Viewers(), false);
+        i = i + 1;
+    }
+
+    g_cycle_draftTrig = TriggerCreate("CycleMod_OnDraftClicked");
+    i = 1;
+    while (i <= c_cycleModCount) {
+        TriggerAddEventDialogControl(g_cycle_draftTrig, c_playerAny,
+            g_cycle_btnMod[i], c_triggerControlEventTypeClick);
+        i = i + 1;
+    }
+
+    CycleMod_UpdateDraftUI();
+}
+
 //--------------------------------------------------------------------------------------------------
 // Public: start the cycle-modifier draft.
 //   p1 = Player A (picks first), p2 = Player B (picks second).
@@ -312,6 +651,11 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     int i;
     int col;
     int row;
+
+    if (!c_cyclePhaseMode) {
+        CycleMod_StartDraftPerPlayer(callback, p1, p2);
+        return;
+    }
 
     g_cycle_callback  = callback;
     g_cycle_p1        = p1;
@@ -463,27 +807,34 @@ string CycleMod_OpenSkiesFilters(string filters) {
     return required + ";" + excluded;
 }
 
-void CycleMod_SetOpenSkies(bool enabled) {
+void CycleMod_EnsureWeaponCache() {
     int catalogCount;
+    int i;
+    string weapon;
+
+    if (g_cycle_weaponCount != 0) { return; }
+    catalogCount = CatalogEntryCount(c_gameCatalogWeapon);
+    if (catalogCount > c_cycleWeaponLimit) { catalogCount = c_cycleWeaponLimit; }
+    i = 0;
+    while (i < catalogCount) {
+        weapon = CatalogEntryGet(c_gameCatalogWeapon, i + 1);
+        g_cycle_weaponEntry[i]  = weapon;
+        g_cycle_weaponFilter[i] = CatalogFieldValueGet(
+            c_gameCatalogWeapon, weapon, "TargetFilters", 1);
+        i = i + 1;
+    }
+    g_cycle_weaponCount = catalogCount;
+}
+
+// Legacy (phase mode): globally toggle Open Skies for every player.
+void CycleMod_SetOpenSkies(bool enabled) {
     int i;
     int player;
     string weapon;
     string filters;
 
     if (enabled == g_cycle_openSkiesEnabled) { return; }
-    if (g_cycle_weaponCount == 0) {
-        catalogCount = CatalogEntryCount(c_gameCatalogWeapon);
-        if (catalogCount > c_cycleWeaponLimit) { catalogCount = c_cycleWeaponLimit; }
-        i = 0;
-        while (i < catalogCount) {
-            weapon = CatalogEntryGet(c_gameCatalogWeapon, i + 1);
-            g_cycle_weaponEntry[i] = weapon;
-            g_cycle_weaponFilter[i] = CatalogFieldValueGet(
-                c_gameCatalogWeapon, weapon, "TargetFilters", 1);
-            i = i + 1;
-        }
-        g_cycle_weaponCount = catalogCount;
-    }
+    CycleMod_EnsureWeaponCache();
 
     i = 0;
     while (i < g_cycle_weaponCount) {
@@ -501,6 +852,36 @@ void CycleMod_SetOpenSkies(bool enabled) {
         i = i + 1;
     }
     g_cycle_openSkiesEnabled = enabled;
+}
+
+// Draft mode: apply Open Skies to a single player's weapons only.
+void CycleMod_OpenSkiesForPlayer(int player) {
+    int i;
+    string weapon;
+    string filters;
+
+    CycleMod_EnsureWeaponCache();
+    i = 0;
+    while (i < g_cycle_weaponCount) {
+        weapon  = g_cycle_weaponEntry[i];
+        filters = CycleMod_OpenSkiesFilters(g_cycle_weaponFilter[i]);
+        CatalogFieldValueSet(c_gameCatalogWeapon, weapon, "TargetFilters", player, filters);
+        i = i + 1;
+    }
+}
+
+void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
+    int n;
+    int i;
+    int p;
+
+    n = PlayerGroupCount(team);
+    i = 1;
+    while (i <= n) {
+        p = PlayerGroupPlayer(team, i);
+        CycleMod_OpenSkiesForPlayer(p);
+        i = i + 1;
+    }
 }
 
 bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
@@ -521,7 +902,7 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
 
     UnitSetCustomValue(source, c_cycleStateLastAttack, GameGetMissionTime());
 
-    if (g_cycle_activeBehavior == "TardigradeMod_PredatorProtocol") {
+    if (CycleMod_UnitModActive(source, "TardigradeMod_PredatorProtocol")) {
         currentLife = UnitGetPropertyFixed(source, c_unitPropLife, c_unitPropCurrent);
         healing     = EventUnitDamageAmount() * 0.30;
         UnitSetPropertyFixed(source, c_unitPropLife, currentLife + healing);
@@ -543,11 +924,11 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
     }
     if (!CycleMod_IsCombatUnit(dead)) { return true; }
 
-    if (g_cycle_activeBehavior == "TardigradeMod_MutualDestruction") {
+    if (CycleMod_UnitModActive(dead, "TardigradeMod_MutualDestruction")) {
         UnitCreateEffectPoint(dead, "TardigradeMutualDestructionSearch", UnitGetPosition(dead));
     }
-    if (g_cycle_activeBehavior == "TardigradeMod_VeteranForces"
-        && killer != null && UnitGetOwner(killer) != UnitGetOwner(dead)) {
+    if (killer != null && UnitGetOwner(killer) != UnitGetOwner(dead)
+        && CycleMod_UnitModActive(killer, "TardigradeMod_VeteranForces")) {
         CycleMod_AddHelperBehavior(killer, 6);
     }
     return true;
@@ -582,7 +963,7 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
     x = PointGetX(pos);
     y = PointGetY(pos);
 
-    if (g_cycle_activeBehavior == "TardigradeMod_WarEconomy") {
+    if (CycleMod_UnitModActive(u, "TardigradeMod_WarEconomy")) {
         if (CycleMod_IsWorker(u)) {
             CycleMod_AddHelperBehavior(u, 1);
         } else if ((UnitTypeTestAttribute(UnitGetType(u), c_unitAttributeStructure)
@@ -592,7 +973,7 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
         }
     }
 
-    if (g_cycle_activeBehavior == "TardigradeMod_Entrenchment") {
+    if (CycleMod_UnitModActive(u, "TardigradeMod_Entrenchment")) {
         if (FixedToInt(x * 100.0) != FixedToInt(UnitGetCustomValue(u, c_cycleStateLastX) * 100.0)
             || FixedToInt(y * 100.0) != FixedToInt(UnitGetCustomValue(u, c_cycleStateLastY) * 100.0)) {
             UnitSetCustomValue(u, c_cycleStateLastX, x);
@@ -605,7 +986,7 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
         UnitSetCustomValue(u, c_cycleStateStillTime, now);
     }
 
-    if (g_cycle_activeBehavior == "TardigradeMod_Overwatch"
+    if (CycleMod_UnitModActive(u, "TardigradeMod_Overwatch")
         && FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)) >= 5) {
         CycleMod_AddHelperBehavior(u, 4);
     }
@@ -613,7 +994,7 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
     currentLife = UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent);
     lifeMaximum = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent);
     lowLife = lifeMaximum > 0.0 && currentLife <= lifeMaximum * 0.35;
-    if (g_cycle_activeBehavior == "TardigradeMod_AdrenalResponse") {
+    if (CycleMod_UnitModActive(u, "TardigradeMod_AdrenalResponse")) {
         if (lowLife && FixedToInt(UnitGetCustomValue(u, c_cycleStateWasLow)) == 0
             && now >= UnitGetCustomValue(u, c_cycleStateAdrenalReady)) {
             CycleMod_AddHelperBehavior(u, 5);
@@ -712,9 +1093,12 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
     int       i;
     int       p;
     string    beh;
+    bool      doScan;
 
     while (true) {
-        if (g_cycle_activeBehavior != "") {
+        if (c_cyclePhaseMode) { doScan = g_cycle_activeBehavior != ""; }
+        else                  { doScan = true; }
+        if (doScan) {
             ug = UnitGroup(null, c_playerAny, RegionEntireMap(),
                 UnitFilter(0, 0, (1 << c_targetFilterMissile),
                     (1 << (c_targetFilterDead - 32)) | (1 << (c_targetFilterHidden - 32))), 0);
@@ -723,17 +1107,36 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
             while (i <= count) {
                 u = UnitGroupUnit(ug, i);
                 CycleMod_RegisterUnit(u);
-                p = 1;
-                while (p <= c_cyclePhaseCount) {
-                    beh = CycleMod_Behavior(g_cycle_chosen[p]);
-                    if (beh == g_cycle_activeBehavior
-                        && (beh != "TardigradeMod_EyesEverywhere"
-                            || CycleMod_IsParticipantUnit(u))) {
-                        UnitBehaviorAdd(u, beh, u, 1);
-                    } else {
-                        libNtve_gf_SetBehaviorCount(u, beh, u, 0);
+                if (c_cyclePhaseMode) {
+                    // Legacy: apply the single active phase behavior, clear the other two.
+                    p = 1;
+                    while (p <= c_cyclePhaseCount) {
+                        beh = CycleMod_Behavior(g_cycle_chosen[p]);
+                        if (beh == g_cycle_activeBehavior
+                            && (beh != "TardigradeMod_EyesEverywhere"
+                                || CycleMod_IsParticipantUnit(u))) {
+                            UnitBehaviorAdd(u, beh, u, 1);
+                        } else {
+                            libNtve_gf_SetBehaviorCount(u, beh, u, 0);
+                        }
+                        p = p + 1;
                     }
-                    p = p + 1;
+                } else {
+                    // Draft: apply each side's picks only to that side's own units.
+                    p = 1;
+                    while (p <= c_cyclePicksEach) {
+                        beh = CycleMod_Behavior(g_cycle_p1Mods[p]);
+                        if (beh != "") {
+                            if (CycleMod_UnitModActive(u, beh)) { UnitBehaviorAdd(u, beh, u, 1); }
+                            else { libNtve_gf_SetBehaviorCount(u, beh, u, 0); }
+                        }
+                        beh = CycleMod_Behavior(g_cycle_p2Mods[p]);
+                        if (beh != "") {
+                            if (CycleMod_UnitModActive(u, beh)) { UnitBehaviorAdd(u, beh, u, 1); }
+                            else { libNtve_gf_SetBehaviorCount(u, beh, u, 0); }
+                        }
+                        p = p + 1;
+                    }
                 }
                 CycleMod_UpdateConditionalBehaviors(u);
                 i = i + 1;
@@ -789,6 +1192,85 @@ bool CycleMod_PhaseTrigger(bool testConds, bool runActions) {
 }
 
 //--------------------------------------------------------------------------------------------------
+// In-game reference panel (draft mode): both sides' 3 always-active modifiers.
+// Per viewer it reads YOURS / OPPONENT; spectators see PLAYER 1 / PLAYER 2.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_InitDraftPanel() {
+    int title;
+    int hdr;
+    int lbl;
+    int i;
+
+    g_cycle_draftPanel = DialogCreate(470, 214, c_anchorTop, 0, 22, false);
+    DialogSetVisible(g_cycle_draftPanel, Tardigrade_Viewers(), true);
+    DialogSetImageVisible(g_cycle_draftPanel, true);
+
+    title = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
+    DialogControlSetSize(title, Tardigrade_Viewers(), 450, 20);
+    DialogControlSetPosition(title, Tardigrade_Viewers(), c_anchorTop, 0, 6);
+    DialogControlSetPropertyAsText(title, c_triggerControlPropertyText,
+        Tardigrade_Viewers(), StringToText("<c val=\"FFD54A\">ACTIVE MODIFIERS</c>"));
+
+    // YOURS header
+    hdr = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
+    DialogControlSetSize(hdr, Tardigrade_Viewers(), 450, 16);
+    DialogControlSetPosition(hdr, Tardigrade_Viewers(), c_anchorTop, 8, 30);
+    DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
+        g_draft_team1, StringToText("<c val=\"7FD0FF\">YOURS</c>"));
+    DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
+        g_draft_team2, StringToText("<c val=\"7FD0FF\">YOURS</c>"));
+    if (Tardigrade_HasAudience()) {
+        DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
+            Tardigrade_Audience(), StringToText("<c val=\"7FD0FF\">PLAYER 1</c>"));
+    }
+
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        lbl = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
+        DialogControlSetSize(lbl, Tardigrade_Viewers(), 450, 18);
+        DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 8, 48 + (i - 1) * 20);
+        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
+            g_draft_team1, StringToText(CycleMod_ModLine(CycleMod_Team1Mod(i))));
+        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
+            g_draft_team2, StringToText(CycleMod_ModLine(CycleMod_Team2Mod(i))));
+        if (Tardigrade_HasAudience()) {
+            DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
+                Tardigrade_Audience(), StringToText(CycleMod_ModLine(CycleMod_Team1Mod(i))));
+        }
+        i = i + 1;
+    }
+
+    // OPPONENT header
+    hdr = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
+    DialogControlSetSize(hdr, Tardigrade_Viewers(), 450, 16);
+    DialogControlSetPosition(hdr, Tardigrade_Viewers(), c_anchorTop, 8, 116);
+    DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
+        g_draft_team1, StringToText("<c val=\"FF9F7F\">OPPONENT</c>"));
+    DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
+        g_draft_team2, StringToText("<c val=\"FF9F7F\">OPPONENT</c>"));
+    if (Tardigrade_HasAudience()) {
+        DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
+            Tardigrade_Audience(), StringToText("<c val=\"FF9F7F\">PLAYER 2</c>"));
+    }
+
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        lbl = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
+        DialogControlSetSize(lbl, Tardigrade_Viewers(), 450, 18);
+        DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 8, 134 + (i - 1) * 20);
+        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
+            g_draft_team1, StringToText(CycleMod_ModLine(CycleMod_Team2Mod(i))));
+        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
+            g_draft_team2, StringToText(CycleMod_ModLine(CycleMod_Team1Mod(i))));
+        if (Tardigrade_HasAudience()) {
+            DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
+                Tardigrade_Audience(), StringToText(CycleMod_ModLine(CycleMod_Team2Mod(i))));
+        }
+        i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 // Public: start the in-game cycle (called at game start, after the draft).
 //--------------------------------------------------------------------------------------------------
 void CycleMod_StartCycle() {
@@ -796,10 +1278,18 @@ void CycleMod_StartCycle() {
     trigger tPhase;
     trigger tEconomicEgg;
 
-    if (g_cycle_hud != c_invalidDialogId) { return; }
+    if (g_cycle_hud != c_invalidDialogId || g_cycle_draftPanel != c_invalidDialogId) { return; }
 
     CycleMod_LoadConfig();
-    CycleMod_InitHUD();
+
+    if (c_cyclePhaseMode) {
+        CycleMod_InitHUD();
+    } else {
+        CycleMod_InitDraftPanel();
+        // Open Skies is a per-player weapon change: apply only to the picker's team.
+        if (CycleMod_P1HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P1Team()); }
+        if (CycleMod_P2HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P2Team()); }
+    }
 
     g_cycle_damageTrig = TriggerCreate("CycleMod_OnUnitDamaged");
     g_cycle_deathTrig  = TriggerCreate("CycleMod_OnUnitDied");
@@ -816,6 +1306,8 @@ void CycleMod_StartCycle() {
     tScan = TriggerCreate("CycleMod_ScanTrigger");
     TriggerExecute(tScan, false, false);
 
-    tPhase = TriggerCreate("CycleMod_PhaseTrigger");
-    TriggerExecute(tPhase, false, false);
+    if (c_cyclePhaseMode) {
+        tPhase = TriggerCreate("CycleMod_PhaseTrigger");
+        TriggerExecute(tPhase, false, false);
+    }
 }
