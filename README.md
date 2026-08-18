@@ -57,16 +57,19 @@ The 10 modifiers:
 
 | # | Modifier | Effect |
 |---|---|---|
-| 1 | Fleet-Footed | +50% move speed |
-| 2 | Adrenal Frenzy | +30% attack speed |
-| 3 | Extended Optics | +2 weapon range |
-| 4 | Ironhide | +3 armor |
-| 5 | Juggernaut | +50 max life |
-| 6 | Rapid Regeneration | +5 life / second |
-| 7 | Overcharged Munitions | +20% weapon damage |
-| 8 | Blitz Doctrine | +25% move & +15% attack speed |
-| 9 | Siege Protocol | +1 range & +15% damage |
-| 10 | Bulwark | +2 armor & +30 max life |
+| 1 | Open Skies | All weapons can target ground and air |
+| 2 | War Economy | Workers gather faster; combat-unit production is 95% slower, while Drone and Overlord eggs retain normal speed |
+| 3 | Mutual Destruction | Slain combat units explode, damaging nearby units |
+| 4 | Predator Protocol | Damage dealt restores 30% of the attacker's life |
+| 5 | Eyes Everywhere | The battlefield and hidden units are revealed |
+| 6 | Entrenchment | Stationary units gain +2 armor and +1 range after 3 seconds |
+| 7 | Arcane Surge | +3 energy per second and +50 maximum energy |
+| 8 | Overwatch | The first attack after 5 seconds gains +3 range and +50% damage |
+| 9 | Adrenal Response | Dropping below 35% life grants a 6-second combat boost; 45-second cooldown |
+| 10 | Veteran Forces | Kills grant permanent +3% damage and attack speed, up to 10 stacks |
+
+The original ten stat modifiers remain defined in `BehaviorData.xml` as a
+legacy pool, but the draft links only to the modifiers above.
 
 Phase length is data-driven (`TardigradeCycleConfig > PhaseDuration` in
 `GameData.xml`, default 45s).

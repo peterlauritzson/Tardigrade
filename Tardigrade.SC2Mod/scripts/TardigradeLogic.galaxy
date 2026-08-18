@@ -5,29 +5,74 @@
 //
 //   1. Race Draft    - P1 bans a race, P2 picks, P1 gets the remainder.
 //                      Each team is set to a single race.
-//   2. Unit Draft    - ban phase + snake pick; each side ends with 6 units
-//                      (2 core + 4 drafted). Enforced in-game.
-//   3. Cycle Draft   - P1 picks 1 of 10 global modifiers, P2 picks another,
+//   2. Cycle Draft   - P1 picks 1 of 10 global modifiers, P2 picks another,
 //                      the 3rd is random. The three rotate as Day/Dusk/Night.
+//   3. Unit Draft    - ban phase + snake pick; each side ends with 6 units.
+//                      The chosen cycle phases are shown here. Enforced in-game.
 //
-// Then the game starts: rosters are enforced and the cycle begins.
+// Then a 3-2-1 countdown runs, workers spawn and start mining, and the game
+// begins with rosters enforced and the cycle running.
 //--------------------------------------------------------------------------------------------------
 
 include "scripts/Debug"
 include "scripts/RaceDraft"
+include "scripts/CycleMod"
 include "scripts/RosterDraft"
 include "scripts/RosterEnforce"
-include "scripts/CycleMod"
+
+//--------------------------------------------------------------------------------------------------
+// 3-2-1 countdown shown between the draft and the game (real time, still paused).
+//--------------------------------------------------------------------------------------------------
+void Tardigrade_Countdown() {
+    int dlg;
+    int lbl;
+    int n;
+
+    dlg = DialogCreate(320, 150, c_anchorCenter, 0, -80, false);
+    DialogSetVisible(dlg, Tardigrade_Viewers(), true);
+    DialogSetImageVisible(dlg, true);
+
+    lbl = DialogControlCreate(dlg, c_triggerControlTypeLabel);
+    DialogControlSetSize(lbl, Tardigrade_Viewers(), 300, 120);
+    DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 16);
+
+    n = 3;
+    while (n > 0) {
+        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
+            Tardigrade_Viewers(), StringToText("<c val=\"FFD54A\">Game starts in  " + IntToString(n) + "</c>"));
+        Wait(1.0, c_timeReal);
+        n = n - 1;
+    }
+    DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
+        Tardigrade_Viewers(), StringToText("<c val=\"00FF88\">GO!</c>"));
+    Wait(0.7, c_timeReal);
+
+    DialogDestroy(dlg);
+}
 
 //--------------------------------------------------------------------------------------------------
 // Core game-start logic - shared by the normal draft chain and the debug auto-run.
 //--------------------------------------------------------------------------------------------------
 void Tardigrade_StartGame() {
+    // Catch any observer membership changes before constructing in-game HUDs.
+    Tardigrade_RefreshViewerGroups();
+
     RosterEnforce_ApplyAll();
+
+    // 3-2-1 countdown while still paused (so nothing can move yet).
+    Tardigrade_Countdown();
+
+    // Spawn the deferred workers and set them mining.
+    Tardigrade_SpawnStartingUnits();
+
+    // In-game roster reference HUD (toggle button + your 6 units).
+    RosterHUD_Init();
+
+    // Start the day/dusk/night cycle and unpause.
     CycleMod_StartCycle();
     GameSetMissionTimePaused(false);
 
-    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat,
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
         StringToText("<c val=\"FFD700\">The battle begins.</c>"));
 }
 
@@ -136,7 +181,7 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
 
     Debug_Log("AUTO DRAFT: Ban=" + RaceName(banRace) + " P1=" + RaceName(g_draft_p1Race)
         + " P2=" + RaceName(g_draft_p2Race));
-    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat,
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
         StringToText("AUTO DRAFT: P1=" + RaceName(g_draft_p1Race) + "  P2=" + RaceName(g_draft_p2Race)));
 
     Tardigrade_StartGame();
@@ -144,32 +189,32 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Callback: cycle draft complete -> start the game.
+// Callback: unit draft complete -> start the game.
 //--------------------------------------------------------------------------------------------------
-bool Tardigrade_OnCycleFinished(bool testConds, bool runActions) {
+bool Tardigrade_OnRosterFinished(bool testConds, bool runActions) {
     Tardigrade_StartGame();
     return true;
 }
 
 //--------------------------------------------------------------------------------------------------
-// Callback: unit draft complete -> start the cycle-modifier draft.
+// Callback: cycle draft complete -> start the unit draft.
 //--------------------------------------------------------------------------------------------------
-bool Tardigrade_OnRosterFinished(bool testConds, bool runActions) {
-    trigger cycleCallback;
-    cycleCallback = TriggerCreate("Tardigrade_OnCycleFinished");
-    CycleMod_StartDraft(cycleCallback, g_roster_p1, g_roster_p2);
-    return true;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Callback: race draft complete -> start the unit draft.
-//--------------------------------------------------------------------------------------------------
-bool Tardigrade_OnDraftFinished(bool testConds, bool runActions) {
+bool Tardigrade_OnCycleFinished(bool testConds, bool runActions) {
     trigger rosterCallback;
     rosterCallback = TriggerCreate("Tardigrade_OnRosterFinished");
     RosterDraft_Start(rosterCallback,
         g_draft_p1, g_draft_p2,
         g_draft_p1Race, g_draft_p2Race);
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Callback: race draft complete -> start the cycle-modifier draft.
+//--------------------------------------------------------------------------------------------------
+bool Tardigrade_OnDraftFinished(bool testConds, bool runActions) {
+    trigger cycleCallback;
+    cycleCallback = TriggerCreate("Tardigrade_OnCycleFinished");
+    CycleMod_StartDraft(cycleCallback, g_draft_p1, g_draft_p2);
     return true;
 }
 
@@ -184,7 +229,7 @@ void Tardigrade_Init() {
     }
     UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText("Tardigrade Loaded."));
 
-    // Start the draft chain: Race -> Unit -> Cycle -> Game
+    // Start the draft chain: Race -> Cycle -> Unit -> Game
     t = TriggerCreate("Tardigrade_OnDraftFinished");
     RaceDraft_Start(t);
 }

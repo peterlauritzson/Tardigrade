@@ -1,3 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
+	<CEffectDamage id="TardigradeMutualDestructionDamage">
+		<Amount value="35"/>
+	</CEffectDamage>
+	<CEffectEnumArea id="TardigradeMutualDestructionSearch">
+		<AreaArray Radius="2.5" Effect="TardigradeMutualDestructionDamage"/>
+		<SearchFilters value="-;Self,Player,Ally,Neutral,Structure,Missile,Dead,Hidden,Invulnerable"/>
+	</CEffectEnumArea>
 </Catalog>

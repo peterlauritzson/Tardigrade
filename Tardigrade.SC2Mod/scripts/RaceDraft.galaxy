@@ -18,6 +18,17 @@ int g_draft_phase = 0; // 0 = Ban, 1 = Pick
 trigger g_draft_trigger;
 trigger g_draft_callback = null;
 
+// Base-game starting worker count per player, captured before we wipe the melee
+// start (so post-draft spawns mirror whatever the current patch uses).
+int[16] g_draft_startWorkers;
+
+// Deferred starting-unit spawn: the town hall spawns at race-draft finish, but
+// workers + extra unit wait until the game actually starts, so they can't be
+// moved during the paused draft. Captured per player by SetPlayerRace.
+int[16]   g_start_race;
+point[16] g_start_loc;
+int[16]   g_start_workerCount;
+
 // Exposed results ? set at finish, read by subsequent draft phases
 int g_draft_p1Race = 0; // race of g_draft_p1 (the banning player)
 int g_draft_p2Race = 0; // race of g_draft_p2 (the picking player)
@@ -32,6 +43,68 @@ int g_draft_btnAutoRun = c_invalidDialogControlId;
 int g_draft_btnAutoTerran = c_invalidDialogControlId;
 int g_draft_btnAutoProtoss = c_invalidDialogControlId;
 int g_draft_btnAutoZerg = c_invalidDialogControlId;
+
+//--------------------------------------------------------------------------------------------------
+// Audience / Spectator helpers
+//
+// Referees and spectators (set via the lobby "Make Referee" / "Make Spectator")
+// are active player slots that belong to neither playing team. They must SEE
+// every draft screen and the in-game HUD to stay in the loop, but must never be
+// able to click anything. PlayerGroupAll() does not reach them, so every custom
+// dialog is broadcast to g_tard_viewers (all active slots) and the read-only
+// spectator views are targeted at g_tard_audience.
+//--------------------------------------------------------------------------------------------------
+playergroup g_tard_viewers;           // all active slots (participants + spectators + AI)
+playergroup g_tard_audience;          // referees + spectators only (no team)
+bool        g_tard_groupsReady = false;
+
+// Rebuild the viewer and audience groups from the current player slots.
+// Call once the teams are known.
+void Tardigrade_RefreshViewerGroups() {
+    int i;
+    int p;
+
+    g_tard_viewers  = PlayerGroupActive();
+    g_tard_audience = PlayerGroupCopy(g_tard_viewers);
+
+    i = 1;
+    while (i <= PlayerGroupCount(g_draft_team1)) {
+        p = PlayerGroupPlayer(g_draft_team1, i);
+        PlayerGroupRemove(g_tard_audience, p);
+        i = i + 1;
+    }
+
+    i = 1;
+    while (i <= PlayerGroupCount(g_draft_team2)) {
+        p = PlayerGroupPlayer(g_draft_team2, i);
+        PlayerGroupRemove(g_tard_audience, p);
+        i = i + 1;
+    }
+
+    g_tard_groupsReady = true;
+    Debug_Log("Viewer groups: active=" + IntToString(PlayerGroupCount(g_tard_viewers))
+        + " team1=" + IntToString(PlayerGroupCount(g_draft_team1))
+        + " team2=" + IntToString(PlayerGroupCount(g_draft_team2))
+        + " audience=" + IntToString(PlayerGroupCount(g_tard_audience)));
+}
+
+// Broadcast group for dialogs and chat: all active slots, falling back to
+// PlayerGroupAll() before the groups are built.
+playergroup Tardigrade_Viewers() {
+    if (!g_tard_groupsReady) { return PlayerGroupAll(); }
+    return g_tard_viewers;
+}
+
+// Spectator-only group; empty until the groups are built.
+playergroup Tardigrade_Audience() {
+    if (!g_tard_groupsReady) { return PlayerGroupEmpty(); }
+    return g_tard_audience;
+}
+
+// True if there is at least one spectator/referee to render read-only views for.
+bool Tardigrade_HasAudience() {
+    return g_tard_groupsReady && PlayerGroupCount(g_tard_audience) > 0;
+}
 
 //--------------------------------------------------------------------------------------------------
 // Helper: Get Race Config ID
@@ -93,11 +166,15 @@ void SetPlayerRace(int player, int race) {
     string extraUnitType;
     bool skipStartPack;
     int i;
-    int workerCount = GetRaceStartConfigInt(race, "WorkerCount");
+    int workerCount = g_draft_startWorkers[player];
     int minerals = GetRaceStartConfigInt(race, "Minerals");
     int vespene = GetRaceStartConfigInt(race, "Vespene");
 
     DumpDraftConfigToLog(race);
+
+    // Mirror the base-game melee worker count; fall back to config if we somehow
+    // captured nothing for this player.
+    if (workerCount <= 0) { workerCount = GetRaceStartConfigInt(race, "WorkerCount"); }
 
     // 1. Determine Unit Types
     townHallType = GetRaceUnitType(race, "TownHall");
@@ -128,20 +205,103 @@ void SetPlayerRace(int player, int race) {
     }
     UnitGroupLoopEnd();
 
-    // 4. Spawn New Units (town hall + workers + optional extra unit, e.g. Overlord)
-    if (!skipStartPack) {
-        libNtve_gf_CreateUnitsWithDefaultFacing(1, townHallType, 0, player, startLoc);
-        libNtve_gf_CreateUnitsWithDefaultFacing(workerCount, workerType, 0, player, startLoc);
+    // 4. Spawn the town hall now; DEFER workers + extra unit (e.g. Overlord)
+    //    until the game actually starts (Tardigrade_SpawnStartingUnits), so
+    //    they cannot be moved during the paused draft.
+    libNtve_gf_CreateUnitsWithDefaultFacing(1, townHallType, 0, player, startLoc);
 
-        // Spawn Extra Unit (e.g. Overlord) if defined
-        if (extraUnitType != "") {
-            libNtve_gf_CreateUnitsWithDefaultFacing(1, extraUnitType, 0, player, startLoc);
-        }
-    }
+    g_start_race[player]        = race;
+    g_start_loc[player]         = startLoc;
+    g_start_workerCount[player] = workerCount;
 
     // 5. Set Resources (Standard Melee Start)
     PlayerModifyPropertyInt(player, c_playerPropMinerals, c_playerPropOperSetTo, minerals);
     PlayerModifyPropertyInt(player, c_playerPropVespene, c_playerPropOperSetTo, vespene);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Auto-mine: order each freshly spawned worker to gather the nearest mineral.
+//--------------------------------------------------------------------------------------------------
+void Tardigrade_OrderMine(int race, point loc, unitgroup workers) {
+    string    gatherAbil;
+    region    r;
+    unitgroup nearUnits;
+    unitgroup minerals;
+    unit      u;
+    unit      w;
+    unit      tgt;
+    string    t;
+    int       count;
+    int       i;
+
+    if (race == c_tardigrade_raceTerran)      { gatherAbil = "SCVHarvest"; }
+    else if (race == c_tardigrade_raceProtoss) { gatherAbil = "ProbeHarvest"; }
+    else                                       { gatherAbil = "DroneHarvest"; }
+
+    // Collect mineral fields near the start location.
+    r         = RegionCircle(loc, 12.0);
+    nearUnits = UnitGroup(null, c_playerAny, r, UnitFilter(0, 0, 0, 0), 0);
+    minerals  = UnitGroupEmpty();
+    count = UnitGroupCount(nearUnits, c_unitCountAll);
+    i = 1;
+    while (i <= count) {
+        u = UnitGroupUnit(nearUnits, i);
+        t = UnitGetType(u);
+        if (StringContains(t, "MineralField", c_stringAnywhere, false)) {
+            UnitGroupAdd(minerals, u);
+        }
+        i = i + 1;
+    }
+    if (UnitGroupCount(minerals, c_unitCountAll) == 0) { return; }
+
+    // Order each worker to the closest mineral patch.
+    count = UnitGroupCount(workers, c_unitCountAll);
+    i = 1;
+    while (i <= count) {
+        w   = UnitGroupUnit(workers, i);
+        tgt = UnitGroupNearestUnit(minerals, UnitGetPosition(w));
+        if (tgt != null) {
+            UnitIssueOrder(w, OrderTargetingUnit(AbilityCommand(gatherAbil, 0), tgt),
+                c_orderQueueReplace);
+        }
+        i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Public: spawn the deferred workers (+ extra unit) for every player and set
+// them mining. Called once when the game phase begins.
+//--------------------------------------------------------------------------------------------------
+void Tardigrade_SpawnStartingUnits() {
+    int       player;
+    int       race;
+    string    workerType;
+    string    extraUnitType;
+    point     loc;
+    int       count;
+    unitgroup workers;
+
+    player = 1;
+    while (player <= 15) {
+        race = g_start_race[player];
+        if (race > 0) {
+            loc           = g_start_loc[player];
+            count         = g_start_workerCount[player];
+            workerType    = GetRaceUnitType(race, "Worker");
+            extraUnitType = GetRaceUnitType(race, "ExtraUnit");
+
+            libNtve_gf_CreateUnitsWithDefaultFacing(count, workerType, 0, player, loc);
+            workers = UnitGroup(workerType, player, RegionCircle(loc, 10.0), UnitFilter(0, 0, 0, 0), 0);
+
+            if (extraUnitType != "") {
+                libNtve_gf_CreateUnitsWithDefaultFacing(1, extraUnitType, 0, player, loc);
+            }
+
+            Tardigrade_OrderMine(race, loc, workers);
+            g_start_race[player] = 0;
+        }
+        player = player + 1;
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -168,6 +328,11 @@ void RemoveWorkers() {
     unit u;
     string type;
     int owner;
+    int i;
+
+    // Reset captured counts.
+    i = 0;
+    while (i <= 15) { g_draft_startWorkers[i] = 0; i = i + 1; }
 
     UnitGroupLoopBegin(g);
     while (!UnitGroupLoopDone()) {
@@ -178,6 +343,9 @@ void RemoveWorkers() {
         if (owner != 0) {
             type = UnitGetType(u);
             if (type == "SCV" || type == "Probe" || type == "Drone") {
+                // Capture the base-game count before removing, so post-draft
+                // spawns mirror the current patch.
+                g_draft_startWorkers[owner] = g_draft_startWorkers[owner] + 1;
                 UnitRemove(u);
             }
         }
@@ -231,12 +399,41 @@ void RaceDraft_Finish(int pickedRace) {
 
     // Announce race outcome
     msg = "Draft Complete! Team 1: " + RaceName(t1Race) + ", Team 2: " + RaceName(t2Race);
-    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(msg));
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(msg));
+}
+
+//--------------------------------------------------------------------------------------------------
+// Logic: Update UI for spectators / referees (read-only mirror)
+//--------------------------------------------------------------------------------------------------
+void RaceDraft_UpdateAudienceUI() {
+    playergroup aud;
+    string      lbl;
+    aud = Tardigrade_Audience();
+
+    if (g_draft_phase == 0) {
+        lbl = "Spectating  -  a race is being BANNED...";
+        DialogControlSetVisible(g_draft_btnTerran,  aud, true);
+        DialogControlSetVisible(g_draft_btnProtoss, aud, true);
+        DialogControlSetVisible(g_draft_btnZerg,    aud, true);
+    } else {
+        lbl = "Spectating  -  a race is being PICKED...";
+        DialogControlSetVisible(g_draft_btnTerran,  aud, (g_draft_bannedRace != c_tardigrade_raceTerran));
+        DialogControlSetVisible(g_draft_btnProtoss, aud, (g_draft_bannedRace != c_tardigrade_raceProtoss));
+        DialogControlSetVisible(g_draft_btnZerg,    aud, (g_draft_bannedRace != c_tardigrade_raceZerg));
+    }
+
+    DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, aud, StringToText(lbl));
+
+    // Never clickable for spectators.
+    DialogControlSetEnabled(g_draft_btnTerran,  aud, false);
+    DialogControlSetEnabled(g_draft_btnProtoss, aud, false);
+    DialogControlSetEnabled(g_draft_btnZerg,    aud, false);
 }
 
 //--------------------------------------------------------------------------------------------------
 // Logic: Update UI
 //--------------------------------------------------------------------------------------------------
+
 void RaceDraft_UpdateUI() {
     if (g_draft_phase == 0) {
         // Ban Phase (P1)
@@ -276,6 +473,12 @@ void RaceDraft_UpdateUI() {
             DialogControlSetVisible(g_draft_btnZerg, PlayerGroupSingle(g_draft_p1), false);
         }
     }
+
+    // Read-only spectator view: referees and spectators see the current state
+    // but every race button is disabled so they can never influence the draft.
+    if (Tardigrade_HasAudience()) {
+        RaceDraft_UpdateAudienceUI();
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -285,6 +488,10 @@ bool RaceDraft_OnClicked(bool testConds, bool runActions) {
     int control = EventDialogControl();
     int player = EventPlayer();
     int selectedRace = 0;
+
+    if (Tardigrade_HasAudience() && PlayerGroupHasPlayer(Tardigrade_Audience(), player)) {
+        return true;
+    }
 
     if (control == g_draft_btnTerran) { selectedRace = c_tardigrade_raceTerran; }
     else if (control == g_draft_btnProtoss) { selectedRace = c_tardigrade_raceProtoss; }
@@ -336,64 +543,35 @@ void RaceDraft_Start(trigger callback) {
     int decider2 = 0;
     bool team1HasHuman = false;
     bool team2HasHuman = false;
-    int team1Leader = 0;
-    int team2Leader = 0;
 
     // Store Callback
     g_draft_callback = callback;
 
-    // Initialize Groups
-    g_draft_team1 = PlayerGroupEmpty();
-    g_draft_team2 = PlayerGroupEmpty();
-
     // Wait for initialization to complete (units to spawn)
     Wait(0.1, c_timeGame);
 
-    // 1. Scan Players and Teams
+    // 1. Read the actual lobby teams. Referees and spectators are active
+    // slots, but GameAttributePlayersForTeam excludes them.
+    g_draft_team1 = GameAttributePlayersForTeam(1);
+    g_draft_team2 = GameAttributePlayersForTeam(2);
+
+    // Find each team's human decider.
     i = 1;
-    while (i <= 15) { // Max players usually
-        if (PlayerStatus(i) == c_playerStatusActive) {
-            
-            // Logic: Determine Team based on Alliance
-            // If Team 1 is empty, start it
-            if (PlayerGroupCount(g_draft_team1) == 0) {
-                PlayerGroupAdd(g_draft_team1, i);
-                team1Leader = i;
-                if (PlayerType(i) == c_playerTypeUser) {
-                    team1HasHuman = true;
-                    decider1 = i;
-                }
-            }
-            // Check if allied with Team 1 Leader (Passive Alliance is the standard "Ally" check)
-            else if (PlayerGetAlliance(i, team1Leader, c_allianceIdPassive)) {
-                PlayerGroupAdd(g_draft_team1, i);
-                if (PlayerType(i) == c_playerTypeUser) {
-                    team1HasHuman = true;
-                    if (decider1 == 0) { decider1 = i; }
-                }
-            }
-            // If Team 2 is empty, start it
-            else if (PlayerGroupCount(g_draft_team2) == 0) {
-                PlayerGroupAdd(g_draft_team2, i);
-                team2Leader = i;
-                if (PlayerType(i) == c_playerTypeUser) {
-                    team2HasHuman = true;
-                    decider2 = i;
-                }
-            }
-            // Check if allied with Team 2 Leader
-            else if (PlayerGetAlliance(i, team2Leader, c_allianceIdPassive)) {
-                PlayerGroupAdd(g_draft_team2, i);
-                if (PlayerType(i) == c_playerTypeUser) {
-                    team2HasHuman = true;
-                    if (decider2 == 0) { decider2 = i; }
-                }
-            }
-            else {
-                // Error: 3rd team found or unallied player
-                UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText("Error: More than 2 teams detected. Draft aborted."));
-                return;
-            }
+    while (i <= PlayerGroupCount(g_draft_team1)) {
+        p = PlayerGroupPlayer(g_draft_team1, i);
+        if (PlayerStatus(p) == c_playerStatusActive && PlayerType(p) == c_playerTypeUser) {
+            team1HasHuman = true;
+            if (decider1 == 0) { decider1 = p; }
+        }
+        i = i + 1;
+    }
+
+    i = 1;
+    while (i <= PlayerGroupCount(g_draft_team2)) {
+        p = PlayerGroupPlayer(g_draft_team2, i);
+        if (PlayerStatus(p) == c_playerStatusActive && PlayerType(p) == c_playerTypeUser) {
+            team2HasHuman = true;
+            if (decider2 == 0) { decider2 = p; }
         }
         i = i + 1;
     }
@@ -434,32 +612,35 @@ void RaceDraft_Start(trigger callback) {
     GameSetMissionTimePaused(true);
     RemoveWorkers();
 
+    // Identify referees / spectators now that the two teams are known.
+    Tardigrade_RefreshViewerGroups();
+
     // Create UI
     g_draft_dialog = DialogCreate(500, 500, c_anchorCenter, 0, 0, true);
     DialogSetTitle(g_draft_dialog, StringToText("Tardigrade  -  Race Draft"));
-    DialogSetVisible(g_draft_dialog, PlayerGroupAll(), true);
+    DialogSetVisible(g_draft_dialog, Tardigrade_Viewers(), true);
 
     // Label
     g_draft_label = DialogControlCreate(g_draft_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_draft_label, PlayerGroupAll(), 400, 50);
-    DialogControlSetPosition(g_draft_label, PlayerGroupAll(), c_anchorTop, 0, 80);
-    DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupAll(), StringToText("Initializing..."));
+    DialogControlSetSize(g_draft_label, Tardigrade_Viewers(), 400, 50);
+    DialogControlSetPosition(g_draft_label, Tardigrade_Viewers(), c_anchorTop, 0, 80);
+    DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, Tardigrade_Viewers(), StringToText("Initializing..."));
 
     // Buttons
     g_draft_btnTerran = DialogControlCreate(g_draft_dialog, c_triggerControlTypeButton);
-    DialogControlSetSize(g_draft_btnTerran, PlayerGroupAll(), 200, 50);
-    DialogControlSetPosition(g_draft_btnTerran, PlayerGroupAll(), c_anchorTop, 0, 150);
-    DialogControlSetPropertyAsText(g_draft_btnTerran, c_triggerControlPropertyText, PlayerGroupAll(), StringToText("Terran"));
+    DialogControlSetSize(g_draft_btnTerran, Tardigrade_Viewers(), 200, 50);
+    DialogControlSetPosition(g_draft_btnTerran, Tardigrade_Viewers(), c_anchorTop, 0, 150);
+    DialogControlSetPropertyAsText(g_draft_btnTerran, c_triggerControlPropertyText, Tardigrade_Viewers(), StringToText("Terran"));
 
     g_draft_btnProtoss = DialogControlCreate(g_draft_dialog, c_triggerControlTypeButton);
-    DialogControlSetSize(g_draft_btnProtoss, PlayerGroupAll(), 200, 50);
-    DialogControlSetPosition(g_draft_btnProtoss, PlayerGroupAll(), c_anchorTop, 0, 210);
-    DialogControlSetPropertyAsText(g_draft_btnProtoss, c_triggerControlPropertyText, PlayerGroupAll(), StringToText("Protoss"));
+    DialogControlSetSize(g_draft_btnProtoss, Tardigrade_Viewers(), 200, 50);
+    DialogControlSetPosition(g_draft_btnProtoss, Tardigrade_Viewers(), c_anchorTop, 0, 210);
+    DialogControlSetPropertyAsText(g_draft_btnProtoss, c_triggerControlPropertyText, Tardigrade_Viewers(), StringToText("Protoss"));
 
     g_draft_btnZerg = DialogControlCreate(g_draft_dialog, c_triggerControlTypeButton);
-    DialogControlSetSize(g_draft_btnZerg, PlayerGroupAll(), 200, 50);
-    DialogControlSetPosition(g_draft_btnZerg, PlayerGroupAll(), c_anchorTop, 0, 270);
-    DialogControlSetPropertyAsText(g_draft_btnZerg, c_triggerControlPropertyText, PlayerGroupAll(), StringToText("Zerg"));
+    DialogControlSetSize(g_draft_btnZerg, Tardigrade_Viewers(), 200, 50);
+    DialogControlSetPosition(g_draft_btnZerg, Tardigrade_Viewers(), c_anchorTop, 0, 270);
+    DialogControlSetPropertyAsText(g_draft_btnZerg, c_triggerControlPropertyText, Tardigrade_Viewers(), StringToText("Zerg"));
 
     // Debug skip button
     if (g_debugLevel > c_debug_None) {
@@ -482,6 +663,13 @@ void RaceDraft_Start(trigger callback) {
         DialogControlSetSize(g_draft_btnAutoZerg, PlayerGroupAll(), 200, 28);
         DialogControlSetPosition(g_draft_btnAutoZerg, PlayerGroupAll(), c_anchorTop, 0, 438);
         DialogControlSetPropertyAsText(g_draft_btnAutoZerg, c_triggerControlPropertyText, PlayerGroupAll(), StringToText("[ DEBUG: Auto As Zerg ]"));
+
+        if (Tardigrade_HasAudience()) {
+            DialogControlSetVisible(g_draft_btnAutoRun,     Tardigrade_Audience(), false);
+            DialogControlSetVisible(g_draft_btnAutoTerran,  Tardigrade_Audience(), false);
+            DialogControlSetVisible(g_draft_btnAutoProtoss, Tardigrade_Audience(), false);
+            DialogControlSetVisible(g_draft_btnAutoZerg,    Tardigrade_Audience(), false);
+        }
     }
 
     // Register Trigger

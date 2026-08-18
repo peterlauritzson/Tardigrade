@@ -122,4 +122,130 @@
         </Modification>
     </CBehaviorBuff>
 
+    <!-- Active draft pool. Root behaviors are refreshed by CycleMod's scan loop. -->
+    <CBehaviorBuff id="TardigradeMod_OpenSkies">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+
+    <CBehaviorBuff id="TardigradeMod_WarEconomy">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_WarEconomyGather">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="2"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_WarEconomyLock">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Negative"/>
+        <Duration value="2"/>
+        <MaxStackCount value="1"/>
+        <Modification TimeScale="0.05"/>
+    </CBehaviorBuff>
+
+    <CBehaviorBuff id="TardigradeMod_MutualDestruction">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+
+    <CBehaviorBuff id="TardigradeMod_PredatorProtocol">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+
+    <CBehaviorBuff id="TardigradeMod_EyesEverywhere">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification Detect="500" Radar="500"/>
+    </CBehaviorBuff>
+
+    <CBehaviorBuff id="TardigradeMod_Entrenchment">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_Entrenched">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="2"/>
+        <MaxStackCount value="1"/>
+        <Modification WeaponRange="1" WeaponScanBonus="1" ShieldArmorBonus="2">
+            <LifeArmorBonus value="2"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <CBehaviorBuff id="TardigradeMod_ArcaneSurge">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxArray index="Energy" value="50"/>
+            <VitalRegenArray index="Energy" value="3"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <CBehaviorBuff id="TardigradeMod_Overwatch">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_OverwatchReady">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="6"/>
+        <MaxStackCount value="1"/>
+        <Modification WeaponRange="3" WeaponScanBonus="3">
+            <DamageDealtFraction index="Melee" value="0.5"/>
+            <DamageDealtFraction index="Ranged" value="0.5"/>
+            <DamageDealtFraction index="Splash" value="0.5"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <CBehaviorBuff id="TardigradeMod_AdrenalResponse">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_AdrenalBoost">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="6"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="1.4" AttackSpeedMultiplier="1.3"/>
+    </CBehaviorBuff>
+
+    <CBehaviorBuff id="TardigradeMod_VeteranForces">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_VeteranStack">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="10"/>
+        <Modification AttackSpeedMultiplier="1.03">
+            <DamageDealtFraction index="Melee" value="0.03"/>
+            <DamageDealtFraction index="Ranged" value="0.03"/>
+            <DamageDealtFraction index="Splash" value="0.03"/>
+        </Modification>
+    </CBehaviorBuff>
+
 </Catalog>

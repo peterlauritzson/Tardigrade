@@ -25,10 +25,14 @@ team's roster is disabled via `TechTreeUnitAllow(player, unit, false)`. Master
 combat lists are defined per race. Workers/structures/supply are untouched.
 
 ### Cycle modifiers (`CycleMod.galaxy` + `BehaviorData.xml`)
-- 10 global buff behaviors `TardigradeMod_*` (verified `Modification` fields).
+- 10 strategic modifiers are active in the draft: Open Skies, War Economy,
+  Mutual Destruction, Predator Protocol, Eyes Everywhere, Entrenchment, Arcane
+  Surge, Overwatch, Adrenal Response, and Veteran Forces.
+- The original 10 stat-buff behaviors remain defined but are no longer linked
+  into the draft, allowing them to be restored or mixed back in later.
 - Three drafted modifiers rotate as Day/Dusk/Night phases.
-- A scan loop (every 2s) applies the active phase's buff to **all units** and
-  removes the other two, so the swap is clean and new units are covered.
+- A scan loop applies root buffs and tracks conditional per-unit state; damage
+  and death events handle lifesteal, Overwatch, explosions, and veteran stacks.
 - Phase loop updates lighting + the bottom-left HUD (name, effect, countdown,
   next-phase icon).
 - Config in `GameData.xml > TardigradeCycleConfig` (phase duration 45s default).
