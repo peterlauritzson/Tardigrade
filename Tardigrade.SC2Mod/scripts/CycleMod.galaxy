@@ -30,6 +30,7 @@ const bool c_cyclePhaseMode  = false;
 const int  c_cycleBanTotal   = 4;   // total bans (2 per player)
 const int  c_cyclePickTotal  = 6;   // total picks (3 per player)
 const int  c_cyclePicksEach  = 3;
+const fixed c_cycleActivationDelay = 180.0;  // buffs go live 3 minutes into the game
 
 // ── Draft state ──────────────────────────────────────────────────────────────
 trigger g_cycle_callback = null;
@@ -51,6 +52,7 @@ bool[5] g_cycle_banIsP1;
 int[7]  g_cycle_pickOrder;          // [1..6] picker per pick step
 bool[7] g_cycle_pickIsP1;
 int     g_cycle_draftPanel = c_invalidDialogId;  // in-game modifier reference panel
+bool    g_cycle_delayedApplied = false;          // one-time 3-minute activation done
 
 // Draft UI
 int    g_cycle_dialog   = c_invalidDialogId;
@@ -95,14 +97,14 @@ int          g_cycle_registeredCount = 0;
 //--------------------------------------------------------------------------------------------------
 string CycleMod_Behavior(int idx) {
     if (idx == 1)  { return "TardigradeMod_OpenSkies"; }
-    if (idx == 2)  { return "TardigradeMod_WarEconomy"; }
-    if (idx == 3)  { return "TardigradeMod_MutualDestruction"; }
+    if (idx == 2)  { return "TardigradeMod_MedivacBoost"; }
+    if (idx == 3)  { return "TardigradeMod_WorkersNoSupply"; }
     if (idx == 4)  { return "TardigradeMod_PredatorProtocol"; }
     if (idx == 5)  { return "TardigradeMod_EyesEverywhere"; }
     if (idx == 6)  { return "TardigradeMod_Entrenchment"; }
     if (idx == 7)  { return "TardigradeMod_ArcaneSurge"; }
     if (idx == 8)  { return "TardigradeMod_Overwatch"; }
-    if (idx == 9)  { return "TardigradeMod_AdrenalResponse"; }
+    if (idx == 9)  { return "TardigradeMod_BattleBlink"; }
     if (idx == 10) { return "TardigradeMod_VeteranForces"; }
     return "";
 }
@@ -119,29 +121,29 @@ string CycleMod_HelperBehavior(int idx) {
 
 string CycleMod_Name(int idx) {
     if (idx == 1)  { return "Open Skies"; }
-    if (idx == 2)  { return "War Economy"; }
-    if (idx == 3)  { return "Mutual Destruction"; }
+    if (idx == 2)  { return "Medivac Boost"; }
+    if (idx == 3)  { return "Free Labor"; }
     if (idx == 4)  { return "Predator Protocol"; }
     if (idx == 5)  { return "Eyes Everywhere"; }
     if (idx == 6)  { return "Entrenchment"; }
     if (idx == 7)  { return "Arcane Surge"; }
     if (idx == 8)  { return "Overwatch"; }
-    if (idx == 9)  { return "Adrenal Response"; }
+    if (idx == 9)  { return "Battle Blink"; }
     if (idx == 10) { return "Veteran Forces"; }
     return "";
 }
 
 string CycleMod_Desc(int idx) {
     if (idx == 1)  { return "all weapons target ground and air"; }
-    if (idx == 2)  { return "double gathering; combat production is 95% slower"; }
-    if (idx == 3)  { return "combat units explode when slain"; }
+    if (idx == 2)  { return "click a unit to burst its move speed (Medivac afterburners)"; }
+    if (idx == 3)  { return "your workers no longer cost supply"; }
     if (idx == 4)  { return "attacks restore 30% of damage dealt"; }
     if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
     if (idx == 6)  { return "stationary units gain +2 armor and +1 range"; }
     if (idx == 7)  { return "+3 energy/sec and +50 max energy"; }
     if (idx == 8)  { return "first attack after 5s gains range and damage"; }
-    if (idx == 9)  { return "low life triggers a speed and attack-speed surge"; }
-    if (idx == 10) { return "kills grant permanent damage and attack speed"; }
+    if (idx == 9)  { return "click a unit to short-range teleport it"; }
+    if (idx == 10) { return "kills grant permanent +3% time speed, stacking to 15"; }
     return "";
 }
 
@@ -207,6 +209,7 @@ bool CycleMod_UnitHasBehavior(unit u, string beh) {
 
 bool CycleMod_UnitModActive(unit u, string beh) {
     if (c_cyclePhaseMode) { return g_cycle_activeBehavior == beh; }
+    if (GameGetMissionTime() < c_cycleActivationDelay) { return false; }
     return CycleMod_UnitHasBehavior(u, beh);
 }
 
@@ -884,6 +887,15 @@ void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
     }
 }
 
+// One-time activation once the 3-minute delay elapses (draft mode). Open Skies
+// is a catalog change so it is applied here rather than per-unit in the scan.
+void CycleMod_ActivateDelayedMods() {
+    if (CycleMod_P1HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P1Team()); }
+    if (CycleMod_P2HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P2Team()); }
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"FFD54A\">Battlefield modifiers are now ACTIVE.</c>"));
+}
+
 bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     unit  target;
     unit  source;
@@ -901,6 +913,14 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     }
 
     UnitSetCustomValue(source, c_cycleStateLastAttack, GameGetMissionTime());
+
+    // Consume Overwatch's bonus range/damage the instant this shot lands, so
+    // it covers exactly the one attack instead of lingering for its full buff
+    // duration (which let it cover several shots, and could expire mid-windup
+    // and desync the attack animation from an already-fired/failed shot).
+    if (UnitBehaviorCount(source, "TardigradeMod_OverwatchReady") > 0) {
+        libNtve_gf_SetBehaviorCount(source, "TardigradeMod_OverwatchReady", source, 0);
+    }
 
     if (CycleMod_UnitModActive(source, "TardigradeMod_PredatorProtocol")) {
         currentLife = UnitGetPropertyFixed(source, c_unitPropLife, c_unitPropCurrent);
@@ -924,9 +944,6 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
     }
     if (!CycleMod_IsCombatUnit(dead)) { return true; }
 
-    if (CycleMod_UnitModActive(dead, "TardigradeMod_MutualDestruction")) {
-        UnitCreateEffectPoint(dead, "TardigradeMutualDestructionSearch", UnitGetPosition(dead));
-    }
     if (killer != null && UnitGetOwner(killer) != UnitGetOwner(dead)
         && CycleMod_UnitModActive(killer, "TardigradeMod_VeteranForces")) {
         CycleMod_AddHelperBehavior(killer, 6);
@@ -954,24 +971,11 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
     fixed now;
     fixed x;
     fixed y;
-    fixed currentLife;
-    fixed lifeMaximum;
-    bool lowLife;
 
     now = GameGetMissionTime();
     pos = UnitGetPosition(u);
     x = PointGetX(pos);
     y = PointGetY(pos);
-
-    if (CycleMod_UnitModActive(u, "TardigradeMod_WarEconomy")) {
-        if (CycleMod_IsWorker(u)) {
-            CycleMod_AddHelperBehavior(u, 1);
-        } else if ((UnitTypeTestAttribute(UnitGetType(u), c_unitAttributeStructure)
-                && !CycleMod_IsTownHall(u))
-            || (UnitGetType(u) == "Egg" && !CycleMod_IsEconomicEgg(u))) {
-            CycleMod_AddHelperBehavior(u, 2);
-        }
-    }
 
     if (CycleMod_UnitModActive(u, "TardigradeMod_Entrenchment")) {
         if (FixedToInt(x * 100.0) != FixedToInt(UnitGetCustomValue(u, c_cycleStateLastX) * 100.0)
@@ -986,24 +990,15 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
         UnitSetCustomValue(u, c_cycleStateStillTime, now);
     }
 
+    // Overwatch's bonus is meant for exactly one shot: only grant it on the
+    // idle->ready edge (guarded by UnitBehaviorCount below) so it isn't
+    // endlessly re-applied - and re-armed - every 0.5s scan tick while the
+    // unit sits idle waiting for a target. CycleMod_OnUnitDamaged consumes it
+    // the instant that one shot lands.
     if (CycleMod_UnitModActive(u, "TardigradeMod_Overwatch")
-        && FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)) >= 5) {
+        && FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)) >= 5
+        && UnitBehaviorCount(u, "TardigradeMod_OverwatchReady") == 0) {
         CycleMod_AddHelperBehavior(u, 4);
-    }
-
-    currentLife = UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent);
-    lifeMaximum = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent);
-    lowLife = lifeMaximum > 0.0 && currentLife <= lifeMaximum * 0.35;
-    if (CycleMod_UnitModActive(u, "TardigradeMod_AdrenalResponse")) {
-        if (lowLife && FixedToInt(UnitGetCustomValue(u, c_cycleStateWasLow)) == 0
-            && now >= UnitGetCustomValue(u, c_cycleStateAdrenalReady)) {
-            CycleMod_AddHelperBehavior(u, 5);
-            UnitSetCustomValue(u, c_cycleStateAdrenalReady, now + 45.0);
-        }
-        if (lowLife) { UnitSetCustomValue(u, c_cycleStateWasLow, 1.0); }
-        else         { UnitSetCustomValue(u, c_cycleStateWasLow, 0.0); }
-    } else {
-        UnitSetCustomValue(u, c_cycleStateWasLow, 0.0);
     }
 }
 
@@ -1083,6 +1078,45 @@ void CycleMod_RenderRows(int activePhase) {
 
 
 //--------------------------------------------------------------------------------------------------
+// Draft mode: apply (or clear) a single drafted modifier's passive buff on a
+// unit. Ability-based modifiers (Medivac Boost, Battle Blink) grant a
+// clickable ability instead of a buff, so they're skipped here and handled by
+// CycleMod_UpdateAbilityMods; Free Labor (Workers cost no supply) is skipped
+// down to worker units only, so it doesn't discount every unit's supply cost.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
+    string beh;
+    beh = CycleMod_Behavior(modIdx);
+    if (beh == "" || beh == "TardigradeMod_MedivacBoost" || beh == "TardigradeMod_BattleBlink") {
+        return;
+    }
+    if (beh == "TardigradeMod_WorkersNoSupply") {
+        if (CycleMod_UnitModActive(u, beh) && CycleMod_IsWorker(u)) { UnitBehaviorAdd(u, beh, u, 1); }
+        else { libNtve_gf_SetBehaviorCount(u, beh, u, 0); }
+        return;
+    }
+    if (CycleMod_UnitModActive(u, beh)) { UnitBehaviorAdd(u, beh, u, 1); }
+    else { libNtve_gf_SetBehaviorCount(u, beh, u, 0); }
+}
+
+// Show/enable (or hide/disable) a granted-but-hidden ability on a unit. The
+// abilities themselves are granted hidden to every combat unit + worker via
+// AbilArray in UnitData.xml; UnitAbilityExists guards units that never got
+// the grant (e.g. structures caught by the broad scan filter).
+void CycleMod_SetAbilAvailable(unit u, string abilId, bool available) {
+    if (!UnitAbilityExists(u, abilId)) { return; }
+    UnitAbilityShow(u, abilId, available);
+    UnitAbilityEnable(u, abilId, available);
+}
+
+void CycleMod_UpdateAbilityMods(unit u) {
+    CycleMod_SetAbilAvailable(u, "TardigradeAbil_MedivacBoost",
+        CycleMod_UnitModActive(u, "TardigradeMod_MedivacBoost"));
+    CycleMod_SetAbilAvailable(u, "TardigradeAbil_Blink",
+        CycleMod_UnitModActive(u, "TardigradeMod_BattleBlink"));
+}
+
+//--------------------------------------------------------------------------------------------------
 // Scan loop: apply the active modifier to every unit, remove the other two.
 // Runs continuously; picks up newly created units within one interval.
 //--------------------------------------------------------------------------------------------------
@@ -1096,6 +1130,12 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
     bool      doScan;
 
     while (true) {
+        if (!c_cyclePhaseMode) {
+            if (!g_cycle_delayedApplied && GameGetMissionTime() >= c_cycleActivationDelay) {
+                CycleMod_ActivateDelayedMods();
+                g_cycle_delayedApplied = true;
+            }
+        }
         if (c_cyclePhaseMode) { doScan = g_cycle_activeBehavior != ""; }
         else                  { doScan = true; }
         if (doScan) {
@@ -1125,18 +1165,11 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
                     // Draft: apply each side's picks only to that side's own units.
                     p = 1;
                     while (p <= c_cyclePicksEach) {
-                        beh = CycleMod_Behavior(g_cycle_p1Mods[p]);
-                        if (beh != "") {
-                            if (CycleMod_UnitModActive(u, beh)) { UnitBehaviorAdd(u, beh, u, 1); }
-                            else { libNtve_gf_SetBehaviorCount(u, beh, u, 0); }
-                        }
-                        beh = CycleMod_Behavior(g_cycle_p2Mods[p]);
-                        if (beh != "") {
-                            if (CycleMod_UnitModActive(u, beh)) { UnitBehaviorAdd(u, beh, u, 1); }
-                            else { libNtve_gf_SetBehaviorCount(u, beh, u, 0); }
-                        }
+                        CycleMod_ApplyPickedBehavior(u, g_cycle_p1Mods[p]);
+                        CycleMod_ApplyPickedBehavior(u, g_cycle_p2Mods[p]);
                         p = p + 1;
                     }
+                    CycleMod_UpdateAbilityMods(u);
                 }
                 CycleMod_UpdateConditionalBehaviors(u);
                 i = i + 1;
@@ -1209,7 +1242,7 @@ void CycleMod_InitDraftPanel() {
     DialogControlSetSize(title, Tardigrade_Viewers(), 450, 20);
     DialogControlSetPosition(title, Tardigrade_Viewers(), c_anchorTop, 0, 6);
     DialogControlSetPropertyAsText(title, c_triggerControlPropertyText,
-        Tardigrade_Viewers(), StringToText("<c val=\"FFD54A\">ACTIVE MODIFIERS</c>"));
+        Tardigrade_Viewers(), StringToText("<c val=\"FFD54A\">ACTIVE MODIFIERS</c>  <c val=\"888888\">(active at 3:00)</c>"));
 
     // YOURS header
     hdr = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
@@ -1286,9 +1319,6 @@ void CycleMod_StartCycle() {
         CycleMod_InitHUD();
     } else {
         CycleMod_InitDraftPanel();
-        // Open Skies is a per-player weapon change: apply only to the picker's team.
-        if (CycleMod_P1HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P1Team()); }
-        if (CycleMod_P2HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P2Team()); }
     }
 
     g_cycle_damageTrig = TriggerCreate("CycleMod_OnUnitDamaged");

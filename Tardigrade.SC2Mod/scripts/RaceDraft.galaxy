@@ -161,7 +161,6 @@ void SetPlayerRace(int player, int race) {
     unitgroup existingUnits;
     unit u;
     point startLoc;
-    string townHallType;
     string workerType;
     string extraUnitType;
     bool skipStartPack;
@@ -177,7 +176,6 @@ void SetPlayerRace(int player, int race) {
     if (workerCount <= 0) { workerCount = GetRaceStartConfigInt(race, "WorkerCount"); }
 
     // 1. Determine Unit Types
-    townHallType = GetRaceUnitType(race, "TownHall");
     workerType = GetRaceUnitType(race, "Worker");
     extraUnitType = GetRaceUnitType(race, "ExtraUnit");
     skipStartPack = false; // every race gets a normal melee opening
@@ -205,11 +203,14 @@ void SetPlayerRace(int player, int race) {
     }
     UnitGroupLoopEnd();
 
-    // 4. Spawn the town hall now; DEFER workers + extra unit (e.g. Overlord)
-    //    until the game actually starts (Tardigrade_SpawnStartingUnits), so
-    //    they cannot be moved during the paused draft.
-    libNtve_gf_CreateUnitsWithDefaultFacing(1, townHallType, 0, player, startLoc);
-
+    // 4. DEFER the town hall + workers + extra unit (e.g. Overlord) until the
+    //    game actually starts (Tardigrade_SpawnStartingUnits). Spawning the
+    //    town hall here (while the Modifier/Roster drafts are still running
+    //    and the game is only mission-time-paused, not input-locked) let
+    //    players queue production against it during the drafts - worst case
+    //    for Zerg, whose starting Larva can build directly with no worker at
+    //    all. Leaving the player with nothing on the map until the game
+    //    actually starts closes that off entirely.
     g_start_race[player]        = race;
     g_start_loc[player]         = startLoc;
     g_start_workerCount[player] = workerCount;
@@ -275,6 +276,7 @@ void Tardigrade_OrderMine(int race, point loc, unitgroup workers) {
 void Tardigrade_SpawnStartingUnits() {
     int       player;
     int       race;
+    string    townHallType;
     string    workerType;
     string    extraUnitType;
     point     loc;
@@ -287,9 +289,11 @@ void Tardigrade_SpawnStartingUnits() {
         if (race > 0) {
             loc           = g_start_loc[player];
             count         = g_start_workerCount[player];
+            townHallType  = GetRaceUnitType(race, "TownHall");
             workerType    = GetRaceUnitType(race, "Worker");
             extraUnitType = GetRaceUnitType(race, "ExtraUnit");
 
+            libNtve_gf_CreateUnitsWithDefaultFacing(1, townHallType, 0, player, loc);
             libNtve_gf_CreateUnitsWithDefaultFacing(count, workerType, 0, player, loc);
             workers = UnitGroup(workerType, player, RegionCircle(loc, 10.0), UnitFilter(0, 0, 0, 0), 0);
 

@@ -6,6 +6,16 @@
         <!-- <AIBuilds index="213" Enabled="0"/>
              <AIBuilds index="214" Enabled="0"/>
              <AIBuilds index="215" Enabled="1"/> -->
+
+        <!-- The default 180s stalemate test/warning window is measured from
+             map init, not from when the game actually starts. Our draft
+             (race + modifier + roster, all real time, game paused) plus the
+             countdown regularly eats past 180s with zero units/structures on
+             the map, which fires the native "this game will be a stalemate"
+             warning before anyone has even finished drafting. Push both way
+             out so it can never fire during setup. -->
+        <StalemateTestTime value="5400"/>
+        <StalemateWarningTime value="5400"/>
     </CGame>
 
     <CUser id="TardigradeRaceStartConfig">
@@ -117,7 +127,7 @@
             <GameLink GameLink="Hydralisk"><Field Id="Pool6"/></GameLink>
             <GameLink GameLink="LurkerMP"><Field Id="Pool7"/></GameLink>
             <GameLink GameLink="Infestor"><Field Id="Pool8"/></GameLink>
-            <GameLink GameLink="SwarmHost"><Field Id="Pool9"/></GameLink>
+            <GameLink GameLink="SwarmHostMP"><Field Id="Pool9"/></GameLink>
             <GameLink GameLink="Ultralisk"><Field Id="Pool10"/></GameLink>
             <GameLink GameLink="Mutalisk"><Field Id="Pool11"/></GameLink>
             <GameLink GameLink="Corruptor"><Field Id="Pool12"/></GameLink>
@@ -125,6 +135,12 @@
             <GameLink GameLink="Viper"><Field Id="Pool14"/></GameLink>
         </Instances>
     </CUser>
+
+    <!-- Zerg Pool9 uses "SwarmHostMP" - the multiplayer unit id. "SwarmHost" is
+         a different (campaign) unit id, so TechTreeUnitAllow(player,"SwarmHost",
+         false) in RosterEnforce.galaxy was silently a no-op and the real unit
+         stayed buildable even when banned/undrafted. Same fix pattern as
+         LurkerMP above. -->
 
     <!-- ════════════════════════════════════════════════════════════════════════ -->
     <!-- CYCLE CONFIG                                                                -->

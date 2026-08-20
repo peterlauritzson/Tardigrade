@@ -52,11 +52,20 @@ int[7]    g_roster_lblSlot;                                // [1..6] your roster
 int[7]    g_roster_lblOppSlot;                             // [1..6] opponent roster slots
 trigger   g_roster_trigger     = null;
 
-// In-game roster HUD (top-left toggle that expands to your 6 drafted units).
-int    g_rhud_dialog   = c_invalidDialogId;
-int    g_rhud_btn      = c_invalidDialogControlId;
-int[7] g_rhud_lbl;
-bool   g_rhud_expanded = false;
+// In-game roster HUD (top-left toggle that expands to your 6 drafted units +
+// your opponent's 6). One dialog PER PLAYER, not one shared dialog: neither
+// DialogSetSize nor DialogSetImageVisible take a playergroup parameter (they
+// resize/reskin the dialog object itself, for every current viewer at once),
+// so a single shared dialog cannot be expanded/collapsed privately - whoever
+// clicked toggled it for every viewer of that dialog. Giving each player
+// their own dialog object (visible only to them) sidesteps that entirely.
+int[16]    g_rhud_dialog;
+int[16]    g_rhud_btn;
+int[16]    g_rhud_hdrMine;
+int[16]    g_rhud_hdrOpp;
+int[16][7] g_rhud_lblMine;
+int[16][7] g_rhud_lblOpp;
+bool[16]   g_rhud_expanded;
 int    g_rhud_audDialog = c_invalidDialogId;
 int    g_rhud_audTitle  = c_invalidDialogControlId;
 int[7] g_rhud_audRow;
@@ -126,7 +135,7 @@ string RosterUnitDisplayName(string unitType) {
     if (unitType == "Corruptor")    { return "Corruptor"; }
     if (unitType == "LurkerMP")     { return "Lurker"; }
     if (unitType == "Ravager")      { return "Ravager"; }
-    if (unitType == "SwarmHost")    { return "Swarm Host"; }
+    if (unitType == "SwarmHostMP")  { return "Swarm Host"; }
     if (unitType == "Viper")        { return "Viper"; }
     if (unitType == "Baneling")     { return "Baneling"; }
     if (unitType == "Overseer")     { return "Overseer"; }
@@ -183,7 +192,7 @@ string RosterUnitRole(string unitType) {
     if (unitType == "Corruptor")    { return "Anti-Massive  ·  Air"; }
     if (unitType == "LurkerMP")     { return "Spine Burst  ·  Siege"; }
     if (unitType == "Ravager")      { return "Corrosive Bile  ·  Ranged"; }
-    if (unitType == "SwarmHost")    { return "Locust Wave"; }
+    if (unitType == "SwarmHostMP")  { return "Locust Wave"; }
     if (unitType == "Viper")        { return "Blinding Cloud  ·  CC"; }
     if (unitType == "Baneling")     { return "Explosive  ·  Splash"; }
     if (unitType == "Overseer")     { return "Detector  ·  Air"; }
@@ -801,44 +810,70 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
 
 //==================================================================================================
 // IN-GAME ROSTER HUD
-// A small top-left button that toggles a panel listing your 6 drafted units,
-// so players can remember what to build during the game.
+// A small top-left button that toggles a panel listing your 6 drafted units
+// (left, green) and your opponent's 6 (right, orange), so players can
+// remember what to build - and scout what they're up against - during the
+// game. Each player gets their own dialog (see the g_rhud_* declarations
+// above for why), so the toggle only ever affects the player who clicked it.
 //==================================================================================================
-void RosterHUD_SetForTeam(playergroup team, int whichRoster) {
-    int    i;
-    string name;
+void RosterHUD_SetForPlayer(int player, int whichRoster) {
+    playergroup viewer;
+    int         i;
+    string      mineName;
+    string      oppName;
+
+    viewer = PlayerGroupSingle(player);
     i = 1;
     while (i <= c_rosterRosterSize) {
-        if (whichRoster == 1) { name = RosterUnitDisplayName(g_roster_p1Units[i]); }
-        else                  { name = RosterUnitDisplayName(g_roster_p2Units[i]); }
-        DialogControlSetPropertyAsText(g_rhud_lbl[i], c_triggerControlPropertyText,
-            team, StringToText("<c val=\"00FF88\">  " + IntToString(i) + ".  " + name + "</c>"));
+        if (whichRoster == 1) {
+            mineName = RosterUnitDisplayName(g_roster_p1Units[i]);
+            oppName  = RosterUnitDisplayName(g_roster_p2Units[i]);
+        } else {
+            mineName = RosterUnitDisplayName(g_roster_p2Units[i]);
+            oppName  = RosterUnitDisplayName(g_roster_p1Units[i]);
+        }
+        DialogControlSetPropertyAsText(g_rhud_lblMine[player][i], c_triggerControlPropertyText,
+            viewer, StringToText("<c val=\"00FF88\">  " + IntToString(i) + ".  " + mineName + "</c>"));
+        DialogControlSetPropertyAsText(g_rhud_lblOpp[player][i], c_triggerControlPropertyText,
+            viewer, StringToText("<c val=\"FF9955\">  " + IntToString(i) + ".  " + oppName + "</c>"));
         i = i + 1;
     }
 }
 
 bool RosterHUD_OnToggle(bool testConds, bool runActions) {
-    int i;
-    if (g_rhud_expanded) {
-        DialogSetSize(g_rhud_dialog, 190, 34);
+    int         player;
+    playergroup viewer;
+    int         i;
+
+    player = EventPlayer();
+    viewer = PlayerGroupSingle(player);
+
+    if (g_rhud_expanded[player]) {
+        DialogSetSize(g_rhud_dialog[player], 390, 34);
+        DialogControlSetVisible(g_rhud_hdrMine[player], viewer, false);
+        DialogControlSetVisible(g_rhud_hdrOpp[player], viewer, false);
         i = 1;
         while (i <= c_rosterRosterSize) {
-            DialogControlSetVisible(g_rhud_lbl[i], PlayerGroupAll(), false);
+            DialogControlSetVisible(g_rhud_lblMine[player][i], viewer, false);
+            DialogControlSetVisible(g_rhud_lblOpp[player][i], viewer, false);
             i = i + 1;
         }
-        DialogControlSetPropertyAsText(g_rhud_btn, c_triggerControlPropertyText,
-            PlayerGroupAll(), StringToText("My Drafted Units  [+]"));
-        g_rhud_expanded = false;
+        DialogControlSetPropertyAsText(g_rhud_btn[player], c_triggerControlPropertyText,
+            viewer, StringToText("My Drafted Units  [+]"));
+        g_rhud_expanded[player] = false;
     } else {
-        DialogSetSize(g_rhud_dialog, 190, 226);
+        DialogSetSize(g_rhud_dialog[player], 390, 236);
+        DialogControlSetVisible(g_rhud_hdrMine[player], viewer, true);
+        DialogControlSetVisible(g_rhud_hdrOpp[player], viewer, true);
         i = 1;
         while (i <= c_rosterRosterSize) {
-            DialogControlSetVisible(g_rhud_lbl[i], PlayerGroupAll(), true);
+            DialogControlSetVisible(g_rhud_lblMine[player][i], viewer, true);
+            DialogControlSetVisible(g_rhud_lblOpp[player][i], viewer, true);
             i = i + 1;
         }
-        DialogControlSetPropertyAsText(g_rhud_btn, c_triggerControlPropertyText,
-            PlayerGroupAll(), StringToText("My Drafted Units  [-]"));
-        g_rhud_expanded = true;
+        DialogControlSetPropertyAsText(g_rhud_btn[player], c_triggerControlPropertyText,
+            viewer, StringToText("My Drafted Units  [-]"));
+        g_rhud_expanded[player] = true;
     }
     return true;
 }
@@ -880,39 +915,90 @@ void RosterHUD_InitAudience() {
     }
 }
 
+// Build one player's private HUD dialog (collapsed by default) and wire its
+// toggle button to the shared trigger t.
+void RosterHUD_InitForPlayer(int player, int whichRoster, trigger t) {
+    playergroup viewer;
+    int         i;
+
+    viewer = PlayerGroupSingle(player);
+
+    // Width stays constant (390) across collapsed/expanded - only height
+    // changes in RosterHUD_OnToggle - so every control's anchor offset (which
+    // is relative to the dialog's current center) stays correct in both
+    // states instead of visibly shifting when the dialog resizes.
+    g_rhud_dialog[player] = DialogCreate(390, 34, c_anchorTopLeft, 6, 28, false);
+    DialogSetVisible(g_rhud_dialog[player], viewer, true);
+    DialogSetImageVisible(g_rhud_dialog[player], true);
+
+    g_rhud_btn[player] = DialogControlCreate(g_rhud_dialog[player], c_triggerControlTypeButton);
+    DialogControlSetSize(g_rhud_btn[player], viewer, 180, 26);
+    DialogControlSetPosition(g_rhud_btn[player], viewer, c_anchorTop, 0, 4);
+    DialogControlSetPropertyAsText(g_rhud_btn[player], c_triggerControlPropertyText,
+        viewer, StringToText("My Drafted Units  [+]"));
+
+    // Column headers.
+    g_rhud_hdrMine[player] = DialogControlCreate(g_rhud_dialog[player], c_triggerControlTypeLabel);
+    DialogControlSetSize(g_rhud_hdrMine[player], viewer, 180, 14);
+    DialogControlSetPosition(g_rhud_hdrMine[player], viewer, c_anchorTop, -95, 34);
+    DialogControlSetPropertyAsText(g_rhud_hdrMine[player], c_triggerControlPropertyText,
+        viewer, StringToText("<c val=\"00FF88\">MINE</c>"));
+    DialogControlSetVisible(g_rhud_hdrMine[player], viewer, false);
+
+    g_rhud_hdrOpp[player] = DialogControlCreate(g_rhud_dialog[player], c_triggerControlTypeLabel);
+    DialogControlSetSize(g_rhud_hdrOpp[player], viewer, 180, 14);
+    DialogControlSetPosition(g_rhud_hdrOpp[player], viewer, c_anchorTop, 95, 34);
+    DialogControlSetPropertyAsText(g_rhud_hdrOpp[player], c_triggerControlPropertyText,
+        viewer, StringToText("<c val=\"FF9955\">OPPONENT</c>"));
+    DialogControlSetVisible(g_rhud_hdrOpp[player], viewer, false);
+
+    // Two columns of 6 rows: MINE (left) + OPPONENT (right).
+    i = 1;
+    while (i <= c_rosterRosterSize) {
+        g_rhud_lblMine[player][i] = DialogControlCreate(g_rhud_dialog[player], c_triggerControlTypeLabel);
+        DialogControlSetSize(g_rhud_lblMine[player][i], viewer, 180, 28);
+        DialogControlSetPosition(g_rhud_lblMine[player][i], viewer, c_anchorTop, -95, 50 + (i - 1) * 30);
+        DialogControlSetVisible(g_rhud_lblMine[player][i], viewer, false);
+
+        g_rhud_lblOpp[player][i] = DialogControlCreate(g_rhud_dialog[player], c_triggerControlTypeLabel);
+        DialogControlSetSize(g_rhud_lblOpp[player][i], viewer, 180, 28);
+        DialogControlSetPosition(g_rhud_lblOpp[player][i], viewer, c_anchorTop, 95, 50 + (i - 1) * 30);
+        DialogControlSetVisible(g_rhud_lblOpp[player][i], viewer, false);
+        i = i + 1;
+    }
+
+    RosterHUD_SetForPlayer(player, whichRoster);
+    TriggerAddEventDialogControl(t, player, g_rhud_btn[player], c_triggerControlEventTypeClick);
+}
+
 void RosterHUD_Init() {
     int         i;
+    int         count;
+    int         p;
     trigger     t;
     playergroup p1Team;
     playergroup p2Team;
 
-    g_rhud_dialog = DialogCreate(190, 34, c_anchorTopLeft, 6, 28, false);
-    DialogSetVisible(g_rhud_dialog, PlayerGroupAll(), true);
-    DialogSetImageVisible(g_rhud_dialog, true);
+    if (g_draft_p1_is_team1) { p1Team = g_draft_team1; p2Team = g_draft_team2; }
+    else                     { p1Team = g_draft_team2; p2Team = g_draft_team1; }
 
-    g_rhud_btn = DialogControlCreate(g_rhud_dialog, c_triggerControlTypeButton);
-    DialogControlSetSize(g_rhud_btn, PlayerGroupAll(), 180, 26);
-    DialogControlSetPosition(g_rhud_btn, PlayerGroupAll(), c_anchorTop, 0, 4);
-    DialogControlSetPropertyAsText(g_rhud_btn, c_triggerControlPropertyText,
-        PlayerGroupAll(), StringToText("My Drafted Units  [+]"));
+    t = TriggerCreate("RosterHUD_OnToggle");
 
+    count = PlayerGroupCount(p1Team);
     i = 1;
-    while (i <= c_rosterRosterSize) {
-        g_rhud_lbl[i] = DialogControlCreate(g_rhud_dialog, c_triggerControlTypeLabel);
-        DialogControlSetSize(g_rhud_lbl[i], PlayerGroupAll(), 180, 28);
-        DialogControlSetPosition(g_rhud_lbl[i], PlayerGroupAll(), c_anchorTop, 0, 34 + (i - 1) * 30);
-        DialogControlSetVisible(g_rhud_lbl[i], PlayerGroupAll(), false);
+    while (i <= count) {
+        p = PlayerGroupPlayer(p1Team, i);
+        RosterHUD_InitForPlayer(p, 1, t);
         i = i + 1;
     }
 
-    // Each player sees their own team's roster.
-    if (g_draft_p1_is_team1) { p1Team = g_draft_team1; p2Team = g_draft_team2; }
-    else                     { p1Team = g_draft_team2; p2Team = g_draft_team1; }
-    RosterHUD_SetForTeam(p1Team, 1);
-    RosterHUD_SetForTeam(p2Team, 2);
+    count = PlayerGroupCount(p2Team);
+    i = 1;
+    while (i <= count) {
+        p = PlayerGroupPlayer(p2Team, i);
+        RosterHUD_InitForPlayer(p, 2, t);
+        i = i + 1;
+    }
 
     RosterHUD_InitAudience();
-
-    t = TriggerCreate("RosterHUD_OnToggle");
-    TriggerAddEventDialogControl(t, c_playerAny, g_rhud_btn, c_triggerControlEventTypeClick);
 }

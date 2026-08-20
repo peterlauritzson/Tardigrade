@@ -34,4 +34,38 @@
         </InfoArray>
     </CAbilTrain>
 
+    <!-- =====================================================================
+         TARDIGRADE: MODIFIER ABILITIES
+         Battle Blink and Medivac Boost are drafted modifiers that grant a
+         clickable ability instead of a passive buff. Both abilities are
+         granted (hidden) to every combat unit + worker in UnitData.xml, and
+         CycleMod.galaxy shows/enables them at runtime only for units on the
+         side that drafted the matching modifier.
+    ===================================================================== -->
+    <CAbilEffectTarget id="TardigradeAbil_Blink">
+        <Range value="500"/>
+        <Arc value="360"/>
+        <Flags index="BestUnit" value="0"/>
+        <Flags index="RequireTargetVision" value="0"/>
+        <Cost>
+            <Cooldown Link="TardigradeAbil_Blink" TimeUse="12"/>
+        </Cost>
+        <CmdButtonArray index="Execute" DefaultButtonFace="Blink">
+            <Flags index="Hidden" value="1"/>
+            <Flags index="ToSelection" value="1"/>
+        </CmdButtonArray>
+        <AbilSetId value="TgBl"/>
+    </CAbilEffectTarget>
+
+    <CAbilEffectInstant id="TardigradeAbil_MedivacBoost">
+        <Flags index="Transient" value="1"/>
+        <CmdButtonArray index="Execute" DefaultButtonFace="MedivacSpeedBoost">
+            <Flags index="Hidden" value="1"/>
+            <Flags index="ToSelection" value="1"/>
+        </CmdButtonArray>
+        <Cost>
+            <Cooldown Link="TardigradeAbil_MedivacBoost" TimeUse="15"/>
+        </Cost>
+    </CAbilEffectInstant>
+
 </Catalog>

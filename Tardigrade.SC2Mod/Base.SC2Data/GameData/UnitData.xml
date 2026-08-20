@@ -27,4 +27,70 @@
         </CardLayouts>
     </CUnit>
 
+    <!-- =====================================================================
+         TARDIGRADE: MODIFIER ABILITY GRANTS
+         Battle Blink and Medivac Boost (see AbilData.xml) are granted, hidden,
+         to every combat unit and worker across all three races so the ability
+         exists to show/hide at runtime. CycleMod.galaxy toggles visibility
+         per-unit based on which side drafted which modifier - a unit whose
+         side didn't draft either keeps both hidden all game.
+    ===================================================================== -->
+    <!-- Terran -->
+    <CUnit id="Marine"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Marauder"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Reaper"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Ghost"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Hellion"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="HellionTank"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="WidowMine"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Cyclone"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="SiegeTank"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Thor"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="VikingFighter"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Medivac"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Liberator"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Raven"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Banshee"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Battlecruiser"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="SCV"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+
+    <!-- Protoss -->
+    <CUnit id="Zealot"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Stalker"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Sentry"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Adept"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="HighTemplar"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="DarkTemplar"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Immortal"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Colossus"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Disruptor"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Archon"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="WarpPrism"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Phoenix"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="VoidRay"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Oracle"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Carrier"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Tempest"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Mothership"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Observer"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Probe"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+
+    <!-- Zerg -->
+    <CUnit id="Zergling"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Baneling"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Roach"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Ravager"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Hydralisk"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="LurkerMP"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Infestor"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="SwarmHostMP"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Ultralisk"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Mutalisk"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Corruptor"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="BroodLord"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Viper"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Queen"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Overseer"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Drone"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+
 </Catalog>

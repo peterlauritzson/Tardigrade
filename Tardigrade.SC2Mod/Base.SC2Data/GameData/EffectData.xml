@@ -1,10 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
-	<CEffectDamage id="TardigradeMutualDestructionDamage">
-		<Amount value="35"/>
-	</CEffectDamage>
-	<CEffectEnumArea id="TardigradeMutualDestructionSearch">
-		<AreaArray Radius="2.5" Effect="TardigradeMutualDestructionDamage"/>
-		<SearchFilters value="-;Self,Player,Ally,Neutral,Structure,Missile,Dead,Hidden,Invulnerable"/>
-	</CEffectEnumArea>
+	<!-- Battle Blink: a short-range teleport granted to every unit while the
+	     modifier is active. Same parameters as the Stalker's Blink (8 range),
+	     kept as a separate id so it doesn't share the Stalker's own cooldown
+	     or its Blink-tech requirement. -->
+	<CEffectTeleport id="TardigradeAbil_Blink">
+		<ClearQueuedOrders value="0"/>
+		<PlacementAround Value="CasterUnit"/>
+		<PlacementRange value="8"/>
+		<Range value="8"/>
+		<WhichUnit Value="Caster"/>
+		<TargetLocation Value="TargetPoint"/>
+		<TeleportFlags index="TestCliff" value="1"/>
+	</CEffectTeleport>
+
+	<!-- Medivac Boost: an instant self-cast that applies the existing
+	     TardigradeMod_MedivacBoost speed buff, instead of it being an
+	     always-on passive. -->
+	<CEffectApplyBehavior id="TardigradeAbil_MedivacBoost">
+		<Behavior value="TardigradeMod_MedivacBoost"/>
+	</CEffectApplyBehavior>
 </Catalog>

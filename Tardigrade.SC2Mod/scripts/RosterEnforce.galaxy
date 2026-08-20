@@ -49,7 +49,7 @@ void RosterEnforce_InitLists() {
     g_enfZerg[1]  = "Zergling";  g_enfZerg[2]  = "Baneling";
     g_enfZerg[3]  = "Roach";     g_enfZerg[4]  = "Ravager";
     g_enfZerg[5]  = "Hydralisk"; g_enfZerg[6]  = "LurkerMP";
-    g_enfZerg[7]  = "Infestor";  g_enfZerg[8]  = "SwarmHost";
+    g_enfZerg[7]  = "Infestor";  g_enfZerg[8]  = "SwarmHostMP";
     g_enfZerg[9]  = "Ultralisk"; g_enfZerg[10] = "Mutalisk";
     g_enfZerg[11] = "Corruptor"; g_enfZerg[12] = "BroodLord";
     g_enfZerg[13] = "Viper";     g_enfZerg[14] = "Queen";
