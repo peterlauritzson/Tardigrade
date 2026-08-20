@@ -190,8 +190,7 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
         <Modification>
-            <VitalMaxArray index="Energy" value="50"/>
-            <VitalRegenArray index="Energy" value="3"/>
+            <VitalRegenArray index="Energy" value="2"/>
         </Modification>
     </CBehaviorBuff>
 

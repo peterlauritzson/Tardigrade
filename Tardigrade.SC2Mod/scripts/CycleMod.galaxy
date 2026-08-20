@@ -140,7 +140,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 4)  { return "attacks restore 30% of damage dealt"; }
     if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
     if (idx == 6)  { return "stationary units gain +2 armor and +1 range"; }
-    if (idx == 7)  { return "+3 energy/sec and +50 max energy"; }
+    if (idx == 7)  { return "+2 energy/sec"; }
     if (idx == 8)  { return "first attack after 5s gains range and damage"; }
     if (idx == 9)  { return "click a unit to short-range teleport it"; }
     if (idx == 10) { return "kills grant permanent +3% time speed, stacking to 15"; }

@@ -22,9 +22,10 @@ trigger g_draft_callback = null;
 // start (so post-draft spawns mirror whatever the current patch uses).
 int[16] g_draft_startWorkers;
 
-// Deferred starting-unit spawn: the town hall spawns at race-draft finish, but
-// workers + extra unit wait until the game actually starts, so they can't be
-// moved during the paused draft. Captured per player by SetPlayerRace.
+// Deferred worker spawn: SetPlayerRace spawns only the town hall immediately
+// and records race/location/count here; Tardigrade_SpawnDeferredWorkers()
+// (called once the pre-game countdown finishes) reads this to spawn the
+// workers + extra unit for real and set them mining.
 int[16]   g_start_race;
 point[16] g_start_loc;
 int[16]   g_start_workerCount;
@@ -155,72 +156,6 @@ void DumpDraftConfigToLog(int race) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Helper: Replace Army
-//--------------------------------------------------------------------------------------------------
-void SetPlayerRace(int player, int race) {
-    unitgroup existingUnits;
-    unit u;
-    point startLoc;
-    string workerType;
-    string extraUnitType;
-    bool skipStartPack;
-    int i;
-    int workerCount = g_draft_startWorkers[player];
-    int minerals = GetRaceStartConfigInt(race, "Minerals");
-    int vespene = GetRaceStartConfigInt(race, "Vespene");
-
-    DumpDraftConfigToLog(race);
-
-    // Mirror the base-game melee worker count; fall back to config if we somehow
-    // captured nothing for this player.
-    if (workerCount <= 0) { workerCount = GetRaceStartConfigInt(race, "WorkerCount"); }
-
-    // 1. Determine Unit Types
-    workerType = GetRaceUnitType(race, "Worker");
-    extraUnitType = GetRaceUnitType(race, "ExtraUnit");
-    skipStartPack = false; // every race gets a normal melee opening
-
-    // 2. Find Start Location (where the current Town Hall is)
-    existingUnits = UnitGroup(null, player, RegionEntireMap(), UnitFilter(0, 0, (1 << c_targetFilterMissile), (1 << (c_targetFilterDead - 32)) | (1 << (c_targetFilterHidden - 32))), 0);
-    startLoc = PlayerStartLocation(player); // Default fallback
-
-    // Try to find the actual town hall to get precise location
-    i = 1;
-    while (i <= UnitGroupCount(existingUnits, c_unitCountAll)) {
-        u = UnitGroupUnit(existingUnits, i);
-        if (UnitTypeTestAttribute(UnitGetType(u), c_unitAttributeStructure)) {
-            startLoc = UnitGetPosition(u);
-            break;
-        }
-        i = i + 1;
-    }
-
-    // 3. Destroy Old Units
-    UnitGroupLoopBegin(existingUnits);
-    while (!UnitGroupLoopDone()) {
-        UnitRemove(UnitGroupLoopCurrent());
-        UnitGroupLoopStep();
-    }
-    UnitGroupLoopEnd();
-
-    // 4. DEFER the town hall + workers + extra unit (e.g. Overlord) until the
-    //    game actually starts (Tardigrade_SpawnStartingUnits). Spawning the
-    //    town hall here (while the Modifier/Roster drafts are still running
-    //    and the game is only mission-time-paused, not input-locked) let
-    //    players queue production against it during the drafts - worst case
-    //    for Zerg, whose starting Larva can build directly with no worker at
-    //    all. Leaving the player with nothing on the map until the game
-    //    actually starts closes that off entirely.
-    g_start_race[player]        = race;
-    g_start_loc[player]         = startLoc;
-    g_start_workerCount[player] = workerCount;
-
-    // 5. Set Resources (Standard Melee Start)
-    PlayerModifyPropertyInt(player, c_playerPropMinerals, c_playerPropOperSetTo, minerals);
-    PlayerModifyPropertyInt(player, c_playerPropVespene, c_playerPropOperSetTo, vespene);
-}
-
-//--------------------------------------------------------------------------------------------------
 // Auto-mine: order each freshly spawned worker to gather the nearest mineral.
 //--------------------------------------------------------------------------------------------------
 void Tardigrade_OrderMine(int race, point loc, unitgroup workers) {
@@ -270,13 +205,109 @@ void Tardigrade_OrderMine(int race, point loc, unitgroup workers) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Public: spawn the deferred workers (+ extra unit) for every player and set
-// them mining. Called once when the game phase begins.
+// Helper: Replace Army
 //--------------------------------------------------------------------------------------------------
-void Tardigrade_SpawnStartingUnits() {
+void SetPlayerRace(int player, int race) {
+    unitgroup existingUnits;
+    unitgroup spawned;
+    unit u;
+    point startLoc;
+    string townHallType;
+    bool skipStartPack;
+    int i;
+    int workerCount = g_draft_startWorkers[player];
+    int minerals = GetRaceStartConfigInt(race, "Minerals");
+    int vespene = GetRaceStartConfigInt(race, "Vespene");
+
+    DumpDraftConfigToLog(race);
+
+    // Mirror the base-game melee worker count; fall back to config if we somehow
+    // captured nothing for this player.
+    if (workerCount <= 0) { workerCount = GetRaceStartConfigInt(race, "WorkerCount"); }
+
+    // 1. Determine Unit Types
+    townHallType = GetRaceUnitType(race, "TownHall");
+    skipStartPack = false; // every race gets a normal melee opening
+
+    // 2. Find Start Location (where the current Town Hall is)
+    existingUnits = UnitGroup(null, player, RegionEntireMap(), UnitFilter(0, 0, (1 << c_targetFilterMissile), (1 << (c_targetFilterDead - 32)) | (1 << (c_targetFilterHidden - 32))), 0);
+    startLoc = PlayerStartLocation(player); // Default fallback
+
+    // Try to find the actual town hall to get precise location
+    i = 1;
+    while (i <= UnitGroupCount(existingUnits, c_unitCountAll)) {
+        u = UnitGroupUnit(existingUnits, i);
+        if (UnitTypeTestAttribute(UnitGetType(u), c_unitAttributeStructure)) {
+            startLoc = UnitGetPosition(u);
+            break;
+        }
+        i = i + 1;
+    }
+
+    // 3. Destroy Old Units (the map's default-race starting pack)
+    UnitGroupLoopBegin(existingUnits);
+    while (!UnitGroupLoopDone()) {
+        UnitRemove(UnitGroupLoopCurrent());
+        UnitGroupLoopStep();
+    }
+    UnitGroupLoopEnd();
+
+    // 4. Spawn ONLY the drafted race's town hall immediately. A structure
+    //    has to exist on the map the whole draft or the native "no
+    //    units/structures left" defeat/stalemate tracking trips for every
+    //    player at once and the game ties before it begins (see the History
+    //    note below) - but workers + the extra unit (e.g. Overlord) do NOT
+    //    need to exist yet, and leaving them out means there is nothing
+    //    to mine or command while the draft UI is still up. They are
+    //    spawned for real once the pre-game countdown finishes, by
+    //    Tardigrade_SpawnDeferredWorkers() (called from Tardigrade_StartGame).
+    //
+    //    History: an earlier version deferred the town hall too, leaving
+    //    every player with zero units/structures for the several real-time
+    //    minutes the remaining drafts take - that's what tripped the tie.
+    //    The fix after that, UnitPauseAll(true)/(false) bracketing the whole
+    //    draft, was **confirmed wrong in a live playtest** - it didn't block
+    //    commands at all. Making units unselectable
+    //    (Tardigrade_DraftLock_Start()/_Stop()) does block commands, but
+    //    applying it to real, already-mining workers for the whole draft
+    //    just relocates the same complaint: units doing something (mining)
+    //    behind the draft UI. Deferring the workers themselves removes that
+    //    complaint at the source; the town hall alone still satisfies
+    //    elimination tracking and still needs the unselectable lock so it
+    //    can't be used to train from directly.
+    libNtve_gf_CreateUnitsWithDefaultFacing(1, townHallType, 0, player, startLoc);
+
+    // Lock the town hall unselectable immediately, rather than waiting up to
+    // 0.5s for Tardigrade_DraftLockScan's next tick to reach it -
+    // Tardigrade_DraftLock_Start() is already running by the time this
+    // function is reached (see RaceDraft_Start).
+    spawned = UnitGroup(null, player, RegionCircle(startLoc, 10.0), UnitFilter(0, 0, 0, 0), 0);
+    i = 1;
+    while (i <= UnitGroupCount(spawned, c_unitCountAll)) {
+        UnitSetState(UnitGroupUnit(spawned, i), c_unitStateSelectable, false);
+        i = i + 1;
+    }
+
+    // Remember race/location/count so Tardigrade_SpawnDeferredWorkers() can
+    // spawn the rest once the countdown finishes.
+    g_start_race[player]        = race;
+    g_start_loc[player]         = startLoc;
+    g_start_workerCount[player] = workerCount;
+
+    // 5. Set Resources (Standard Melee Start)
+    PlayerModifyPropertyInt(player, c_playerPropMinerals, c_playerPropOperSetTo, minerals);
+    PlayerModifyPropertyInt(player, c_playerPropVespene, c_playerPropOperSetTo, vespene);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Public: spawn every player's deferred workers + extra unit (e.g. Overlord)
+// and set the workers mining. Called once, right after the pre-game
+// countdown finishes and right before the draft lock is released, so
+// nothing sits mining or commandable while the draft UI is still up.
+//--------------------------------------------------------------------------------------------------
+void Tardigrade_SpawnDeferredWorkers() {
     int       player;
     int       race;
-    string    townHallType;
     string    workerType;
     string    extraUnitType;
     point     loc;
@@ -289,11 +320,9 @@ void Tardigrade_SpawnStartingUnits() {
         if (race > 0) {
             loc           = g_start_loc[player];
             count         = g_start_workerCount[player];
-            townHallType  = GetRaceUnitType(race, "TownHall");
             workerType    = GetRaceUnitType(race, "Worker");
             extraUnitType = GetRaceUnitType(race, "ExtraUnit");
 
-            libNtve_gf_CreateUnitsWithDefaultFacing(1, townHallType, 0, player, loc);
             libNtve_gf_CreateUnitsWithDefaultFacing(count, workerType, 0, player, loc);
             workers = UnitGroup(workerType, player, RegionCircle(loc, 10.0), UnitFilter(0, 0, 0, 0), 0);
 
@@ -538,6 +567,80 @@ bool RaceDraft_OnClicked(bool testConds, bool runActions) {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Draft lock: unselectable, not paused.
+//
+// UnitPauseAll(true) was tried first and does NOT stop a player from
+// selecting and commanding their Town Hall/workers - confirmed in a live
+// playtest, orders still went through while "paused". Making every
+// player-owned unit unselectable is airtight: no selection means no
+// command card, no hotkey target, nothing to click or drag-box.
+//
+// Runs as a repeating 0.5s scan (mirrors CycleMod_ScanTrigger) rather than
+// a one-shot pass, because Zerg's Hatchery keeps auto-spawning Larva up to
+// its cap for a while after the town hall spawns - each new Larva has to be
+// caught and locked too, or a player could morph units directly off it with
+// zero workers, which is the original exploit this system exists to close.
+//--------------------------------------------------------------------------------------------------
+bool    g_draftLock_active = false;
+trigger g_draftLock_trig = null;
+
+bool Tardigrade_DraftLockScan(bool testConds, bool runActions) {
+    unitgroup ug;
+    unit      u;
+    int       count;
+    int       i;
+
+    while (g_draftLock_active) {
+        ug = UnitGroup(null, c_playerAny, RegionEntireMap(), UnitFilter(0, 0, 0, 0), 0);
+        count = UnitGroupCount(ug, c_unitCountAll);
+        i = 1;
+        while (i <= count) {
+            u = UnitGroupUnit(ug, i);
+            if (UnitGetOwner(u) > 0) {
+                UnitSetState(u, c_unitStateSelectable, false);
+            }
+            i = i + 1;
+        }
+        // c_timeGame, not c_timeReal, would stall this loop for the entire
+        // draft: GameSetMissionTimePaused(true) is active the whole time,
+        // and c_timeGame waits don't advance while mission time is paused
+        // (see Tardigrade_Countdown's comment in TardigradeLogic.galaxy).
+        Wait(0.5, c_timeReal);
+    }
+    return true;
+}
+
+// Public: start locking every player-owned unit unselectable. Call once,
+// right before the draft can spawn anything.
+void Tardigrade_DraftLock_Start() {
+    if (g_draftLock_active) { return; }
+    g_draftLock_active = true;
+    g_draftLock_trig = TriggerCreate("Tardigrade_DraftLockScan");
+    TriggerExecute(g_draftLock_trig, false, false);
+}
+
+// Public: stop the lock and make every player-owned unit selectable again.
+void Tardigrade_DraftLock_Stop() {
+    unitgroup ug;
+    unit      u;
+    int       count;
+    int       i;
+
+    g_draftLock_active = false;
+
+    ug = UnitGroup(null, c_playerAny, RegionEntireMap(), UnitFilter(0, 0, 0, 0), 0);
+    count = UnitGroupCount(ug, c_unitCountAll);
+    i = 1;
+    while (i <= count) {
+        u = UnitGroupUnit(ug, i);
+        if (UnitGetOwner(u) > 0) {
+            UnitSetState(u, c_unitStateSelectable, true);
+        }
+        i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 // Main: Start Draft
 //--------------------------------------------------------------------------------------------------
 void RaceDraft_Start(trigger callback) {
@@ -612,8 +715,14 @@ void RaceDraft_Start(trigger callback) {
         g_draft_p1_is_team1 = false;
     }
 
-    // Pause Game
+    // Pause Game. GameSetMissionTimePaused only stops the mission clock, not
+    // player input - it does NOT stop a player from drag-selecting their
+    // Town Hall and queuing production while the draft dialogs are up.
+    // Tardigrade_DraftLock_Start() closes that off by making every
+    // player-owned unit unselectable for the whole draft (see its own
+    // comment above for why UnitPauseAll doesn't work for this).
     GameSetMissionTimePaused(true);
+    Tardigrade_DraftLock_Start();
     RemoveWorkers();
 
     // Identify referees / spectators now that the two teams are known.

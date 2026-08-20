@@ -39,24 +39,65 @@ Race Draft → Modifier Draft → Unit (Roster) Draft → 3-2-1 countdown → Ga
 - `Tardigrade_OnCycleFinished` → `RosterDraft_Start`
 - `Tardigrade_OnRosterFinished` → `Tardigrade_StartGame`
 
-`Tardigrade_StartGame` applies roster enforcement, runs the countdown, spawns
-starting workers (deferred; auto-mine), builds the in-game HUDs, starts the
-modifier scan loop, and unpauses.
+`Tardigrade_StartGame` applies roster enforcement, runs the countdown, starts
+the modifier scan loop, and unpauses (`GameSetMissionTimePaused(false)` +
+`Tardigrade_DraftLock_Stop()`).
 
 ### 1. Race Draft (`RaceDraft.galaxy`)
 - P1 (the "banner") bans one race, P2 picks from the remaining two, P1 gets the
   last race. In team games each team plays one shared race.
 - Worker count mirrors base melee (counted per race before removal, not
-  hardcoded). Town hall + workers + supply are ALL deferred to game start
-  (`Tardigrade_SpawnStartingUnits`, called from `Tardigrade_StartGame` after
-  the countdown); workers auto-mine. Previously the town hall was spawned
-  immediately in `SetPlayerRace` (Race Draft finish), leaving it sitting on
-  the map — with no workers — through the entire Modifier + Roster Draft.
-  Since `GameSetMissionTimePaused` only pauses the mission timer, not player
-  input, that town hall was clickable/orderable during both drafts; Zerg in
-  particular could already train from Larva with zero workers. Deferring the
-  town hall to the same moment as everything else means a player has
-  literally nothing on the map until the game actually starts.
+  hardcoded). **Only the town hall** is spawned immediately, in
+  `SetPlayerRace` (Race Draft finish); workers + the extra unit (e.g.
+  Overlord) are deferred to `Tardigrade_SpawnDeferredWorkers()`, called from
+  `Tardigrade_StartGame` right after the 3-2-1 countdown finishes, right
+  before the draft lock releases and the game actually unpauses. Getting here
+  took three iterations:
+  - **v1 — spawn everything immediately at Race Draft finish.**
+    `GameSetMissionTimePaused` only pauses the mission timer, not player
+    input, so a real Town Hall sitting idle through the Modifier + Roster
+    Draft was clickable/orderable — Zerg in particular could train from
+    Larva with zero workers.
+  - **v2 — defer the *entire* starting pack (town hall included) to game
+    start.** "Fixed" the exploit but left every player with **zero
+    units/structures** for the several real-time minutes the remaining
+    drafts take. That trips the native "no units/structures = defeated"
+    watchdog for every player on both teams at once, permanently disarming
+    elimination tracking for the match — games stopped ending, always
+    running out the clock into a tie.
+  - **v3 (rejected) — keep v1's immediate full spawn, bracket the draft with
+    `UnitPauseAll(true)`/`(false)`** on the theory that it blocks all unit
+    orders map-wide. **Confirmed wrong in a live playtest** — `UnitPauseAll`
+    did not stop players from selecting and commanding their Town
+    Hall/workers at all; orders went through exactly as before.
+  - **v4 (rejected) — keep v1's immediate full spawn, make every unit
+    unselectable instead** (`Tardigrade_DraftLock_Start()`/`_Stop()`,
+    `UnitSetState(u, c_unitStateSelectable, false)`). This *did* block
+    commands (confirmed) — no selection means no command card, no hotkey
+    target, nothing to click or drag-box — but relocated rather than solved
+    the underlying complaint: real workers sat there mining, visibly, for
+    the whole draft, before the game had "started."
+  - **v5 (current) — split the spawn.** Town hall only, immediately (satisfies
+    elimination tracking, and still needs the unselectable lock so it can't
+    be trained from directly); workers + extra unit deferred to
+    `Tardigrade_SpawnDeferredWorkers()` after the countdown, so nothing mines
+    or exists to command until the game visibly begins.
+  - `Tardigrade_DraftLock_Start()`/`_Stop()` (`RaceDraft.galaxy`, just above
+    `RaceDraft_Start`) still guard the town hall for the whole draft.
+    `SetPlayerRace` locks it unselectable immediately at spawn; a repeating
+    0.5s scan (`Tardigrade_DraftLockScan`, `Wait(0.5, c_timeReal)` — **not**
+    `c_timeGame`, which doesn't advance while mission time is paused, see
+    `Tardigrade_Countdown`) mirrors `CycleMod_ScanTrigger`'s pattern and
+    catches anything the immediate lock misses, chiefly Zerg's Hatchery
+    auto-spawning Larva up to its cap over the following ~30-45s — each new
+    Larva must be locked too, or a player could morph units directly off it
+    with zero workers.
+  - **Not yet verified in a live playtest**: that workers spawning right
+    after the countdown (while `Tardigrade_DraftLock_Stop()` hasn't run yet)
+    doesn't leave a one-frame window where they're briefly selectable before
+    the lock's release sweep runs — should be a non-issue since both happen
+    in the same synchronous call with no `Wait` between them, but confirm
+    in-editor.
 - Defines shared viewer/audience helpers used everywhere:
   `Tardigrade_Viewers()` (all active players incl. spectators),
   `Tardigrade_Audience()` (referees/spectators only), `Tardigrade_HasAudience()`,
@@ -164,7 +205,7 @@ The former "cycle" draft. **Per-player draft, no rotation.**
 | 4 | Predator Protocol | Your attacks heal 30% of damage dealt | `CycleMod_OnUnitDamaged` heals the source |
 | 5 | Eyes Everywhere | Reveals the map + hidden units, **for you only** — excludes neutrals (minerals, Xel'Naga towers, critters) | Buff with `Detect=500 Radar=500 DetectFilters="-;Neutral" RadarFilters="-;Neutral"` on your units |
 | 6 | Entrenchment | Your stationary units get +2 armor / +1 range after 3s | Marker → `TardigradeMod_Entrenched` helper when still |
-| 7 | Arcane Surge | +3 energy/s and +50 max energy | Buff modifying Energy vitals |
+| 7 | Arcane Surge | +2 energy/s | Buff modifying Energy vitals (`VitalRegenArray`, no `VitalMaxArray`) |
 | 8 | Overwatch | First attack after 5s idle: +3 range, +50% damage, consumed on that one shot | Marker → `TardigradeMod_OverwatchReady` helper, added only on the idle→ready edge (guarded by `UnitBehaviorCount`), removed the instant the shot lands in `CycleMod_OnUnitDamaged` |
 | 9 | Battle Blink | Click a unit to short-range teleport it (8 range) | **Clickable ability** `TardigradeAbil_Blink` (`CEffectTeleport`, cloned from the Stalker's Blink minus its tech requirement, own cooldown). Same grant/show mechanism as Medivac Boost |
 | 10 | Veteran Forces | Each kill = permanent **+3% time-speed (haste)**, stacking to 15 | `TardigradeMod_VeteranStack`, `TimeScale=1.03`, `MaxStackCount=15`, added on kill |
@@ -337,3 +378,4 @@ Notes:
 | Dead Adrenal Response code | `c_cycleStateAdrenalReady`/`c_cycleStateWasLow` (custom-value slots 4/5) and `CycleMod_HelperBehavior(5)` are now the same kind of harmless-but-inert leftover, since Battle Blink replaced that mechanic. |
 | Draft-time opponent roster panel, unverified in-editor | Don't confuse with the in-game HUD above (already fixed). `RosterDraft_UpdateRosterPanel`'s dual panel *during the draft itself* (YOUR + OPPONENT, live, shown while picking) already existed in code before this session and looked complete on read-through — if it's not showing up in an actual playtest, that's a rendering/timing bug to hunt for in the editor, not a missing feature to build from scratch. |
 | Everything in this batch needs an SC2 Editor recompile to verify | Per the compiler gotcha below, several of these fixes (ability grants, filters, stalemate override, per-player dialogs) touch areas the VS Code linter cannot validate. |
+| Split immediate/deferred starting-unit spawn, unverified in-editor | Five iterations to get right — see the History note under Race Draft above. Current (v5): only the town hall spawns immediately at Race Draft finish (kept unselectable via `Tardigrade_DraftLock_Start()`/`_Stop()`, confirmed in playtest to actually block commands); workers + extra unit are deferred to `Tardigrade_SpawnDeferredWorkers()`, called after the countdown so nothing mines or is commandable while the draft UI is up. Needs a live playtest to confirm: newly spawned Larva get caught by the 0.5s scan before a player can act on them, and the workers don't have a selectable window between spawning and `Tardigrade_DraftLock_Stop()`'s release sweep. |

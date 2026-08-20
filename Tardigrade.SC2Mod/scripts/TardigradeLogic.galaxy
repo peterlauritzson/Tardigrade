@@ -60,11 +60,15 @@ void Tardigrade_StartGame() {
 
     RosterEnforce_ApplyAll();
 
-    // 3-2-1 countdown while still paused (so nothing can move yet).
+    // 3-2-1 countdown while still paused (so nothing can move yet). Only the
+    // town hall has been on the map (unselectable) since the race draft
+    // finished - see RaceDraft.galaxy SetPlayerRace / Tardigrade_DraftLock_Start.
     Tardigrade_Countdown();
 
-    // Spawn the deferred workers and set them mining.
-    Tardigrade_SpawnStartingUnits();
+    // Now that the countdown is done, spawn the workers + extra unit (e.g.
+    // Overlord) for real and set them mining - nothing sits mining or
+    // commandable while the draft UI was still up.
+    Tardigrade_SpawnDeferredWorkers();
 
     // In-game roster reference HUD (toggle button + your 6 units).
     RosterHUD_Init();
@@ -72,6 +76,7 @@ void Tardigrade_StartGame() {
     // Start the day/dusk/night cycle and unpause.
     CycleMod_StartCycle();
     GameSetMissionTimePaused(false);
+    Tardigrade_DraftLock_Stop();
 
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
         StringToText("<c val=\"FFD700\">The battle begins.</c>"));
