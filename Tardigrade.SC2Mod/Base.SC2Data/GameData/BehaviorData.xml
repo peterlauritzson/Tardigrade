@@ -138,12 +138,19 @@
         <Modification MoveSpeedMultiplier="1.7"/>
     </CBehaviorBuff>
 
+    <!-- Marker only - the actual supply exemption is done in script via
+         UnitSetState(u, c_unitStateUsingSupply, false) in CycleMod.galaxy.
+         A CBehaviorBuff Modification Food=".." field does NOT work for this:
+         it only changes the unit's own stat, and the player's supply-used
+         total isn't re-derived from that live, only on spawn/death/morph, so
+         a buff applied well after the worker already exists has no visible
+         effect. UnitSetState's UsingSupply flag is the one thing the engine
+         does re-check live. -->
     <CBehaviorBuff id="TardigradeMod_WorkersNoSupply">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
         <Duration value="8"/>
         <MaxStackCount value="1"/>
-        <Modification Food="-1"/>
     </CBehaviorBuff>
 
     <CBehaviorBuff id="TardigradeMod_PredatorProtocol">

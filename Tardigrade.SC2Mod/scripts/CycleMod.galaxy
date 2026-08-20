@@ -1091,8 +1091,16 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
         return;
     }
     if (beh == "TardigradeMod_WorkersNoSupply") {
-        if (CycleMod_UnitModActive(u, beh) && CycleMod_IsWorker(u)) { UnitBehaviorAdd(u, beh, u, 1); }
-        else { libNtve_gf_SetBehaviorCount(u, beh, u, 0); }
+        // The buff is a visual marker only; UnitSetState is what actually
+        // exempts the worker from the player's supply-used count, and is the
+        // one thing the engine re-checks live (see BehaviorData.xml).
+        if (CycleMod_UnitModActive(u, beh) && CycleMod_IsWorker(u)) {
+            UnitBehaviorAdd(u, beh, u, 1);
+            UnitSetState(u, c_unitStateUsingSupply, false);
+        } else {
+            libNtve_gf_SetBehaviorCount(u, beh, u, 0);
+            UnitSetState(u, c_unitStateUsingSupply, true);
+        }
         return;
     }
     if (CycleMod_UnitModActive(u, beh)) { UnitBehaviorAdd(u, beh, u, 1); }

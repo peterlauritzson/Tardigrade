@@ -34,63 +34,398 @@
          exists to show/hide at runtime. CycleMod.galaxy toggles visibility
          per-unit based on which side drafted which modifier - a unit whose
          side didn't draft either keeps both hidden all game.
+
+         A granted ability with no CardLayouts entry has nowhere to render -
+         UnitAbilityShow toggling it "visible" does nothing if the command
+         card never reserved it a cell (confirmed against Blizzard's own
+         pattern: their KD8Charge patch to the Reaper ships an AbilArray grant
+         paired with an explicit CardLayouts slot, not a bare grant). Every
+         unit below therefore gets an explicit slot: Blink at Row 1 Column 2,
+         Medivac Boost at Row 1 Column 3 - deliberately different columns of
+         the SAME row so both can be shown and used at once, not one hiding
+         behind the other.
+
+         History: Row 3 (tried first, on the theory that no vanilla unit's
+         LayoutButtons ever used it) turned out not to render at all in the
+         live editor - the command-card panel apparently caps at 3 visible
+         rows regardless of what the data allows. Row 1 Column 0/1 (tried
+         next) DID render, but playtesting across several units found it
+         collides with existing vanilla buttons often enough to matter
+         (e.g. Ghost's Nuke/WeaponsFree, Infestor's Fungal Growth tend to
+         sit in the low columns). Column 2/3 - still Row 1, just further
+         right - was chosen as less occupied based on that same testing.
+         Still not individually verified for all 52 units below; if a button
+         is missing or covers up a different ability on a specific one, nudge
+         its Row/Column in that unit's CardLayouts entry.
     ===================================================================== -->
     <!-- Terran -->
-    <CUnit id="Marine"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Marauder"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Reaper"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Ghost"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Hellion"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="HellionTank"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="WidowMine"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Cyclone"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="SiegeTank"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Thor"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="VikingFighter"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Medivac"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Liberator"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Raven"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Banshee"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Battlecruiser"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="SCV"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Marine">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Marauder">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Reaper">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Ghost">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Hellion">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="HellionTank">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="WidowMine">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Cyclone">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="SiegeTank">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Thor">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="VikingFighter">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Medivac">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Liberator">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Raven">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Banshee">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Battlecruiser">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="SCV">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
 
     <!-- Protoss -->
-    <CUnit id="Zealot"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Stalker"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Sentry"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Adept"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="HighTemplar"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="DarkTemplar"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Immortal"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Colossus"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Disruptor"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Archon"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="WarpPrism"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Phoenix"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="VoidRay"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Oracle"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Carrier"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Tempest"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Mothership"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Observer"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Probe"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Zealot">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Stalker">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Sentry">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Adept">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="HighTemplar">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="DarkTemplar">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Immortal">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Colossus">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Disruptor">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Archon">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="WarpPrism">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Phoenix">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="VoidRay">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Oracle">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Carrier">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Tempest">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Mothership">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Observer">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Probe">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
 
     <!-- Zerg -->
-    <CUnit id="Zergling"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Baneling"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Roach"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Ravager"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Hydralisk"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="LurkerMP"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Infestor"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="SwarmHostMP"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Ultralisk"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Mutalisk"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Corruptor"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="BroodLord"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Viper"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Queen"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Overseer"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
-    <CUnit id="Drone"><AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/></CUnit>
+    <CUnit id="Zergling">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Baneling">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Roach">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Ravager">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Hydralisk">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="LurkerMP">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Infestor">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="SwarmHostMP">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Ultralisk">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Mutalisk">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Corruptor">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="BroodLord">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Viper">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Queen">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Overseer">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Drone">
+        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
+            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+        </CardLayouts>
+    </CUnit>
 
 </Catalog>

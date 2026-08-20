@@ -160,7 +160,7 @@ The former "cycle" draft. **Per-player draft, no rotation.**
 |---|---|---|---|
 | 1 | Open Skies | All your weapons can hit ground and air | Per-player weapon `TargetFilters` via `CatalogFieldValueSet(..., player, ...)`; strips `Ground`/`Air` from required+excluded |
 | 2 | Medivac Boost | Click a unit to burst its move speed (afterburners) | **Clickable ability** `TardigradeAbil_MedivacBoost` → applies buff `TardigradeMod_MedivacBoost` (`MoveSpeedMultiplier=1.7`, 15s cooldown, no cost). Granted hidden to every combat unit + worker; shown/enabled only while the side's pick is active (`CycleMod_UpdateAbilityMods`) |
-| 3 | Free Labor | Your workers no longer cost supply | Buff `TardigradeMod_WorkersNoSupply` (`Food=-1`), applied only to `CycleMod_IsWorker` units (SCV/Probe/Drone) |
+| 3 | Free Labor | Your workers no longer cost supply | `UnitSetState(u, c_unitStateUsingSupply, false)` on `CycleMod_IsWorker` units (SCV/Probe/Drone); buff `TardigradeMod_WorkersNoSupply` is applied alongside as a visual marker only, it does nothing mechanically |
 | 4 | Predator Protocol | Your attacks heal 30% of damage dealt | `CycleMod_OnUnitDamaged` heals the source |
 | 5 | Eyes Everywhere | Reveals the map + hidden units, **for you only** — excludes neutrals (minerals, Xel'Naga towers, critters) | Buff with `Detect=500 Radar=500 DetectFilters="-;Neutral" RadarFilters="-;Neutral"` on your units |
 | 6 | Entrenchment | Your stationary units get +2 armor / +1 range after 3s | Marker → `TardigradeMod_Entrenched` helper when still |
@@ -179,14 +179,48 @@ Notes:
   `TardigradeMutualDestructionDamage`/`Search` effects and
   `TardigradeMod_AdrenalResponse`/`AdrenalBoost` buffs are deleted, not kept
   dead — unlike War Economy, nothing else referenced them.
+- **A `CBehaviorBuff Modification Food=".."` field does NOT retroactively
+  change a player's supply-used total for a unit that's already alive** — the
+  engine only re-derives that aggregate on spawn/death/morph, not
+  continuously from each unit's current stats, so a buff granted well after
+  the worker already exists (e.g. at the 3:00 activation delay) had no
+  visible effect. First cut of Free Labor used exactly this (and with the
+  wrong sign besides — `Food="-1"` stacks with the worker's own base `-1`,
+  making it cost *more* supply, not less). Fixed by using
+  `UnitSetState(u, c_unitStateUsingSupply, false)` instead — a per-unit
+  boolean the engine does check live, and the correct tool for "this specific
+  unit doesn't count toward supply" in general.
 - **Ability-based modifiers (2, 9) skip the passive-buff scan path entirely.**
   `CycleMod_ApplyPickedBehavior` special-cases both behavior-id strings and
   returns without touching a buff; `CycleMod_UpdateAbilityMods` (called once
   per unit per scan tick, draft mode only) calls `UnitAbilityShow` +
   `UnitAbilityEnable` instead. The abilities are granted **hidden** to every
-  combat unit + worker via `AbilArray` in `UnitData.xml` (~50 units) so
+  combat unit + worker via `AbilArray` in `UnitData.xml` (52 units) so
   there's something to show/hide — a unit whose side didn't draft either
   modifier just keeps both permanently hidden.
+- **A granted ability with no `CardLayouts` entry never renders, even when
+  shown.** First cut of this feature only added `AbilArray` grants with no
+  card slot, on the assumption a hidden ability would auto-place into an open
+  command-card cell once shown — it doesn't; `UnitAbilityShow`/`Enable` toggle
+  visibility/usability of an *already-positioned* button, they don't create a
+  position. Confirmed against Blizzard's own data: their KD8Charge patch to
+  the Reaper (`voidmulti.sc2mod`) ships the `AbilArray` grant together with an
+  explicit `CardLayouts` slot, repositioning an existing button to make room.
+  First fix attempt gave both abilities an explicit slot at `Row="3"`
+  (grep-confirmed no vanilla unit's `UnitData.xml` uses a row above 2 across
+  the whole liberty/swarm/void/voidmulti chain) — **confirmed in a live
+  playtest that Row 3 doesn't render at all**, so the command-card panel
+  evidently caps at 3 visible rows (0–2) regardless of what the data allows.
+  Moved to `Row="1" Column="0"`/`Column="1"` next — rendered, but playtesting
+  across several units found the low columns collide with existing vanilla
+  buttons often enough to matter (Ghost's Nuke Calldown/Weapons Free,
+  Infestor's Fungal Growth, etc. tend to sit there). Currently
+  `Row="1" Column="2"` (Blink) / `Column="3"` (Medivac Boost) — same row,
+  still two separate columns so both can be shown/used on the same unit at
+  once, just shifted right based on that playtest feedback. **Still not
+  individually verified per unit** — if a button is missing or covers up a
+  different ability on a specific unit, nudge that unit's `Row`/`Column` in
+  `UnitData.xml`.
 - Other War Economy leftovers still compiled in but inert: the
   `c_cycleStateEconomicEgg` custom-value slot, `CycleMod_IsEconomicEgg`, and the
   `CycleMod_OnEconomicEggStarted` trigger (still registered in
@@ -293,9 +327,10 @@ Notes:
 ## Known TODO / tuning
 | Item | Notes |
 |---|---|
-| Modifier balance | `MoveSpeedMultiplier=1.7`, `TimeScale=1.03×15`, `Food=-1`, ability cooldowns (12s Blink / 15s Medivac Boost, both uncosted), etc. are first-pass. |
+| Modifier balance | `MoveSpeedMultiplier=1.7`, `TimeScale=1.03×15`, ability cooldowns (12s Blink / 15s Medivac Boost, both uncosted), etc. are first-pass. |
 | Activation delay | 3:00 is a starting value (`c_cycleActivationDelay`). |
 | Battle Blink has no visual/audio feedback | `TardigradeAbil_Blink` teleports silently — the Stalker's Blink flash/sound actors are keyed to effect id `Blink`, not reusable under our separate id without duplicating those actor entries too. Not attempted blind (unverifiable without the SC2 Editor); functional but silent. |
+| Command-card placement, not checked per-unit | Both ability buttons sit at `Row="1"` (Blink Column 2, Medivac Boost Column 3) on all 52 granted units — Row 3 didn't render at all, and Row 1 Column 0/1 collided with existing buttons on several units in playtest (Ghost, Infestor, …), so it moved to Column 2/3. Still not checked unit-by-unit; if a button is missing or covering an existing ability on a specific unit, nudge that unit's `Row`/`Column`. |
 | In-game modifier panel | Static top-center, 214px tall — reposition/shrink if intrusive. |
 | Stale comments | `RosterDraft.galaxy` + `RosterEnforce.galaxy` headers still say "2 core + 4 drafted" (behavior is 6 drafted, no core); `RosterDraft.galaxy` also lists the wrong snake order and a "12-unit pool". `TardigradeLogic.galaxy` still calls the modifier step "the cycle" / "day/dusk/night". |
 | Dead War Economy code | `c_cycleStateEconomicEgg`, `CycleMod_IsEconomicEgg`, `CycleMod_OnEconomicEggStarted` and helper indices 1–2 are inert but still compiled/registered. |
