@@ -20,6 +20,7 @@ Day/Dusk/Night phase system into a **per-player modifier draft** (see below).
 |---|---|---|
 | `CURRENT_STATE.md` (this file) | Implementation reference — wiring, constants, data, gotchas. | **Authoritative.** Verified against the source. |
 | `README.md` | Player-facing overview + project layout. | Current (rewritten to match this file). |
+| `DESIGN_DEFENSE.md` | Design intent for the early-defense / anti-snowball layer (tactical bar, refund, alerts, high ground). | Design only — **nothing in it is implemented**. Includes the rejected-ideas list and the rules new proposals must satisfy. |
 | `references/readme.md` | How to search the extracted Blizzard data. | Current. Note: all of `mods/` exists locally, but only `mods/voidmulti.sc2mod/` is tracked in git (see `.gitignore`). |
 | Script header comments | — | **Partly stale**, flagged inline below. Constants and code win. |
 
