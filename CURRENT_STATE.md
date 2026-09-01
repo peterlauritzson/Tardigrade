@@ -190,7 +190,8 @@ The former "cycle" draft. **Per-player draft, no rotation.**
   + team groups) → whether that side drafted the behavior.
 - Ownership helpers: `CycleMod_OwnerIsP1/P2`, `CycleMod_P1Team/P2Team`,
   `CycleMod_P1HasModIdx/P2HasModIdx`.
-- Event handlers: `CycleMod_OnUnitDamaged` (Predator), `CycleMod_OnUnitDied`
+- Event handlers: `CycleMod_OnUnitDamaged` (Predator, Overwatch consumption),
+  `CycleMod_OnUnitStartedAttack` (Overwatch idle timer), `CycleMod_OnUnitDied`
   (Mutual Destruction, Veteran Forces). Conditional per-unit state handled in
   `CycleMod_UpdateConditionalBehaviors` (Entrenchment, Overwatch, Adrenal).
 - In-game reference panel `CycleMod_InitDraftPanel`: top-center, per-viewer
@@ -203,11 +204,11 @@ The former "cycle" draft. **Per-player draft, no rotation.**
 | 1 | Open Skies | All your weapons can hit ground and air | Per-player weapon `TargetFilters` via `CatalogFieldValueSet(..., player, ...)`; strips `Ground`/`Air` from required+excluded |
 | 2 | Medivac Boost | Click a unit to burst its move speed (afterburners) | **Clickable ability** `TardigradeAbil_MedivacBoost` → applies buff `TardigradeMod_MedivacBoost` (`MoveSpeedMultiplier=1.7`, 15s cooldown, no cost). Granted hidden to every combat unit + worker; shown/enabled only while the side's pick is active (`CycleMod_UpdateAbilityMods`) |
 | 3 | Free Labor | Your workers no longer cost supply | `UnitSetState(u, c_unitStateUsingSupply, false)` on `CycleMod_IsWorker` units (SCV/Probe/Drone); buff `TardigradeMod_WorkersNoSupply` is applied alongside as a visual marker only, it does nothing mechanically |
-| 4 | Predator Protocol | Your attacks heal 30% of damage dealt | `CycleMod_OnUnitDamaged` heals the source |
+| 4 | Predator Protocol | Your attacks heal 30% of damage dealt, health first then shields | `CycleMod_OnUnitDamaged` heals the source: life is topped up to max and the remainder spills into shields (capped at max), so the mod still does something at full HP |
 | 5 | Eyes Everywhere | Reveals the map + hidden units, **for you only** — excludes neutrals (minerals, Xel'Naga towers, critters) | Buff with `Detect=500 Radar=500 DetectFilters="-;Neutral" RadarFilters="-;Neutral"` on your units |
-| 6 | Entrenchment | Your stationary units get +2 armor / +1 range after 3s | Marker → `TardigradeMod_Entrenched` helper when still |
+| 6 | Entrenchment | Your stationary units get +2 armor / +1 range after 6s | Marker → `TardigradeMod_Entrenched` helper when still. Threshold `c_cycleEntrenchDelay` = 6, i.e. the design doc's 3 normal-speed seconds doubled, because `GameGetMissionTime` counts game seconds and the game runs on Faster |
 | 7 | Arcane Surge | +2 energy/s | Buff modifying Energy vitals (`VitalRegenArray`, no `VitalMaxArray`) |
-| 8 | Overwatch | First attack after 5s idle: +3 range, +50% damage, consumed on that one shot | Marker → `TardigradeMod_OverwatchReady` helper, added only on the idle→ready edge (guarded by `UnitBehaviorCount`), removed the instant the shot lands in `CycleMod_OnUnitDamaged` |
+| 8 | Overwatch | First attack after 10s idle: +50% damage, consumed on that one shot | Marker → `TardigradeMod_OverwatchReady` helper (`DamageDealtFraction` only), added on the idle→ready edge (guarded by `UnitBehaviorCount`), removed the instant the shot lands in `CycleMod_OnUnitDamaged`. Threshold `c_cycleOverwatchDelay` = 10, the doc's 5 normal-speed seconds doubled for the same game-speed reason as Entrenchment. **No range bonus** — it used to grant +3 `WeaponRange`/`WeaponScanBonus`, which was removed on the first damage event and stranded the unit holding a target it could no longer reach. Idle is tracked by `CycleMod_OnUnitStartedAttack` *and* the damage handler; the damage handler does its Overwatch bookkeeping above the structure filter, or static defence would arm and never consume |
 | 9 | Battle Blink | Click a unit to short-range teleport it (8 range) | **Clickable ability** `TardigradeAbil_Blink` (`CEffectTeleport`, cloned from the Stalker's Blink minus its tech requirement, own cooldown). Same grant/show mechanism as Medivac Boost |
 | 10 | Veteran Forces | Each kill = permanent **+3% time-speed (haste)**, stacking to 15 | `TardigradeMod_VeteranStack`, `TimeScale=1.03`, `MaxStackCount=15`, added on kill |
 

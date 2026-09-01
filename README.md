@@ -56,11 +56,11 @@ The 10 modifiers:
 | 1 | Open Skies | All your weapons can target ground and air |
 | 2 | Medivac Boost | Clickable ability: burst a unit's move speed (the Medivac's afterburners), 15s cooldown |
 | 3 | Free Labor | Your workers no longer cost supply |
-| 4 | Predator Protocol | Your attacks restore 30% of the damage dealt |
+| 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full |
 | 5 | Eyes Everywhere | The battlefield and hidden units are revealed, for you only (excludes neutrals — minerals, Xel'Naga towers, critters) |
-| 6 | Entrenchment | Your stationary units gain +2 armor and +1 range after 3 seconds |
+| 6 | Entrenchment | Your stationary units gain +2 armor and +1 range after 6 seconds |
 | 7 | Arcane Surge | +2 energy per second |
-| 8 | Overwatch | Your first attack after 5 seconds idle gains +3 range and +50% damage — for that one shot only |
+| 8 | Overwatch | Your first attack after 10 seconds idle deals +50% damage — for that one shot only |
 | 9 | Battle Blink | Clickable ability: short-range teleport (8 range) any unit, 12s cooldown |
 | 10 | Veteran Forces | Each kill grants a permanent +3% time-speed (haste) buff, stacking to 15 |
 

@@ -200,12 +200,20 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
+    <!-- Damage only, no WeaponRange/WeaponScanBonus. Granting reach for exactly
+         one shot does not compose with a sustained engagement: the unit would
+         acquire and fire at the extended range, then have the range stripped on
+         the first damage event and be left holding a target it could no longer
+         reach - visibly starting attack cycles that abort before the weapon
+         fires. Duration is long because the script owns removal (consumed in
+         CycleMod_OnUnitDamaged); a short duration made the buff expire and
+         instantly re-arm on the next scan tick. -->
     <CBehaviorBuff id="TardigradeMod_OverwatchReady">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
-        <Duration value="6"/>
+        <Duration value="300"/>
         <MaxStackCount value="1"/>
-        <Modification WeaponRange="3" WeaponScanBonus="3">
+        <Modification>
             <DamageDealtFraction index="Melee" value="0.5"/>
             <DamageDealtFraction index="Ranged" value="0.5"/>
             <DamageDealtFraction index="Splash" value="0.5"/>

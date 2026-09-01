@@ -32,6 +32,14 @@ const int  c_cyclePickTotal  = 6;   // total picks (3 per player)
 const int  c_cyclePicksEach  = 3;
 const fixed c_cycleActivationDelay = 180.0;  // buffs go live 3 minutes into the game
 
+// Idle/still thresholds for the two "hold position and be rewarded" modifiers.
+// GameGetMissionTime() counts game seconds, and ladder games run on Faster, so
+// game seconds tick by noticeably quicker than wall clock. The design doc's
+// numbers (3s Entrenchment, 5s Overwatch) are in normal-speed seconds, so they
+// are doubled here to land near the intended wall-clock feel.
+const int c_cycleEntrenchDelay  = 6;   // doc: 3s still before Entrenched
+const int c_cycleOverwatchDelay = 10;  // doc: 5s idle before Overwatch arms
+
 // ── Draft state ──────────────────────────────────────────────────────────────
 trigger g_cycle_callback = null;
 int     g_cycle_p1;                 // Player A (picks first)
@@ -74,6 +82,7 @@ int    g_cycle_hud      = c_invalidDialogId;
 int    g_cycle_hudTitle = c_invalidDialogControlId;
 int[4] g_cycle_hudRow;   // [1..3] one row per phase (Day / Dusk / Night)
 trigger g_cycle_damageTrig = null;
+trigger g_cycle_attackTrig = null;
 trigger g_cycle_deathTrig  = null;
 
 const int c_cycleStateRegistered   = 0;
@@ -141,7 +150,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
     if (idx == 6)  { return "stationary units gain +2 armor and +1 range"; }
     if (idx == 7)  { return "+2 energy/sec"; }
-    if (idx == 8)  { return "first attack after 5s gains range and damage"; }
+    if (idx == 8)  { return "first attack after 10s idle deals +50% damage"; }
     if (idx == 9)  { return "click a unit to short-range teleport it"; }
     if (idx == 10) { return "kills grant permanent +3% time speed, stacking to 15"; }
     return "";
@@ -901,32 +910,80 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     unit  source;
     int   targetIndex;
     fixed currentLife;
+    fixed maxLife;
+    fixed currentShields;
+    fixed maxShields;
     fixed healing;
+    fixed overflow;
 
     target = EventUnit();
     source = EventUnitDamageSourceUnit();
-    if (source == null || !CycleMod_IsCombatUnit(source)) { return true; }
+    if (source == null) { return true; }
+
+    // Overwatch bookkeeping runs BEFORE the structure filter below. The scan
+    // arms static defence exactly like a mobile unit, so when a cannon's damage
+    // bailed out here it never registered an attack and never consumed the
+    // buff - leaving every cannon, turret and spine permanently buffed instead
+    // of getting one bonus shot. Both this and CycleMod_OnUnitStartedAttack
+    // reset the idle timer, so a missed event on either path cannot strand a
+    // unit in the armed state.
+    UnitSetCustomValue(source, c_cycleStateLastAttack, GameGetMissionTime());
+
+    // Consume Overwatch's bonus damage the instant this shot lands, so it
+    // covers exactly the one attack instead of lingering for several.
+    if (UnitBehaviorCount(source, "TardigradeMod_OverwatchReady") > 0) {
+        libNtve_gf_SetBehaviorCount(source, "TardigradeMod_OverwatchReady", source, 0);
+    }
+
+    if (!CycleMod_IsCombatUnit(source)) { return true; }
 
     targetIndex = FixedToInt(UnitGetCustomValue(target, c_cycleStateRegistered));
     if (targetIndex > 0 && targetIndex < c_cycleWeaponLimit) {
         g_cycle_lastAttacker[targetIndex] = source;
     }
 
-    UnitSetCustomValue(source, c_cycleStateLastAttack, GameGetMissionTime());
-
-    // Consume Overwatch's bonus range/damage the instant this shot lands, so
-    // it covers exactly the one attack instead of lingering for its full buff
-    // duration (which let it cover several shots, and could expire mid-windup
-    // and desync the attack animation from an already-fired/failed shot).
-    if (UnitBehaviorCount(source, "TardigradeMod_OverwatchReady") > 0) {
-        libNtve_gf_SetBehaviorCount(source, "TardigradeMod_OverwatchReady", source, 0);
-    }
-
+    // Predator Protocol tops up life first, then spills whatever is left over
+    // into shields - otherwise the mod is dead weight on a full-health Protoss
+    // unit that has taken shield damage, or on any unit at full HP.
     if (CycleMod_UnitModActive(source, "TardigradeMod_PredatorProtocol")) {
         currentLife = UnitGetPropertyFixed(source, c_unitPropLife, c_unitPropCurrent);
+        maxLife     = UnitGetPropertyFixed(source, c_unitPropLifeMax, c_unitPropCurrent);
         healing     = EventUnitDamageAmount() * 0.30;
-        UnitSetPropertyFixed(source, c_unitPropLife, currentLife + healing);
+
+        if (currentLife + healing > maxLife) {
+            overflow = currentLife + healing - maxLife;
+            UnitSetPropertyFixed(source, c_unitPropLife, maxLife);
+        } else {
+            overflow = 0.0;
+            UnitSetPropertyFixed(source, c_unitPropLife, currentLife + healing);
+        }
+
+        if (overflow > 0.0) {
+            maxShields = UnitGetPropertyFixed(source, c_unitPropShieldsMax, c_unitPropCurrent);
+            if (maxShields > 0.0) {
+                currentShields = UnitGetPropertyFixed(source, c_unitPropShields, c_unitPropCurrent);
+                if (currentShields + overflow > maxShields) {
+                    UnitSetPropertyFixed(source, c_unitPropShields, maxShields);
+                } else {
+                    UnitSetPropertyFixed(source, c_unitPropShields, currentShields + overflow);
+                }
+            }
+        }
     }
+    return true;
+}
+
+// "Has this unit attacked recently?" is what Overwatch's idle timer actually
+// wants to know, and that is a weapon question rather than a damage question.
+// The damage event alone answers it badly: it misses a shot whose damage never
+// lands (target died mid-flight, damage fully absorbed), and it counts damage
+// that is not an attack at all - splash clipping a second target, a Baneling
+// popping, spell damage - as "still fighting". Started-attack is the direct
+// signal and fires for structures too. Kept alongside the damage-event reset in
+// CycleMod_OnUnitDamaged rather than replacing it, so neither path going quiet
+// can leave a unit permanently armed.
+bool CycleMod_OnUnitStartedAttack(bool testConds, bool runActions) {
+    UnitSetCustomValue(EventUnit(), c_cycleStateLastAttack, GameGetMissionTime());
     return true;
 }
 
@@ -983,20 +1040,21 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
             UnitSetCustomValue(u, c_cycleStateLastX, x);
             UnitSetCustomValue(u, c_cycleStateLastY, y);
             UnitSetCustomValue(u, c_cycleStateStillTime, now);
-        } else if (FixedToInt(now - UnitGetCustomValue(u, c_cycleStateStillTime)) >= 3) {
+        } else if (FixedToInt(now - UnitGetCustomValue(u, c_cycleStateStillTime)) >= c_cycleEntrenchDelay) {
             CycleMod_AddHelperBehavior(u, 3);
         }
     } else {
         UnitSetCustomValue(u, c_cycleStateStillTime, now);
     }
 
-    // Overwatch's bonus is meant for exactly one shot: only grant it on the
+    // Overwatch's +50% is meant for exactly one shot: only grant it on the
     // idle->ready edge (guarded by UnitBehaviorCount below) so it isn't
     // endlessly re-applied - and re-armed - every 0.5s scan tick while the
     // unit sits idle waiting for a target. CycleMod_OnUnitDamaged consumes it
-    // the instant that one shot lands.
+    // the instant that one shot lands. Note this arms structures too, which is
+    // why the damage handler must track them (see CycleMod_OnUnitDamaged).
     if (CycleMod_UnitModActive(u, "TardigradeMod_Overwatch")
-        && FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)) >= 5
+        && FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)) >= c_cycleOverwatchDelay
         && UnitBehaviorCount(u, "TardigradeMod_OverwatchReady") == 0) {
         CycleMod_AddHelperBehavior(u, 4);
     }
@@ -1330,9 +1388,11 @@ void CycleMod_StartCycle() {
     }
 
     g_cycle_damageTrig = TriggerCreate("CycleMod_OnUnitDamaged");
+    g_cycle_attackTrig = TriggerCreate("CycleMod_OnUnitStartedAttack");
     g_cycle_deathTrig  = TriggerCreate("CycleMod_OnUnitDied");
     TriggerAddEventUnitDamaged(g_cycle_damageTrig, null,
         c_unitDamageTypeAny, c_unitDamageEither, null);
+    TriggerAddEventUnitStartedAttack(g_cycle_attackTrig, null);
     TriggerAddEventUnitDied(g_cycle_deathTrig, null);
 
     tEconomicEgg = TriggerCreate("CycleMod_OnEconomicEggStarted");
