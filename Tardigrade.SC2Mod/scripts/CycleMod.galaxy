@@ -94,10 +94,19 @@ const int c_cycleStateWasLow       = 5;
 const int c_cycleStateLastAttack   = 6;
 const int c_cycleStateEconomicEgg  = 7;
 const int c_cycleWeaponLimit       = 2048;
+const int c_cycleSplashEffectCount = 14;
 string[2048] g_cycle_weaponEntry;
 string[2048] g_cycle_weaponFilter;
 int          g_cycle_weaponCount = 0;
 bool         g_cycle_openSkiesEnabled = false;
+
+// Splash/beam searches Open Skies has to patch alongside weapon TargetFilters.
+// Sized with a literal (like g_cycle_weaponEntry above) rather than the constant
+// - keep it >= c_cycleSplashEffectCount when adding entries.
+string[32]   g_cycle_splashEntry;
+string[32]   g_cycle_splashFilter;
+int          g_cycle_splashCount  = 0;
+bool         g_cycle_splashCached = false;
 unit[2048]   g_cycle_lastAttacker;
 int          g_cycle_registeredCount = 0;
 
@@ -838,6 +847,97 @@ void CycleMod_EnsureWeaponCache() {
     g_cycle_weaponCount = catalogCount;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Open Skies, part two: splash and beam searches.
+//
+// Patching weapon TargetFilters only decides whether a unit may *target* the
+// other plane. The damage a splash or beam weapon spreads around that target is
+// applied by a separate effect search with its own SearchFilters, in a different
+// catalog, and those stay plane-locked unless patched as well. Without this a
+// Siege Tank with Open Skies can shoot a Mutalisk but its three blast rings
+// never find air units, and a Thor's AA missiles never splash onto ground.
+//
+// This is a curated list, not a sweep of the effect catalog. 97 effects in the
+// Blizzard data carry plane tokens in SearchFilters, and most of them are
+// campaign/co-op units, destructible-rock rubble, or abilities that use the
+// plane deliberately (ForceField placement, Blinding Cloud) - stripping those
+// would change things Open Skies has no business touching. Every entry below was
+// traced from a melee unit's weapon through to the effect carrying the search.
+//
+// Deliberately absent: Liberator AG (design call - stays ground-only, and its
+// zone gate is a ValidatorArray that filter rewriting cannot fix anyway) and
+// Broodlord (spawning broodlings on the ground is intended). Phoenix
+// (IonCannonsULeft/URight), Battlecruiser (BattlecruiserAntiAirSearch) and
+// Disruptor (PurificationNova*) are plane-locked too but were left out as
+// unverified - confirm the melee weapon actually reaches them before adding.
+string CycleMod_SplashEffect(int idx) {
+    // Ground-locked: these would never splash onto air.
+    if (idx == 1)  { return "CrucioShockCannonBlast"; }          // Siege Tank (sieged)
+    if (idx == 2)  { return "CrucioShockCannonDirected"; }       // Siege Tank (sieged)
+    if (idx == 3)  { return "KaiserBladesSearch"; }              // Ultralisk cleave
+    if (idx == 4)  { return "KaiserBladesDamage"; }              // Ultralisk cleave
+    if (idx == 5)  { return "ThermalLancesE"; }                  // Colossus beam
+    if (idx == 6)  { return "ThermalLancesEReverse"; }           // Colossus beam
+    if (idx == 7)  { return "LurkerMPSearch"; }                  // Lurker spines
+    if (idx == 8)  { return "InfernalFlameThrowerE"; }           // Hellion flame line
+    if (idx == 9)  { return "HellionTankSearch"; }               // Hellbat flame line
+    if (idx == 10) { return "VolatileBurstU"; }                  // Baneling explosion
+    if (idx == 11) { return "VolatileBurstU2"; }                 // Baneling explosion
+    // Air-locked: these would never splash onto ground.
+    if (idx == 12) { return "JavelinMissileLaunchersDamage"; }   // Thor AA
+    if (idx == 13) { return "LanceMissileLaunchersDamage"; }     // Thor AP high impact
+    if (idx == 14) { return "LiberatorMissileDamage"; }          // Liberator AA
+    return "";
+}
+
+// Cache the shipped SearchFilters so phase mode can restore them on toggle off.
+// Entries that don't resolve (a data patch renames or drops one) are skipped
+// rather than assumed - CatalogFieldValueSet on a bad id is a silent no-op, and
+// a silently missing splash fix is exactly the class of bug this whole pass is
+// fixing. g_cycle_splashCached guards the build separately from the count, so a
+// list that legitimately resolves to nothing isn't rescanned on every call.
+void CycleMod_EnsureSplashCache() {
+    int i;
+    string effect;
+    string filters;
+
+    if (g_cycle_splashCached) { return; }
+    i = 1;
+    while (i <= c_cycleSplashEffectCount) {
+        effect = CycleMod_SplashEffect(i);
+        if (effect != "" && CatalogEntryIsValid(c_gameCatalogEffect, effect)) {
+            filters = CatalogFieldValueGet(c_gameCatalogEffect, effect, "SearchFilters", 1);
+            if (filters != "") {
+                g_cycle_splashEntry[g_cycle_splashCount]  = effect;
+                g_cycle_splashFilter[g_cycle_splashCount] = filters;
+                g_cycle_splashCount = g_cycle_splashCount + 1;
+            }
+        }
+        i = i + 1;
+    }
+    g_cycle_splashCached = true;
+}
+
+// Apply (or restore) the splash searches for one player. Same string surgery as
+// the weapon pass: split on ';', drop Ground/Air from both halves.
+void CycleMod_SplashFiltersForPlayer(int player, bool enabled) {
+    int i;
+    string filters;
+
+    CycleMod_EnsureSplashCache();
+    i = 0;
+    while (i < g_cycle_splashCount) {
+        if (enabled) {
+            filters = CycleMod_OpenSkiesFilters(g_cycle_splashFilter[i]);
+        } else {
+            filters = g_cycle_splashFilter[i];
+        }
+        CatalogFieldValueSet(c_gameCatalogEffect, g_cycle_splashEntry[i],
+            "SearchFilters", player, filters);
+        i = i + 1;
+    }
+}
+
 // Legacy (phase mode): globally toggle Open Skies for every player.
 void CycleMod_SetOpenSkies(bool enabled) {
     int i;
@@ -863,6 +963,12 @@ void CycleMod_SetOpenSkies(bool enabled) {
         }
         i = i + 1;
     }
+
+    player = 1;
+    while (player <= 16) {
+        CycleMod_SplashFiltersForPlayer(player, enabled);
+        player = player + 1;
+    }
     g_cycle_openSkiesEnabled = enabled;
 }
 
@@ -880,6 +986,9 @@ void CycleMod_OpenSkiesForPlayer(int player) {
         CatalogFieldValueSet(c_gameCatalogWeapon, weapon, "TargetFilters", player, filters);
         i = i + 1;
     }
+    // Targeting the other plane is only half of it - splash and beam damage is
+    // spread by effect searches with their own plane locks.
+    CycleMod_SplashFiltersForPlayer(player, true);
 }
 
 void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
