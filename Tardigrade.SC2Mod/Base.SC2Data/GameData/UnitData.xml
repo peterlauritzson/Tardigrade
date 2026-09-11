@@ -9,20 +9,25 @@
          options need command-card buttons on the Larva.
 
          Each button is placed on its PARENT's cell (Roach / Hydralisk /
-         Corruptor / Zergling). This works because a fallback button only
-         appears when its parent unit is disabled (undrafted) - and when the
-         parent is gone, that cell is free. If both parent and child are
-         drafted (rare, since the child builds directly) the two overlap.
+         Corruptor / Zergling), and RosterEnforce_GateLarvaFallbacks makes
+         sure only one of the two is ever on the card: an undrafted parent's
+         button is removed by TechTreeUnitAllow, and a drafted parent gets the
+         fallback disallowed instead (the child then morphs from the parent).
 
-         NOTE: the Larva card is dense and merged across several data layers -
-         VERIFY these slots in the editor's Command Card view and nudge any
-         that overlap an always-present button.
+         Cells are the parents' real positions in the merged LotV Larva card
+         (core -> ... -> voidmulti):
+           Row 0: Drone, Overlord, Zergling, Roach, -
+           Row 1: Hydralisk, Mutalisk, Corruptor, Infestor, Swarm Host
+           Row 2: Viper, Ultralisk, -, -, Cancel
+         The first version had Ravager / Lurker / Brood Lord one cell off
+         (on Hydralisk, Mutalisk and Ultralisk), so a drafted Hydralisk hid
+         the Ravager fallback outright.
     ===================================================================== -->
     <CUnit id="Larva">
         <CardLayouts index="0">
-            <LayoutButtons Face="Ravager"   Type="AbilCmd" AbilCmd="LarvaTrain,Train6"  Row="1" Column="0"/>
-            <LayoutButtons Face="LurkerMP"  Type="AbilCmd" AbilCmd="LarvaTrain,Train9"  Row="1" Column="1"/>
-            <LayoutButtons Face="BroodLord" Type="AbilCmd" AbilCmd="LarvaTrain,Train14" Row="2" Column="1"/>
+            <LayoutButtons Face="Ravager"   Type="AbilCmd" AbilCmd="LarvaTrain,Train6"  Row="0" Column="3"/>
+            <LayoutButtons Face="LurkerMP"  Type="AbilCmd" AbilCmd="LarvaTrain,Train9"  Row="1" Column="0"/>
+            <LayoutButtons Face="BroodLord" Type="AbilCmd" AbilCmd="LarvaTrain,Train14" Row="1" Column="2"/>
             <LayoutButtons Face="Baneling"  Type="AbilCmd" AbilCmd="LarvaTrain,Train16" Row="0" Column="2"/>
         </CardLayouts>
     </CUnit>
@@ -30,7 +35,8 @@
     <!-- =====================================================================
          TARDIGRADE: MODIFIER ABILITY GRANTS
          Battle Blink and Medivac Boost (see AbilData.xml) are granted, hidden,
-         to every combat unit and worker across all three races so the ability
+         to every combat unit (not workers - modifiers never reach them) across
+         all three races so the ability
          exists to show/hide at runtime. CycleMod.galaxy toggles visibility
          per-unit based on which side drafted which modifier - a unit whose
          side didn't draft either keeps both hidden all game.
@@ -171,13 +177,6 @@
             <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
         </CardLayouts>
     </CUnit>
-    <CUnit id="SCV">
-        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
-        <CardLayouts index="0">
-            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
-            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
-        </CardLayouts>
-    </CUnit>
 
     <!-- Protoss -->
     <CUnit id="Zealot">
@@ -306,13 +305,6 @@
             <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
         </CardLayouts>
     </CUnit>
-    <CUnit id="Probe">
-        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
-        <CardLayouts index="0">
-            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
-            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
-        </CardLayouts>
-    </CUnit>
 
     <!-- Zerg -->
     <CUnit id="Zergling">
@@ -420,12 +412,483 @@
             <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
         </CardLayouts>
     </CUnit>
-    <CUnit id="Drone">
-        <AbilArray Link="TardigradeAbil_Blink"/><AbilArray Link="TardigradeAbil_MedivacBoost"/>
+
+    <!-- =====================================================================
+         TARDIGRADE: SALVAGE GRANTS (modifier 13)
+         TardigradeAbil_Salvage (AbilData.xml) granted hidden to every melee
+         structure; CycleMod_UpdateAbilityMods shows it on the drafting side's
+         structures once modifiers go live. Same grant-plus-explicit-slot
+         pattern as Blink / Medivac Boost above, for the same reason.
+
+         Slots were not guessed. Each structure's main card was resolved by
+         merging its CardLayouts across core -> liberty -> swarm -> void ->
+         the three multi layers, and the button placed on a cell nothing else
+         uses: Row 2 Column 2 everywhere except Orbital Command (Row 1 Col 3 -
+         its calldowns fill row 2), Nexus and Nydus Network (Row 2 Col 3).
+         Cancel (the Off command) sits on Row 2 Column 4, the standard cancel
+         cell, exactly as Blizzard places it on the Bunker - it only exists
+         while a salvage is running, when the structure's own abilities are
+         disabled anyway.
+
+         Skipped: Bunker and Sensor Tower, which already salvage for 75% in
+         LotV, and Creep Tumors, which cost nothing. Still worth a visual pass
+         in the editor, since hidden/conditional buttons (research that only
+         shows with tech) were counted as occupying their cells.
+    ===================================================================== -->
+    <!-- Terran -->
+    <CUnit id="CommandCenter">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
         <CardLayouts index="0">
-            <LayoutButtons Face="Blink" Type="AbilCmd" AbilCmd="TardigradeAbil_Blink,Execute" Row="1" Column="2"/>
-            <LayoutButtons Face="MedivacSpeedBoost" Type="AbilCmd" AbilCmd="TardigradeAbil_MedivacBoost,Execute" Row="1" Column="3"/>
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
         </CardLayouts>
     </CUnit>
-
+    <CUnit id="CommandCenterFlying">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="OrbitalCommand">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="1" Column="3"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="OrbitalCommandFlying">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="PlanetaryFortress">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="SupplyDepot">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="SupplyDepotLowered">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Refinery">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="RefineryRich">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Barracks">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="BarracksFlying">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="EngineeringBay">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="MissileTurret">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Factory">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="FactoryFlying">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="GhostAcademy">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Armory">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Starport">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="StarportFlying">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="FusionCore">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="BarracksTechLab">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="BarracksReactor">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="FactoryTechLab">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="FactoryReactor">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="StarportTechLab">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="StarportReactor">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="TechLab">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Reactor">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <!-- Protoss -->
+    <CUnit id="Nexus">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="3"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Pylon">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Assimilator">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="AssimilatorRich">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <!-- Gateway / Warp Gate also carry the direct Archon build (AbilData.xml
+         GatewayTrain / WarpGateTrain Train8) on Row 1 Column 2, next to High
+         and Dark Templar - a free cell on both cards. -->
+    <CUnit id="Gateway">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+            <LayoutButtons Face="Archon" Type="AbilCmd" AbilCmd="GatewayTrain,Train8" Row="1" Column="2"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="WarpGate">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+            <LayoutButtons Face="Archon" Type="AbilCmd" AbilCmd="WarpGateTrain,Train8" Row="1" Column="2"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Forge">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="CyberneticsCore">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="PhotonCannon">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="ShieldBattery">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="TwilightCouncil">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="RoboticsFacility">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="RoboticsBay">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Stargate">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="FleetBeacon">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="TemplarArchive">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="DarkShrine">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <!-- Zerg -->
+    <CUnit id="Hatchery">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Lair">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Hive">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="SpawningPool">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="EvolutionChamber">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Extractor">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="ExtractorRich">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="SpineCrawler">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="SporeCrawler">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="RoachWarren">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="BanelingNest">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="HydraliskDen">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="LurkerDenMP">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="InfestationPit">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="Spire">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="GreaterSpire">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="NydusNetwork">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="3"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="NydusCanal">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
+    <CUnit id="UltraliskCavern">
+        <AbilArray Link="TardigradeAbil_Salvage"/>
+        <CardLayouts index="0">
+            <LayoutButtons Face="Salvage" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,On" Row="2" Column="2"/>
+            <LayoutButtons Face="Cancel" Type="AbilCmd" AbilCmd="TardigradeAbil_Salvage,Off" Row="2" Column="4"/>
+        </CardLayouts>
+    </CUnit>
 </Catalog>

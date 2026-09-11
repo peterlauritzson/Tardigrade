@@ -35,10 +35,48 @@
     </CAbilTrain>
 
     <!-- =====================================================================
+         TARDIGRADE: DIRECT ARCHON BUILD
+         Archon is its own roster pick. Normally it only exists as a merge of
+         two templar, so a roster with Archon but neither templar needs another
+         way to make one: Gateway and Warp Gate get it as a train option.
+         RosterEnforce_GateArchonFallback disallows it whenever High or Dark
+         Templar is drafted - then you merge as usual - so it never competes
+         with the normal path, and TechTreeUnitAllow hides it when Archon
+         itself is undrafted.
+
+         Train8 is unused on both abilities in every data layer (they run
+         Train1-7, with no Train3). Cost comes from the Archon's own
+         CostResource, 100/300 - the same as two High Templar - and 4 supply.
+         Times are the templar pair's route: a High Templar's build (55
+         gateway / 45 warp charge) plus the 12s merge, since one gateway now
+         does the work of two. Requires Templar Archives, like High Templar.
+    ===================================================================== -->
+    <CAbilTrain id="GatewayTrain">
+        <InfoArray index="Train8" Time="67">
+            <Button DefaultButtonFace="Archon" State="Restricted" Requirements="HaveTemplarArchives"/>
+            <Unit value="Archon"/>
+        </InfoArray>
+    </CAbilTrain>
+    <CAbilWarpTrain id="WarpGateTrain">
+        <InfoArray index="Train8" Time="16" Unit="Archon">
+            <Charge>
+                <CountMax value="1"/>
+                <CountStart value="1"/>
+                <CountUse value="1"/>
+                <Link value="WarpGateTrain"/>
+                <TimeUse value="57"/>
+                <Flags index="EnableChargeTimeQueuing" value="1"/>
+            </Charge>
+            <Cooldown Link="WarpGateTrain" TimeUse="0"/>
+            <Button DefaultButtonFace="Archon" State="Restricted" Requirements="HaveTemplarArchives"/>
+        </InfoArray>
+    </CAbilWarpTrain>
+
+    <!-- =====================================================================
          TARDIGRADE: MODIFIER ABILITIES
          Battle Blink and Medivac Boost are drafted modifiers that grant a
          clickable ability instead of a passive buff. Both abilities are
-         granted (hidden) to every combat unit + worker in UnitData.xml, and
+         granted (hidden) to every combat unit (not workers) in UnitData.xml, and
          CycleMod.galaxy shows/enables them at runtime only for units on the
          side that drafted the matching modifier.
     ===================================================================== -->
@@ -67,5 +105,24 @@
             <Cooldown Link="TardigradeAbil_MedivacBoost" TimeUse="15"/>
         </Cost>
     </CAbilEffectInstant>
+
+    <!-- Salvage (modifier 13): granted hidden to every structure in
+         UnitData.xml and shown by CycleMod_UpdateAbilityMods for the side that
+         drafted it. A toggle, like WoL's SalvageShared on the Bunker: On puts
+         TardigradeMod_Salvaging on the structure (5s, then 75% refund), Off
+         cancels it. HasNoCargo stops a loaded Command Center or Nydus from
+         being salvaged with units inside. Only On is hidden - Off can only
+         appear while a salvage this side started is already running. -->
+    <CAbilBehavior id="TardigradeAbil_Salvage">
+        <CmdButtonArray index="On" DefaultButtonFace="Salvage">
+            <Flags index="Hidden" value="1"/>
+            <Flags index="ToSelection" value="1"/>
+        </CmdButtonArray>
+        <CmdButtonArray index="Off" DefaultButtonFace="Cancel"/>
+        <Flags index="BestUnit" value="1"/>
+        <Flags index="Transient" value="1"/>
+        <BehaviorArray value="TardigradeMod_Salvaging"/>
+        <ValidatorArray value="HasNoCargo"/>
+    </CAbilBehavior>
 
 </Catalog>

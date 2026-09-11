@@ -184,14 +184,20 @@
         </Modification>
     </CBehaviorBuff>
 
+    <!-- Marker only, like TardigradeMod_WorkersNoSupply: the scan still applies
+         it so the modifier is visible on the unit, but the mechanic is a per-
+         player catalog change (CycleMod_ArcaneSurgeForPlayer doubles CUnit's
+         EnergyRegenRate). It used to carry VitalRegenArray Energy="2", a flat
+         +2/s - about 3.5x what a standard caster regenerates on its own, and
+         the same absolute gift to an Orbital Command as to a Ghost. There is no
+         per-vital regen multiplier in SModification to express "2x" here:
+         VitalRegenArray is additive and VitalRegenMultiplier is not indexed by
+         vital, so it would have doubled shield and life regen as well. -->
     <CBehaviorBuff id="TardigradeMod_ArcaneSurge">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
         <Duration value="8"/>
         <MaxStackCount value="1"/>
-        <Modification>
-            <VitalRegenArray index="Energy" value="2"/>
-        </Modification>
     </CBehaviorBuff>
 
     <CBehaviorBuff id="TardigradeMod_Overwatch">
@@ -207,17 +213,33 @@
          reach - visibly starting attack cycles that abort before the weapon
          fires. Duration is long because the script owns removal (consumed in
          CycleMod_OnUnitDamaged); a short duration made the buff expire and
-         instantly re-arm on the next scan tick. -->
+         instantly re-arm on the next scan tick.
+
+         No Modification block: this is a pure "armed" marker. The +50% used to
+         live here as DamageDealtFraction, which only reaches damage the engine
+         routes through the source unit's weapon-damage modifiers - so splash,
+         suicide (Baneling), and spell damage got nothing, and the Spell index
+         was never even set. CycleMod_OnUnitDamaged now deals the bonus itself
+         off EventUnitDamageAmount(), which covers every damage event the shot
+         produces regardless of kind or effect type. -->
     <CBehaviorBuff id="TardigradeMod_OverwatchReady">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
         <Duration value="300"/>
         <MaxStackCount value="1"/>
-        <Modification>
-            <DamageDealtFraction index="Melee" value="0.5"/>
-            <DamageDealtFraction index="Ranged" value="0.5"/>
-            <DamageDealtFraction index="Splash" value="0.5"/>
-        </Modification>
+    </CBehaviorBuff>
+    <!-- One attack can produce many damage events (splash hitting N units, a
+         Colossus' twin beams, a Baneling's blast). Consuming OverwatchReady on
+         the first of them would boost one target and leave the rest of the same
+         blast unbuffed, so the consume swaps in this marker instead and every
+         damage event that lands while it is up still gets the bonus. Duration
+         is two game loops - long enough to span one volley, far shorter than
+         any weapon period, so it can never carry into a second attack. -->
+    <CBehaviorBuff id="TardigradeMod_OverwatchFiring">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="0.125"/>
+        <MaxStackCount value="1"/>
     </CBehaviorBuff>
 
     <CBehaviorBuff id="TardigradeMod_VeteranForces">
@@ -231,6 +253,117 @@
         <Alignment value="Positive"/>
         <MaxStackCount value="15"/>
         <Modification TimeScale="1.03"/>
+    </CBehaviorBuff>
+
+    <!-- 11-13: markers only. Auto Refineries is run by CycleMod_UpdateAutoRefinery,
+         Salvage by the TardigradeAbil_Salvage grant, and No Bans acts on the
+         roster draft before any unit exists - none of them is a buff. The
+         scan never applies these in draft mode; they exist so legacy phase
+         mode, which adds every chosen behavior id blindly, adds a valid one. -->
+    <CBehaviorBuff id="TardigradeMod_AutoRefinery">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_NoBans">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_Salvage">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+
+    <!-- Salvage in progress, put on the structure by TardigradeAbil_Salvage.
+         A copy of Blizzard's own Salvage behavior - the one the Bunker has
+         used since WoL - retargeted at our effects: 5 seconds with the
+         structure shut down (no attacking, producing, detecting, lifting),
+         then TardigradeMod_SalvageRefund pays out 75% and removes it.
+
+         Like the live LotV Bunker, taking damage cancels it (the damage
+         response removes this behavior, and removal is not expiry, so no
+         refund). Otherwise a building could be salvaged from under an
+         attacker for 75% of its value the moment it started losing a fight.
+         Terran burndown is exempt, as it is on the Bunker: a burning
+         building could otherwise never be salvaged at all. -->
+    <CBehaviorBuff id="TardigradeMod_Salvaging">
+        <InfoFlags index="Hidden" value="1"/>
+        <Duration value="5"/>
+        <ExpireEffect value="TardigradeMod_SalvageRefund"/>
+        <DisplayDuration index="Self" value="1"/>
+        <DisplayDuration index="Ally" value="1"/>
+        <DisplayDuration index="Enemy" value="1"/>
+        <DisplayDuration index="Neutral" value="1"/>
+        <DamageResponse Handled="TardigradeMod_SalvageInterrupt">
+            <Chance value="1"/>
+            <ExcludeEffectArray value="BurndownDamage"/>
+        </DamageResponse>
+        <Modification>
+            <ModifyFlags index="DisableAbils" value="1"/>
+            <ModifyFlags index="SuppressMoving" value="1"/>
+            <ModifyFlags index="SuppressTurning" value="1"/>
+            <StateFlags index="SuppressAttack" value="1"/>
+            <StateFlags index="SuppressCloak" value="1"/>
+            <StateFlags index="SuppressDetection" value="1"/>
+            <StateFlags index="SuppressRadar" value="1"/>
+            <!-- DisableAbils would otherwise disable the Off (cancel) command. -->
+            <AbilLinkEnableArray value="TardigradeAbil_Salvage"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 14: Shared Damage. Absorbs every hit whole - the same response as
+         Blizzard's DamageTakenNone in core.sc2mod (ModifyFraction 0 multiplies
+         the hit to nothing; ModifyMinimumDamage stops the 0.5 floor sneaking
+         through) - and CycleMod_OnSharedDamageAbsorbed, fired by the absorb,
+         deals the hit back out split across the unit and its neighbours.
+
+         ExcludeEffectArray is what lets damage through:
+           - TardigradeMod_SharedDamageHit: the redealt shares themselves. Without
+             this every share would be absorbed and split again, forever.
+           - TardigradeMod_OverwatchBonus: dealt per share by the damage handler,
+             so it is already spread; splitting it again would shrink it.
+           - Kill-flag effects: how temporary units expire and how several
+             abilities remove units (a Baneling's own Suicide, KillHallucination,
+             MULEFate, an Adept shade ending, Bile popping a Force Field,
+             salvage). Absorbing one would leave its target alive - or share
+             out a "kill" as damage. CycleMod_IsShareExemptType also keeps the
+             temporary units from ever carrying this behavior, as a second line.
+         Applied by the scan only to the drafting side's CycleMod_CanShareDamage
+         units (no structures, hallucinations, summons, larva/eggs/cocoons). -->
+    <CBehaviorBuff id="TardigradeMod_SharedDamage">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse ModifyFraction="0" ModifyMinimumDamage="1">
+            <Chance value="1"/>
+            <ExcludeEffectArray value="TardigradeMod_SharedDamageHit"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="Suicide"/>
+            <ExcludeEffectArray value="SuicideRemove"/>
+            <ExcludeEffectArray value="Kill"/>
+            <ExcludeEffectArray value="KillRemove"/>
+            <ExcludeEffectArray value="KillCaster"/>
+            <ExcludeEffectArray value="KillSource"/>
+            <ExcludeEffectArray value="KillTargetDeathNormal"/>
+            <ExcludeEffectArray value="Sacrifice"/>
+            <ExcludeEffectArray value="KillHallucination"/>
+            <ExcludeEffectArray value="MULEFate"/>
+            <ExcludeEffectArray value="AdeptPhaseShiftKillDummy"/>
+            <ExcludeEffectArray value="ParasiticBombKill"/>
+            <ExcludeEffectArray value="SalvageDeath"/>
+            <ExcludeEffectArray value="RemoveCommandCenterCargo"/>
+            <ExcludeEffectArray value="VortexKillForceField"/>
+            <ExcludeEffectArray value="RavagerCorrosiveBileForceFieldKill"/>
+            <ExcludeEffectArray value="NexusDeathKillMothershipCore"/>
+            <ExcludeEffectArray value="ReleaseInterceptorsRemoveBeacon"/>
+            <ExcludeEffectArray value="QueenMPSpawnBroodlingsDamage"/>
+        </DamageResponse>
     </CBehaviorBuff>
 
 </Catalog>

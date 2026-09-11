@@ -1,10 +1,11 @@
 //--------------------------------------------------------------------------------------------------
 // Cycle Modifier System
 //
-// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 10
-//   global battlefield modifiers. Each player bans 2 (10 -> 6), then picks 3.
-//   Every pick is ALWAYS active in-game, but only for the drafting player's own
-//   units. A shared reference panel lists both sides' picks.
+// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 14
+//   global battlefield modifiers. Each player bans 2 (14 -> 10), then picks 3,
+//   so four modifiers go unpicked every game. Every pick is ALWAYS active
+//   in-game, but only for the drafting player's own units. A shared reference
+//   panel lists both sides' picks.
 //
 // Legacy (c_cyclePhaseMode == true, kept intact behind the gate): the 3 drafted
 //   modifiers rotate as Day/Dusk/Night phases, each applied to EVERY unit on the
@@ -17,8 +18,17 @@ include "TriggerLibs/NativeLib"
 include "scripts/Debug"
 
 // Number of modifiers in the pool and how many are drafted (= number of phases).
-const int c_cycleModCount   = 10;
+// The draft dialog lays the pool out in two columns of c_cycleModRows buttons.
+const int c_cycleModCount   = 14;
+const int c_cycleModRows    = 7;
 const int c_cyclePhaseCount = 3;
+
+// Indices of the modifiers other files need to name. The older ten are still
+// referenced by literal index where they were before.
+const int c_cycleModAutoRefinery = 11;
+const int c_cycleModNoBans       = 12;
+const int c_cycleModSalvage      = 13;
+const int c_cycleModSharedDamage = 14;
 
 // Master toggle for the legacy rotating-phase system (in-game Day/Dusk/Night
 // rotation, its HUD legend, and per-phase lighting). Set false: the game now
@@ -26,7 +36,7 @@ const int c_cyclePhaseCount = 3;
 // for that side only. The legacy code is kept intact behind this gate.
 const bool c_cyclePhaseMode  = false;
 
-// Per-player draft: 2 bans each (10 -> 6) then 3 picks each.
+// Per-player draft: 2 bans each (14 -> 10) then 3 picks each (10 -> 4 unpicked).
 const int  c_cycleBanTotal   = 4;   // total bans (2 per player)
 const int  c_cyclePickTotal  = 6;   // total picks (3 per player)
 const int  c_cyclePicksEach  = 3;
@@ -37,15 +47,47 @@ const fixed c_cycleActivationDelay = 180.0;  // buffs go live 3 minutes into the
 // game seconds tick by noticeably quicker than wall clock. The design doc's
 // numbers (3s Entrenchment, 5s Overwatch) are in normal-speed seconds, so they
 // are doubled here to land near the intended wall-clock feel.
+// Arcane Surge: multiply, don't add. It used to be a flat +2 energy/s buff,
+// which is roughly 3.5x the 0.5625/s every standard caster regenerates - so it
+// dwarfed the stat it was modifying and read the same on a Nexus as on a Ghost.
+const fixed c_cycleArcaneRegenMult = 2.0;  // 2x each unit's own energy regen
+
 const int c_cycleEntrenchDelay  = 6;   // doc: 3s still before Entrenched
 const int c_cycleOverwatchDelay = 10;  // doc: 5s idle before Overwatch arms
+
+// Overwatch's payload. Applied as a second damage event in CycleMod_OnUnitDamaged
+// (see the comment there) rather than as a behavior Modification, so it lands on
+// splash, suicide and spell damage too.
+const fixed  c_cycleOverwatchBonus  = 0.5;   // +50% of the damage that landed
+const string c_cycleOverwatchEffect = "TardigradeMod_OverwatchBonus";
+
+// Auto Refineries: a finished gas building mines itself at the rate three
+// workers would. A saturated LotV geyser yields ~160 gas per real minute on
+// Faster - 40 trips of 4 gas, one every 1.5 real seconds. GameGetMissionTime()
+// counts game seconds (1.4 per real second on Faster), so that is one trip per
+// 2.1 game seconds. Rich geysers pay 8 per trip, as they do for workers.
+const fixed  c_cycleAutoGasInterval = 2.1;
+const int    c_cycleAutoGasTrip     = 4;
+const int    c_cycleAutoGasTripRich = 8;
+// Radius the evicted workers search for a mineral patch to go mine instead.
+const fixed  c_cycleAutoGasMineralRange = 12.0;
+
+// Shared Damage: every hit on one of your units is half taken by it and half
+// split evenly between your other units within this radius. The behavior absorbs the hit whole (see
+// BehaviorData.xml) and CycleMod_OnSharedDamageAbsorbed deals the split out
+// again through c_cycleShareEffect, which that behavior lets through.
+const fixed  c_cycleShareRadius    = 3.0;
+const fixed  c_cycleShareKeptFraction = 0.5;  // victim's own part; the rest goes to partners
+const fixed  c_cycleMinDamage      = 0.5;    // SC2's floor on any single hit
+const string c_cycleShareBehavior  = "TardigradeMod_SharedDamage";
+const string c_cycleShareEffect    = "TardigradeMod_SharedDamageHit";
 
 // ── Draft state ──────────────────────────────────────────────────────────────
 trigger g_cycle_callback = null;
 int     g_cycle_p1;                 // Player A (picks first)
 int     g_cycle_p2;                 // Player B (picks second)
 int     g_cycle_pickIndex = 0;      // 0 = A picking, 1 = B picking
-bool[11] g_cycle_taken;             // [1..10] which mods are already claimed
+bool[15] g_cycle_taken;             // [1..14] which mods are already claimed (keep > c_cycleModCount)
 int[4]  g_cycle_chosen;             // [1..3] chosen mod indices (phase order)
 
 // ── Per-player draft state (c_cyclePhaseMode == false) ────────────────────
@@ -59,14 +101,26 @@ int[5]  g_cycle_banOrder;           // [1..4] picker per ban step
 bool[5] g_cycle_banIsP1;
 int[7]  g_cycle_pickOrder;          // [1..6] picker per pick step
 bool[7] g_cycle_pickIsP1;
-int     g_cycle_draftPanel = c_invalidDialogId;  // in-game modifier reference panel
+// In-game modifier reference panel. One dialog PER VIEWER rather than a single
+// shared one, so each player can minimise their own copy: DialogSetSize takes no
+// playergroup, so a shared dialog cannot be resized for one player without
+// resizing it for everybody. Same reason RosterHUD is per-player.
+bool    g_cycle_panelBuilt = false;
+int[16] g_cycle_panelDlg;
+int[16] g_cycle_panelBtn;
+int[16] g_cycle_panelTitle;
+int[16] g_cycle_panelHdrMine;
+int[16] g_cycle_panelHdrOpp;
+int[16][4] g_cycle_panelRowMine;
+int[16][4] g_cycle_panelRowOpp;
+bool[16] g_cycle_panelExpanded;
 bool    g_cycle_delayedApplied = false;          // one-time 3-minute activation done
 
 // Draft UI
 int    g_cycle_dialog   = c_invalidDialogId;
 int    g_cycle_lblTitle = c_invalidDialogControlId;
 int    g_cycle_lblSub   = c_invalidDialogControlId;
-int[11] g_cycle_btnMod;             // [1..10] modifier buttons
+int[15] g_cycle_btnMod;             // [1..14] modifier buttons (keep > c_cycleModCount)
 trigger g_cycle_draftTrig = null;
 
 // ── Cycle (in-game) state ───────────────────────────────────────────────────
@@ -84,6 +138,7 @@ int[4] g_cycle_hudRow;   // [1..3] one row per phase (Day / Dusk / Night)
 trigger g_cycle_damageTrig = null;
 trigger g_cycle_attackTrig = null;
 trigger g_cycle_deathTrig  = null;
+trigger g_cycle_shareTrig  = null;
 
 const int c_cycleStateRegistered   = 0;
 const int c_cycleStateLastX        = 1;
@@ -93,8 +148,9 @@ const int c_cycleStateAdrenalReady = 4;
 const int c_cycleStateWasLow       = 5;
 const int c_cycleStateLastAttack   = 6;
 const int c_cycleStateEconomicEgg  = 7;
+const int c_cycleStateAutoGas      = 8;   // gas building: mission time its last auto trip was paid up to
 const int c_cycleWeaponLimit       = 2048;
-const int c_cycleSplashEffectCount = 14;
+const int c_cycleSplashEffectCount = 12;
 string[2048] g_cycle_weaponEntry;
 string[2048] g_cycle_weaponFilter;
 int          g_cycle_weaponCount = 0;
@@ -107,8 +163,31 @@ string[32]   g_cycle_splashEntry;
 string[32]   g_cycle_splashFilter;
 int          g_cycle_splashCount  = 0;
 bool         g_cycle_splashCached = false;
+
+// Weapons Open Skies must not touch because their owner already reaches both
+// planes - derived from the Unit catalog by CycleMod_EnsureOpenSkiesSkipList.
+// c_cycleUnitWeaponProbe is how many WeaponArray slots are examined per unit;
+// 4 covers everything in the melee data (the widest live array is the
+// Mothership's 3) with room to spare. Sized with a literal like the arrays
+// above - keep it >= c_cycleSkipLimit.
+const int    c_cycleSkipLimit       = 64;
+const int    c_cycleUnitWeaponProbe = 4;
+string[64]   g_cycle_skipWeapon;
+int          g_cycle_skipCount = 0;
+bool         g_cycle_skipBuilt = false;
 unit[2048]   g_cycle_lastAttacker;
 int          g_cycle_registeredCount = 0;
+
+// Arcane Surge doubles EnergyRegenRate per player, which is a catalog change on
+// the Unit catalog rather than a buff (see CycleMod_EnsureEnergyCache). Cached
+// like the Open Skies weapon list: one sweep for the base rates, then a short
+// per-player set. Sized with a literal - keep it >= c_cycleEnergyLimit.
+const int    c_cycleEnergyLimit = 512;
+string[512]  g_cycle_energyEntry;   // unit types whose base energy regen is > 0
+string[512]  g_cycle_energyRate;    // their base EnergyRegenRate, as catalog text
+int          g_cycle_energyCount   = 0;
+bool         g_cycle_energyCached  = false;
+bool         g_cycle_arcaneEnabled = false;
 
 //--------------------------------------------------------------------------------------------------
 // Data: modifier behavior link, display name, and effect description.
@@ -124,6 +203,15 @@ string CycleMod_Behavior(int idx) {
     if (idx == 8)  { return "TardigradeMod_Overwatch"; }
     if (idx == 9)  { return "TardigradeMod_BattleBlink"; }
     if (idx == 10) { return "TardigradeMod_VeteranForces"; }
+    // 11-13 are keys only, never applied as buffs: Auto Refineries and Salvage
+    // run from the scan (CycleMod_UpdateAutoRefinery / CycleMod_UpdateAbilityMods)
+    // and No Bans acts on the roster draft, before any unit exists. The ids
+    // still exist as markers in BehaviorData.xml so legacy phase mode, which
+    // adds every chosen behavior blindly, has something valid to add.
+    if (idx == 11) { return "TardigradeMod_AutoRefinery"; }
+    if (idx == 12) { return "TardigradeMod_NoBans"; }
+    if (idx == 13) { return "TardigradeMod_Salvage"; }
+    if (idx == 14) { return c_cycleShareBehavior; }
     return "";
 }
 
@@ -148,6 +236,10 @@ string CycleMod_Name(int idx) {
     if (idx == 8)  { return "Overwatch"; }
     if (idx == 9)  { return "Battle Blink"; }
     if (idx == 10) { return "Veteran Forces"; }
+    if (idx == 11) { return "Auto Refineries"; }
+    if (idx == 12) { return "No Bans"; }
+    if (idx == 13) { return "Salvage"; }
+    if (idx == 14) { return "Shared Damage"; }
     return "";
 }
 
@@ -158,10 +250,14 @@ string CycleMod_Desc(int idx) {
     if (idx == 4)  { return "attacks restore 30% of damage dealt"; }
     if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
     if (idx == 6)  { return "stationary units gain +2 armor and +1 range"; }
-    if (idx == 7)  { return "+2 energy/sec"; }
+    if (idx == 7)  { return "double energy regeneration, units and structures"; }
     if (idx == 8)  { return "first attack after 10s idle deals +50% damage"; }
     if (idx == 9)  { return "click a unit to short-range teleport it"; }
     if (idx == 10) { return "kills grant permanent +3% time speed, stacking to 15"; }
+    if (idx == 11) { return "gas buildings mine by themselves at full rate, no workers"; }
+    if (idx == 12) { return "your opponent gets no unit bans against your roster"; }
+    if (idx == 13) { return "any structure can be salvaged for 75% of its cost"; }
+    if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
     return "";
 }
 
@@ -225,7 +321,30 @@ bool CycleMod_UnitHasBehavior(unit u, string beh) {
     return false;
 }
 
+// The MULE counts: it is a worker for every purpose here (it takes no supply,
+// so Free Labor is a no-op on it, and it can't harvest gas anyway).
+bool CycleMod_IsWorker(unit candidate) {
+    string unitType;
+    unitType = UnitGetType(candidate);
+    return unitType == "SCV" || unitType == "Probe" || unitType == "Drone"
+        || unitType == "MULE";
+}
+
+// Modifiers never apply to workers - no Blink, Boost, Shared Damage,
+// Entrenchment, lifesteal, Overwatch, veteran stacks, detection, anything -
+// except the two that are ABOUT workers: Free Labor (their supply) and Auto
+// Refineries (which has to keep acting on them to keep them out of the gas).
+bool CycleMod_ModReachesWorkers(string beh) {
+    return beh == "TardigradeMod_WorkersNoSupply" || beh == "TardigradeMod_AutoRefinery";
+}
+
+// The single gate nearly every modifier goes through - buffs from the scan,
+// ability buttons, the conditional buffs, Predator's source, Veteran's killer
+// - so the worker exclusion lives here once. Open Skies is the exception: it
+// edits weapons in the catalog rather than asking about a unit, so worker
+// weapons are held back in CycleMod_OpenSkiesSkipsWeapon instead.
 bool CycleMod_UnitModActive(unit u, string beh) {
+    if (CycleMod_IsWorker(u) && !CycleMod_ModReachesWorkers(beh)) { return false; }
     if (c_cyclePhaseMode) { return g_cycle_activeBehavior == beh; }
     if (GameGetMissionTime() < c_cycleActivationDelay) { return false; }
     return CycleMod_UnitHasBehavior(u, beh);
@@ -271,24 +390,44 @@ string CycleMod_ModNamesJoined(bool isP1) {
 //==================================================================================================
 
 //--------------------------------------------------------------------------------------------------
+// Ban buttons are red and carry a BAN marker; pick buttons stay neutral. This is
+// the same treatment the roster draft uses, which nobody has ever misread - the
+// modifier draft previously rendered both phases identically and only changed one
+// small word in the title, so players banned when they thought they were picking.
+//
+// isBan is passed in rather than read from g_cycle_draftPhase because legacy
+// phase mode leaves that global at 0, which would make every button read BAN.
+//--------------------------------------------------------------------------------------------------
+string CycleMod_DraftButtonText(int idx, bool isBan) {
+    if (isBan) {
+        return "<c val=\"FF8888\">" + CycleMod_Name(idx) + "</c>"
+            + "\n<c val=\"664444\">BAN  ·  " + CycleMod_Desc(idx) + "</c>";
+    }
+    return "<c val=\"FFFFFF\">" + CycleMod_Name(idx) + "</c>"
+        + "\n<c val=\"7FD0FF\">" + CycleMod_Desc(idx) + "</c>";
+}
+
+//--------------------------------------------------------------------------------------------------
 // Read-only spectator view: referees and spectators see every modifier but the
 // buttons are disabled, so they can watch the draft without interfering.
 //--------------------------------------------------------------------------------------------------
-void CycleMod_UpdateAudienceUI() {
+void CycleMod_UpdateAudienceUI(bool isBan) {
     playergroup aud;
-    string      btnTxt;
     int         i;
     aud = Tardigrade_Audience();
 
-    DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
-        aud, StringToText("<c val=\"888888\">Spectating  -  a modifier is being chosen...</c>"));
+    if (isBan) {
+        DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+            aud, StringToText("<c val=\"FF6060\">Spectating  -  a modifier is being BANNED...</c>"));
+    } else {
+        DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+            aud, StringToText("<c val=\"888888\">Spectating  -  a modifier is being picked...</c>"));
+    }
 
     i = 1;
     while (i <= c_cycleModCount) {
-        btnTxt = "<c val=\"FFFFFF\">" + CycleMod_Name(i) + "</c>"
-            + "\n<c val=\"7FD0FF\">" + CycleMod_Desc(i) + "</c>";
         DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
-            aud, StringToText(btnTxt));
+            aud, StringToText(CycleMod_DraftButtonText(i, isBan)));
         DialogControlSetVisible(g_cycle_btnMod[i], aud, !g_cycle_taken[i]);
         DialogControlSetEnabled(g_cycle_btnMod[i], aud, false);
         i = i + 1;
@@ -346,9 +485,10 @@ void CycleMod_UpdateUI() {
             waitGroup, StringToText("<c val=\"888888\">Opponent is choosing a modifier...</c>"));
     }
 
-    // Read-only spectator view for referees and spectators.
+    // Read-only spectator view for referees and spectators. Legacy phase mode has
+    // no ban step, so this view is always the pick styling.
     if (Tardigrade_HasAudience()) {
-        CycleMod_UpdateAudienceUI();
+        CycleMod_UpdateAudienceUI(false);
     }
 }
 
@@ -448,8 +588,8 @@ bool CycleMod_OnClicked(bool testConds, bool runActions) {
 
 //==================================================================================================
 // PER-PLAYER DRAFT  (c_cyclePhaseMode == false)
-// 2 bans each (10 -> 6) then 3 picks each. Every pick is ALWAYS active in-game,
-// but only for the drafting player's own units.
+// 2 bans each (14 -> 10) then 3 picks each, leaving 4 unpicked. Every pick is
+// ALWAYS active in-game, but only for the drafting player's own units.
 //==================================================================================================
 int CycleMod_DraftPicker() {
     if (g_cycle_draftPhase == 0) { return g_cycle_banOrder[g_cycle_stepIndex]; }
@@ -466,37 +606,43 @@ void CycleMod_UpdateDraftUI() {
     int         waiter;
     int         i;
     int         total;
-    string      verb;
+    bool        isBan;
     string      titleText;
-    string      btnTxt;
     playergroup pickGroup;
     playergroup waitGroup;
 
     picker    = CycleMod_DraftPicker();
     pickGroup = PlayerGroupSingle(picker);
-    if (g_cycle_draftPhase == 0) { verb = "BAN";  total = c_cycleBanTotal; }
-    else                         { verb = "PICK"; total = c_cyclePickTotal; }
+    isBan = (g_cycle_draftPhase == 0);
+    if (isBan) { total = c_cycleBanTotal; }
+    else       { total = c_cyclePickTotal; }
 
-    titleText = "<c val=\"FFD700\">MODIFIER DRAFT</c>   -   " + verb + "  "
-        + IntToString(g_cycle_stepIndex) + " of " + IntToString(total);
+    // The phase word is the coloured heading, not a small word buried mid-line -
+    // matching BAN PHASE in the roster draft, which reads unambiguously.
+    if (isBan) {
+        titleText = "<c val=\"FF4444\">MODIFIER BAN PHASE</c>"
+            + "   —   Ban  " + IntToString(g_cycle_stepIndex) + "  of  " + IntToString(total)
+            + "      <c val=\"888888\">(then: picks)</c>";
+    } else {
+        titleText = "<c val=\"FFD700\">MODIFIER PICKS</c>"
+            + "   —   Pick  " + IntToString(g_cycle_stepIndex) + "  of  " + IntToString(total);
+    }
     DialogControlSetPropertyAsText(g_cycle_lblTitle, c_triggerControlPropertyText,
         Tardigrade_Viewers(), StringToText(titleText));
 
-    if (g_cycle_draftPhase == 0) {
+    if (isBan) {
         DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
-            pickGroup, StringToText("<c val=\"FF6060\">YOUR TURN  -  Ban a modifier</c>"));
+            pickGroup, StringToText("<c val=\"FF6060\">YOUR TURN  —  BAN a modifier (removes it for both players)</c>"));
     } else {
         DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
-            pickGroup, StringToText("<c val=\"00FF88\">YOUR TURN  -  Pick a modifier (active for you only)</c>"));
+            pickGroup, StringToText("<c val=\"00FF88\">YOUR TURN  —  Pick a modifier (active for you only)</c>"));
     }
 
     // Buttons for the active picker: hide already-taken (banned/picked) mods.
     i = 1;
     while (i <= c_cycleModCount) {
-        btnTxt = "<c val=\"FFFFFF\">" + CycleMod_Name(i) + "</c>"
-            + "\n<c val=\"7FD0FF\">" + CycleMod_Desc(i) + "</c>";
         DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
-            pickGroup, StringToText(btnTxt));
+            pickGroup, StringToText(CycleMod_DraftButtonText(i, isBan)));
         DialogControlSetVisible(g_cycle_btnMod[i], pickGroup, !g_cycle_taken[i]);
         DialogControlSetEnabled(g_cycle_btnMod[i], pickGroup, true);
         i = i + 1;
@@ -512,12 +658,17 @@ void CycleMod_UpdateDraftUI() {
             DialogControlSetVisible(g_cycle_btnMod[i], waitGroup, false);
             i = i + 1;
         }
-        DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
-            waitGroup, StringToText("<c val=\"888888\">Opponent is drafting a modifier...</c>"));
+        if (isBan) {
+            DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+                waitGroup, StringToText("<c val=\"FF6060\">Opponent is BANNING a modifier...</c>"));
+        } else {
+            DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+                waitGroup, StringToText("<c val=\"888888\">Opponent is picking a modifier...</c>"));
+        }
     }
 
     if (Tardigrade_HasAudience()) {
-        CycleMod_UpdateAudienceUI();
+        CycleMod_UpdateAudienceUI(isBan);
     }
 }
 
@@ -549,11 +700,12 @@ void CycleMod_FinishDraftPerPlayer() {
 }
 
 bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
-    int control;
-    int player;
-    int picker;
-    int idx;
-    int i;
+    int    control;
+    int    player;
+    int    picker;
+    int    idx;
+    int    i;
+    string side;
 
     control = EventDialogControl();
     player  = EventPlayer();
@@ -570,9 +722,14 @@ bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
 
     g_cycle_taken[idx] = true;
 
+    // Name the side on every ban and pick. Players know which one they are, but
+    // a spectator following along in chat has no other way to tell who did what.
+    if (CycleMod_DraftPickerIsP1()) { side = "<c val=\"7FD0FF\">P1</c> "; }
+    else                            { side = "<c val=\"FF9F7F\">P2</c> "; }
+
     if (g_cycle_draftPhase == 0) {
         UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"FF6060\">Banned:</c> " + CycleMod_Name(idx)));
+            side + "<c val=\"FF6060\">banned:</c> " + CycleMod_Name(idx)));
         g_cycle_stepIndex = g_cycle_stepIndex + 1;
         if (g_cycle_stepIndex > c_cycleBanTotal) {
             g_cycle_draftPhase = 1;
@@ -588,7 +745,7 @@ bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
             g_cycle_p2Mods[g_cycle_p2Count] = idx;
         }
         UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"00FF88\">Picked:</c> " + CycleMod_Name(idx) + "  (" + CycleMod_Desc(idx) + ")"));
+            side + "<c val=\"00FF88\">picked:</c> " + CycleMod_Name(idx) + "  (" + CycleMod_Desc(idx) + ")"));
         g_cycle_stepIndex = g_cycle_stepIndex + 1;
         if (g_cycle_stepIndex > c_cyclePickTotal) {
             CycleMod_FinishDraftPerPlayer();
@@ -629,8 +786,9 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     g_cycle_pickOrder[5] = p1; g_cycle_pickIsP1[5] = true;
     g_cycle_pickOrder[6] = p2; g_cycle_pickIsP1[6] = false;
 
-    // Dialog: 640 x 420, two columns of five buttons (same layout as legacy).
-    g_cycle_dialog = DialogCreate(640, 420, c_anchorCenter, 0, 0, true);
+    // Dialog: 640 x 540, two columns of seven buttons (same layout as legacy).
+    // Buttons start at y=80 on a 64px pitch: 80 + 7*64 = 528, plus a margin.
+    g_cycle_dialog = DialogCreate(640, 540, c_anchorCenter, 0, 0, true);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
 
     g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
@@ -645,8 +803,8 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     while (i <= c_cycleModCount) {
         g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
         DialogControlSetSize(g_cycle_btnMod[i], Tardigrade_Viewers(), 280, 56);
-        if (i <= 5) { col = -150; row = i - 1; }
-        else        { col =  150; row = i - 6; }
+        if (i <= c_cycleModRows) { col = -150; row = i - 1; }
+        else                     { col =  150; row = i - c_cycleModRows - 1; }
         DialogControlSetPosition(g_cycle_btnMod[i], Tardigrade_Viewers(),
             c_anchorTop, col, 80 + row * 64);
         DialogControlSetVisible(g_cycle_btnMod[i], Tardigrade_Viewers(), false);
@@ -686,8 +844,8 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     i = 1;
     while (i <= c_cycleModCount) { g_cycle_taken[i] = false; i = i + 1; }
 
-    // Dialog: 640 x 420, two columns of five buttons.
-    g_cycle_dialog = DialogCreate(640, 420, c_anchorCenter, 0, 0, true);
+    // Dialog: 640 x 540, two columns of seven buttons.
+    g_cycle_dialog = DialogCreate(640, 540, c_anchorCenter, 0, 0, true);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
 
     g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
@@ -702,8 +860,8 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     while (i <= c_cycleModCount) {
         g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
         DialogControlSetSize(g_cycle_btnMod[i], Tardigrade_Viewers(), 280, 56);
-        if (i <= 5) { col = -150; row = i - 1; }
-        else        { col =  150; row = i - 6; }
+        if (i <= c_cycleModRows) { col = -150; row = i - 1; }
+        else                     { col =  150; row = i - c_cycleModRows - 1; }
         DialogControlSetPosition(g_cycle_btnMod[i], Tardigrade_Viewers(),
             c_anchorTop, col, 80 + row * 64);
         DialogControlSetVisible(g_cycle_btnMod[i], Tardigrade_Viewers(), false);
@@ -737,17 +895,71 @@ bool CycleMod_IsTownHall(unit candidate) {
         || unitType == "Hatchery" || unitType == "Lair" || unitType == "Hive";
 }
 
-bool CycleMod_IsWorker(unit candidate) {
-    string unitType;
-    unitType = UnitGetType(candidate);
-    return unitType == "SCV" || unitType == "Probe" || unitType == "Drone";
-}
-
 bool CycleMod_IsParticipantUnit(unit candidate) {
     int owner;
     owner = UnitGetOwner(candidate);
     return PlayerGroupHasPlayer(g_draft_team1, owner)
         || PlayerGroupHasPlayer(g_draft_team2, owner);
+}
+
+// Guards Overwatch's bonus damage. Now that the bonus rides every damage event
+// rather than a weapon modifier, it would otherwise also amplify the friendly
+// fire your own Widow Mines and Banelings deal to your side - a pure downside
+// nobody drafted the modifier for. Neutral/hostile owners (rocks, critters) are
+// in neither team group and count as hostile, which is what we want.
+bool CycleMod_IsHostileTarget(unit source, unit target) {
+    int srcOwner;
+    int tgtOwner;
+    srcOwner = UnitGetOwner(source);
+    tgtOwner = UnitGetOwner(target);
+    if (srcOwner == tgtOwner) { return false; }
+    if (PlayerGroupHasPlayer(g_draft_team1, srcOwner)
+        && PlayerGroupHasPlayer(g_draft_team1, tgtOwner)) { return false; }
+    if (PlayerGroupHasPlayer(g_draft_team2, srcOwner)
+        && PlayerGroupHasPlayer(g_draft_team2, tgtOwner)) { return false; }
+    return true;
+}
+
+bool CycleMod_IsRichGasBuilding(unit candidate) {
+    string unitType;
+    unitType = UnitGetType(candidate);
+    return unitType == "RefineryRich" || unitType == "AssimilatorRich"
+        || unitType == "ExtractorRich";
+}
+
+bool CycleMod_IsGasBuilding(unit candidate) {
+    string unitType;
+    unitType = UnitGetType(candidate);
+    return unitType == "Refinery" || unitType == "Assimilator" || unitType == "Extractor"
+        || CycleMod_IsRichGasBuilding(candidate);
+}
+
+// Shared Damage leaves these out on both ends: they neither carry the absorbing
+// behavior nor soak anyone else's share. Hallucinations (checked separately) and
+// summons would be free damage sponges; larva, eggs and cocoons are not part of
+// any fight. The temporary units also die through Kill-flag damage (a shade
+// expiring, a MULE timing out, Bile popping a Force Field) - BehaviorData.xml
+// excludes those effects from the absorb, and this keeps the units out as a
+// second line, so a missed effect can't leave one of them unkillable.
+bool CycleMod_IsShareExemptType(string unitType) {
+    return unitType == "Larva" || unitType == "Egg"
+        || unitType == "BanelingCocoon" || unitType == "RavagerCocoon"
+        || unitType == "LurkerMPEgg" || unitType == "BroodLordCocoon"
+        || unitType == "OverlordCocoon" || unitType == "TransportOverlordCocoon"
+        || unitType == "MULE" || unitType == "AdeptPhaseShift"
+        || unitType == "Interceptor" || unitType == "LocustMP"
+        || unitType == "LocustMPFlying" || unitType == "Broodling"
+        || unitType == "BroodlingEscort" || unitType == "ParasiticBombDummy"
+        || unitType == "DisruptorPhased" || unitType == "ForceField"
+        || unitType == "Changeling" || unitType == "ChangelingMarine"
+        || unitType == "ChangelingMarineShield" || unitType == "ChangelingZealot"
+        || unitType == "ChangelingZergling" || unitType == "ChangelingZerglingWings";
+}
+
+bool CycleMod_CanShareDamage(unit candidate) {
+    if (!CycleMod_IsCombatUnit(candidate)) { return false; }
+    if (UnitTestState(candidate, c_unitStateHallucination)) { return false; }
+    return !CycleMod_IsShareExemptType(UnitGetType(candidate));
 }
 
 bool CycleMod_IsEconomicEgg(unit candidate) {
@@ -828,23 +1040,194 @@ string CycleMod_OpenSkiesFilters(string filters) {
     return required + ";" + excluded;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Which weapons Open Skies must leave alone.
+//
+// SC2 fires the FIRST weapon in a unit's WeaponArray whose TargetFilters accept
+// the target. That is the entire selection rule - there is no "pick the weapon
+// that does more damage". So on a unit carrying one weapon per plane, opening
+// both weapons to both planes makes the index-0 weapon win against everything
+// and leaves the other one dead. A Thor answered Roaches with Javelin Missiles
+// (index 0, range 10, 6x4 vs *Light air*) instead of Thor's Hammer; a Tempest
+// answered ground armies with its 13-range anti-air gun.
+//
+// The rule: Open Skies exists to give a unit reach into the plane it cannot
+// touch. A unit that ALREADY covers both planes has nothing to gain and its
+// weapon selection to lose, so its weapons stay exactly as Blizzard shipped
+// them. That is derived from the catalog below rather than hand-listed - a
+// hand-list is one forgotten unit away from being wrong, and the affected set
+// (Thor, ThorAP, Tempest, Queen, Hydralisk, ...) is not obvious by eye.
+//--------------------------------------------------------------------------------------------------
+
+// Is this token in a comma-separated filter list? Tokenised rather than
+// StringFind'd so a future token that merely contains "Air"/"Ground" cannot
+// produce a false positive.
+bool CycleMod_ListHasToken(string list, string wanted) {
+    string ch;
+    int    len;
+    int    start;
+    int    i;
+
+    len = StringLength(list);
+    start = 1;
+    i = 1;
+    while (i <= len + 1) {
+        if (i > len) { ch = ","; }
+        else         { ch = StringSub(list, i, i); }
+        if (ch == ",") {
+            if (StringSub(list, start, i - 1) == wanted) { return true; }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// 1 = can hit ground, 2 = can hit air, 3 = both. A weapon is locked out of a
+// plane either by REQUIRING the other one or by EXCLUDING that one, which is
+// why both halves of the filter string have to be read.
+int CycleMod_WeaponPlanes(string weapon) {
+    string filters;
+    string required;
+    string excluded;
+    int    separator;
+    int    planes;
+
+    filters = CatalogFieldValueGet(c_gameCatalogWeapon, weapon, "TargetFilters", 1);
+    separator = StringFind(filters, ";", c_stringCase);
+    if (separator < 0) {
+        required = filters;
+        excluded = "";
+    } else {
+        required = StringSub(filters, 1, separator - 1);
+        excluded = StringSub(filters, separator + 1, StringLength(filters));
+    }
+
+    planes = 0;
+    if (!CycleMod_ListHasToken(required, "Air")
+        && !CycleMod_ListHasToken(excluded, "Ground")) { planes = planes + 1; }
+    if (!CycleMod_ListHasToken(required, "Ground")
+        && !CycleMod_ListHasToken(excluded, "Air")) { planes = planes + 2; }
+    return planes;
+}
+
+// The derived skip list catches per-plane weapon pairs. These three are the
+// other shape of the same bug and it cannot see them: Roach, Hydralisk and
+// Locust each carry a hidden, vestigial 0.5-range melee weapon at index 0,
+// ahead of their real weapon. Those units are ground-only, so the derived rule
+// correctly leaves them open to Open Skies - but the stub must stay shut, or a
+// flyer drifting within half a range gets bitten for nothing instead of shot.
+bool CycleMod_IsVestigialMeleeWeapon(string weapon) {
+    return weapon == "RoachMelee"
+        || weapon == "HydraliskMelee"
+        || weapon == "LocustMPMelee";
+}
+
+// Worker weapons (SCV, Probe, Drone - the MULE has none). Modifiers never
+// reach workers, and Open Skies is the one that can't be stopped per unit, so
+// the weapons themselves are left as shipped: no worker ever shoots air.
+bool CycleMod_IsWorkerWeapon(string weapon) {
+    return weapon == "FusionCutter" || weapon == "ParticleBeam" || weapon == "Spines";
+}
+
+bool CycleMod_OpenSkiesSkipsWeapon(string weapon) {
+    int i;
+
+    if (CycleMod_IsVestigialMeleeWeapon(weapon)) { return true; }
+    if (CycleMod_IsWorkerWeapon(weapon)) { return true; }
+    i = 0;
+    while (i < g_cycle_skipCount) {
+        if (g_cycle_skipWeapon[i] == weapon) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+string CycleMod_UnitWeaponSlot(string unitType, int slot) {
+    string weapon;
+    weapon = CatalogFieldValueGet(c_gameCatalogUnit, unitType,
+        "WeaponArray[" + IntToString(slot) + "].Link", 1);
+    if (weapon == "None") { return ""; }
+    return weapon;
+}
+
+// Walk the Unit catalog and collect the weapons of every unit that already
+// reaches both planes. Two cheap reads per unarmed unit (which is most of the
+// catalog) and a second pass only for the handful that qualify.
+void CycleMod_EnsureOpenSkiesSkipList() {
+    int    catalogCount;
+    int    i;
+    int    slot;
+    string unitType;
+    string weapon;
+    int    slotCount;
+    int    coverage;
+
+    if (g_cycle_skipBuilt) { return; }
+    g_cycle_skipBuilt = true;
+
+    catalogCount = CatalogEntryCount(c_gameCatalogUnit);
+    i = 1;
+    while (i <= catalogCount
+           && g_cycle_skipCount + c_cycleUnitWeaponProbe <= c_cycleSkipLimit) {
+        unitType = CatalogEntryGet(c_gameCatalogUnit, i);
+
+        // Pass one: how many weapons, and what do they cover between them?
+        slotCount = 0;
+        coverage  = 0;
+        slot = 0;
+        while (slot < c_cycleUnitWeaponProbe) {
+            weapon = CycleMod_UnitWeaponSlot(unitType, slot);
+            if (weapon != "") {
+                slotCount = slotCount + 1;
+                coverage  = coverage | CycleMod_WeaponPlanes(weapon);
+            }
+            slot = slot + 1;
+        }
+
+        // coverage 3 = the unit's weapons between them already reach ground AND
+        // air. Only interesting when it owns more than one weapon - a single
+        // dual-plane weapon has no rival to be mis-selected over. Pass two only
+        // runs for those few units, so re-reading the links is cheaper than
+        // carrying a scratch array through the whole sweep.
+        if (slotCount > 1 && coverage == 3) {
+            slot = 0;
+            while (slot < c_cycleUnitWeaponProbe) {
+                weapon = CycleMod_UnitWeaponSlot(unitType, slot);
+                if (weapon != "" && !CycleMod_OpenSkiesSkipsWeapon(weapon)) {
+                    g_cycle_skipWeapon[g_cycle_skipCount] = weapon;
+                    g_cycle_skipCount = g_cycle_skipCount + 1;
+                }
+                slot = slot + 1;
+            }
+        }
+        i = i + 1;
+    }
+}
+
 void CycleMod_EnsureWeaponCache() {
     int catalogCount;
     int i;
     string weapon;
 
     if (g_cycle_weaponCount != 0) { return; }
+    CycleMod_EnsureOpenSkiesSkipList();
     catalogCount = CatalogEntryCount(c_gameCatalogWeapon);
     if (catalogCount > c_cycleWeaponLimit) { catalogCount = c_cycleWeaponLimit; }
     i = 0;
     while (i < catalogCount) {
         weapon = CatalogEntryGet(c_gameCatalogWeapon, i + 1);
-        g_cycle_weaponEntry[i]  = weapon;
-        g_cycle_weaponFilter[i] = CatalogFieldValueGet(
-            c_gameCatalogWeapon, weapon, "TargetFilters", 1);
+        // Filtered at cache-build time rather than at apply time, so a skipped
+        // weapon is never written in either direction - including the restore
+        // pass in CycleMod_SetOpenSkies.
+        if (!CycleMod_OpenSkiesSkipsWeapon(weapon)) {
+            g_cycle_weaponEntry[g_cycle_weaponCount]  = weapon;
+            g_cycle_weaponFilter[g_cycle_weaponCount] = CatalogFieldValueGet(
+                c_gameCatalogWeapon, weapon, "TargetFilters", 1);
+            g_cycle_weaponCount = g_cycle_weaponCount + 1;
+        }
         i = i + 1;
     }
-    g_cycle_weaponCount = catalogCount;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -884,9 +1267,14 @@ string CycleMod_SplashEffect(int idx) {
     if (idx == 10) { return "VolatileBurstU"; }                  // Baneling explosion
     if (idx == 11) { return "VolatileBurstU2"; }                 // Baneling explosion
     // Air-locked: these would never splash onto ground.
-    if (idx == 12) { return "JavelinMissileLaunchersDamage"; }   // Thor AA
-    if (idx == 13) { return "LanceMissileLaunchersDamage"; }     // Thor AP high impact
-    if (idx == 14) { return "LiberatorMissileDamage"; }          // Liberator AA
+    if (idx == 12) { return "LiberatorMissileDamage"; }          // Liberator AA
+    // Deliberately gone: JavelinMissileLaunchersDamage and
+    // LanceMissileLaunchersDamage (Thor / Thor High Impact AA). Both Thor
+    // weapons are now skipped by CycleMod_OpenSkiesSkipsWeapon, so their
+    // missiles never target ground in the first place - and leaving the
+    // searches open would have let the AA splash spill onto ground units
+    // standing under an air target, which is not something Open Skies should
+    // be doing to a unit it no longer touches.
     return "";
 }
 
@@ -1005,13 +1393,419 @@ void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
     }
 }
 
+//--------------------------------------------------------------------------------------------------
+// Arcane Surge: 2x energy regeneration on everything you own, units and
+// structures alike.
+//
+// A behavior cannot express this. SModification only offers VitalRegenArray,
+// which is a flat add - that is what the modifier used to be (+2 energy/s) and
+// it was both enormous next to the 0.5625/s a standard caster regenerates and
+// identical on every unit regardless of its own rate. VitalRegenMultiplier is
+// not indexed by vital, so it would have doubled Protoss shield and Zerg life
+// regen too. EnergyRegenRate lives on CUnit, so doubling it per player through
+// the catalog is the only way to scale the actual stat and nothing else.
+//
+// Same shape as the Open Skies weapon cache above: one sweep of the Unit
+// catalog reading player 1's (unmodified) rates, keeping only the types that
+// regenerate energy at all, then a short per-player set off that list. Sweeping
+// once per player instead would multiply a ~1300-entry catalog walk by the team
+// size for no gain.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_EnsureEnergyCache() {
+    int    catalogCount;
+    int    i;
+    string unitType;
+    string rate;
+
+    if (g_cycle_energyCached) { return; }
+    g_cycle_energyCached = true;
+    catalogCount = CatalogEntryCount(c_gameCatalogUnit);
+    i = 1;
+    while (i <= catalogCount && g_cycle_energyCount < c_cycleEnergyLimit) {
+        unitType = CatalogEntryGet(c_gameCatalogUnit, i);
+        rate = CatalogFieldValueGet(c_gameCatalogUnit, unitType, "EnergyRegenRate", 1);
+        // Skips units with no energy and units whose energy deliberately does
+        // not regenerate - doubling zero is zero either way, and keeping the
+        // list short is what makes the per-player pass cheap.
+        if (StringToFixed(rate) > 0.0) {
+            g_cycle_energyEntry[g_cycle_energyCount] = unitType;
+            g_cycle_energyRate[g_cycle_energyCount]  = rate;
+            g_cycle_energyCount = g_cycle_energyCount + 1;
+        }
+        i = i + 1;
+    }
+}
+
+string CycleMod_ArcaneRate(int cacheIndex) {
+    return FixedToString(
+        StringToFixed(g_cycle_energyRate[cacheIndex]) * c_cycleArcaneRegenMult, 4);
+}
+
+// Draft mode: double one player's energy regen only.
+void CycleMod_ArcaneSurgeForPlayer(int player) {
+    int i;
+
+    CycleMod_EnsureEnergyCache();
+    i = 0;
+    while (i < g_cycle_energyCount) {
+        CatalogFieldValueSet(c_gameCatalogUnit, g_cycle_energyEntry[i],
+            "EnergyRegenRate", player, CycleMod_ArcaneRate(i));
+        i = i + 1;
+    }
+}
+
+void CycleMod_ApplyArcaneSurgeTeam(playergroup team) {
+    int n;
+    int i;
+    int p;
+
+    n = PlayerGroupCount(team);
+    i = 1;
+    while (i <= n) {
+        p = PlayerGroupPlayer(team, i);
+        CycleMod_ArcaneSurgeForPlayer(p);
+        i = i + 1;
+    }
+}
+
+// Legacy phase mode only: on/off for every player, restoring the cached base
+// rate when the phase rotates away. Mirrors CycleMod_SetOpenSkies.
+void CycleMod_SetArcaneSurge(bool enabled) {
+    int    i;
+    int    player;
+    string rate;
+
+    if (enabled == g_cycle_arcaneEnabled) { return; }
+    CycleMod_EnsureEnergyCache();
+
+    i = 0;
+    while (i < g_cycle_energyCount) {
+        if (enabled) { rate = CycleMod_ArcaneRate(i); }
+        else         { rate = g_cycle_energyRate[i]; }
+        player = 1;
+        while (player <= 16) {
+            CatalogFieldValueSet(c_gameCatalogUnit, g_cycle_energyEntry[i],
+                "EnergyRegenRate", player, rate);
+            player = player + 1;
+        }
+        i = i + 1;
+    }
+    g_cycle_arcaneEnabled = enabled;
+}
+
 // One-time activation once the 3-minute delay elapses (draft mode). Open Skies
-// is a catalog change so it is applied here rather than per-unit in the scan.
+// and Arcane Surge are catalog changes so they are applied here rather than
+// per-unit in the scan.
 void CycleMod_ActivateDelayedMods() {
     if (CycleMod_P1HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P1Team()); }
     if (CycleMod_P2HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P2Team()); }
+    if (CycleMod_P1HasModIdx(7)) { CycleMod_ApplyArcaneSurgeTeam(CycleMod_P1Team()); }
+    if (CycleMod_P2HasModIdx(7)) { CycleMod_ApplyArcaneSurgeTeam(CycleMod_P2Team()); }
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
         "<c val=\"FFD54A\">Battlefield modifiers are now ACTIVE.</c>"));
+}
+
+//--------------------------------------------------------------------------------------------------
+// Auto Refineries: the drafting side's finished gas buildings mine themselves at
+// the three-worker rate, and that side's workers are kept out of them.
+//
+// Paid from the scan rather than a per-building timer. Each building remembers
+// the mission time it has been paid up to (c_cycleStateAutoGas) and catches up
+// in whole trips, so the rate holds however the 0.5s scan ticks happen to land.
+// The gas comes out of the building's own remaining resources - a refinery takes
+// over its geyser's contents when built - so a geyser runs dry on the same
+// schedule it would under three workers, and a depleted one stops paying.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_AutoRefineryTick(unit building) {
+    fixed now;
+    fixed paidUpTo;
+    int   trip;
+    int   left;
+    int   pay;
+
+    if (UnitTestState(building, c_unitStateUnderConstruction)) { return; }
+
+    now      = GameGetMissionTime();
+    paidUpTo = UnitGetCustomValue(building, c_cycleStateAutoGas);
+    // First sight since it finished (or since the modifier switched on): start
+    // the clock now instead of back-paying time that never counted.
+    if (paidUpTo <= 0.0) {
+        UnitSetCustomValue(building, c_cycleStateAutoGas, now);
+        return;
+    }
+
+    if (CycleMod_IsRichGasBuilding(building)) { trip = c_cycleAutoGasTripRich; }
+    else                                       { trip = c_cycleAutoGasTrip; }
+
+    while (now - paidUpTo >= c_cycleAutoGasInterval) {
+        paidUpTo = paidUpTo + c_cycleAutoGasInterval;
+        left = UnitGetPropertyInt(building, c_unitPropResources, c_unitPropCurrent);
+        if (left <= 0) {
+            paidUpTo = now;
+            break;
+        }
+        pay = trip;
+        if (pay > left) { pay = left; }
+        UnitSetPropertyInt(building, c_unitPropResources, left - pay);
+        PlayerModifyPropertyInt(UnitGetOwner(building), c_playerPropVespene,
+            c_playerPropOperAdd, pay);
+        // Adding to the bank alone is invisible to the stats: the score
+        // screen, observer panels and replay income read the engine's
+        // "collected" total, which only real harvests update. Credit it too,
+        // so auto gas counts as mined gas everywhere it is reported.
+        PlayerModifyPropertyInt(UnitGetOwner(building), c_playerPropVespeneCollected,
+            c_playerPropOperAdd, pay);
+    }
+    UnitSetCustomValue(building, c_cycleStateAutoGas, paidUpTo);
+}
+
+string CycleMod_WorkerHarvestAbil(unit worker) {
+    string unitType;
+    unitType = UnitGetType(worker);
+    if (unitType == "SCV")   { return "SCVHarvest"; }
+    if (unitType == "Probe") { return "ProbeHarvest"; }
+    if (unitType == "Drone") { return "DroneHarvest"; }
+    return "";
+}
+
+// Workers can't go into an automatic refinery. Rather than fight the harvest AI
+// once a worker is inside, the gather order is caught on its way there - a
+// right-click, a rally, the SCV that just finished building it, or a worker
+// heading back after returning cargo - and swapped for the nearest mineral
+// patch, or a plain stop if there is none in range. A worker already inside
+// when the modifier switches on comes out, returns its load, and is caught on
+// the way back.
+void CycleMod_KeepWorkerOutOfGas(unit worker) {
+    string    harvestAbil;
+    order     current;
+    unit      target;
+    unitgroup patches;
+    unit      patch;
+    point     gasPos;
+
+    harvestAbil = CycleMod_WorkerHarvestAbil(worker);
+    if (harvestAbil == "") { return; }
+
+    // A gather order aimed at an automatic refinery...
+    target = null;
+    if (UnitOrderCount(worker) > 0) {
+        current = UnitOrder(worker, 0);
+        if (current != null
+            && AbilityCommandGetAbility(OrderGetAbilityCommand(current)) == harvestAbil) {
+            target = OrderGetTargetUnit(current);
+            if (target != null && (!CycleMod_IsGasBuilding(target)
+                || !CycleMod_UnitModActive(target, "TardigradeMod_AutoRefinery"))) {
+                target = null;
+            }
+        }
+    }
+    // ...or, whatever its order looks like, a worker the engine itself says is
+    // on gas. The order check alone let workers through in playtest.
+    if (target == null && !UnitIsHarvesting(worker, c_resourceTypeVespene)) { return; }
+
+    // Minerals are the only harvestable resource the neutral player (0) owns:
+    // a bare geyser is RawResource, and every refinery belongs to someone.
+    if (target != null) { gasPos = UnitGetPosition(target); }
+    else                { gasPos = UnitGetPosition(worker); }
+    patches = UnitGroupSearch(null, 0, gasPos, c_cycleAutoGasMineralRange,
+        UnitFilter((1 << c_targetFilterHarvestableResource), 0, 0, 0), 0);
+    patch   = UnitGroupClosestToPoint(patches, gasPos);
+    if (patch == null) {
+        UnitIssueOrder(worker, Order(AbilityCommand("stop", 0)), c_orderQueueReplace);
+        return;
+    }
+    // A worker still carrying gas drops it off first rather than losing it.
+    if (UnitGetPropertyInt(worker, c_unitPropCarriedVespene, c_unitPropCurrent) > 0) {
+        UnitIssueOrder(worker, Order(AbilityCommand(harvestAbil, 1)), c_orderQueueReplace);
+        UnitIssueOrder(worker, OrderTargetingUnit(AbilityCommand(harvestAbil, 0), patch),
+            c_orderQueueAddToEnd);
+    } else {
+        UnitIssueOrder(worker, OrderTargetingUnit(AbilityCommand(harvestAbil, 0), patch),
+            c_orderQueueReplace);
+    }
+}
+
+// The real block. Intercepting gather orders from the scan (above) turned out
+// not to stop workers in playtest - they still went in and mined. So the
+// drafting side's worker harvest abilities are simply not allowed to take gas:
+// ResourceAllowed[Vespene] = 0 on SCVHarvest / ProbeHarvest / DroneHarvest,
+// set per player through the catalog, which is exactly how Blizzard makes the
+// MULE minerals-only (MULEGather). A right-click on the refinery can no longer
+// become a harvest order at all; the redirect above stays as a clean-up for
+// workers already mid-trip when this switches on at 3:00.
+//
+// Blizzard's scripts only ever index catalog arrays numerically, so it isn't
+// certain whether this enum-indexed array takes the name or the number in a
+// field path. Try the name, read it back, and fall back to the index.
+void CycleMod_BlockGasHarvest(int player, string harvestAbil) {
+    string byName;
+    string byIndex;
+
+    byName  = "ResourceAllowed[" + c_resourceTypeVespeneName + "]";
+    byIndex = "ResourceAllowed[" + IntToString(c_resourceTypeVespene) + "]";
+    CatalogFieldValueSet(c_gameCatalogAbil, harvestAbil, byName, player, "0");
+    if (CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byName, player) != "0") {
+        CatalogFieldValueSet(c_gameCatalogAbil, harvestAbil, byIndex, player, "0");
+    }
+    Debug_Log("Auto Refineries: " + harvestAbil + " gas allowed for P" + IntToString(player)
+        + " = " + CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byIndex, player));
+}
+
+void CycleMod_BlockGasHarvestTeam(playergroup team) {
+    int n;
+    int i;
+    int p;
+
+    n = PlayerGroupCount(team);
+    i = 1;
+    while (i <= n) {
+        p = PlayerGroupPlayer(team, i);
+        CycleMod_BlockGasHarvest(p, "SCVHarvest");
+        CycleMod_BlockGasHarvest(p, "ProbeHarvest");
+        CycleMod_BlockGasHarvest(p, "DroneHarvest");
+        i = i + 1;
+    }
+}
+
+void CycleMod_UpdateAutoRefinery(unit u) {
+    if (!CycleMod_UnitModActive(u, "TardigradeMod_AutoRefinery")) { return; }
+    if (CycleMod_IsWorker(u))           { CycleMod_KeepWorkerOutOfGas(u); }
+    else if (CycleMod_IsGasBuilding(u)) { CycleMod_AutoRefineryTick(u); }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Shared Damage: a hit on one of your units is half kept, half shared. X = what
+// the hit would have done after armor; N = the friendly units carrying the
+// behavior within c_cycleShareRadius, not counting the victim. The victim
+// takes X * c_cycleShareKeptFraction (0.5) and each of the N takes the rest / N.
+// With no partners in range the victim takes all of X.
+//
+// Absorb-and-redeal rather than heal-back: the unit-damaged event fires AFTER
+// the damage has landed, so a hit that was lethal on its own would already have
+// killed the victim before it could be spread - and stopping exactly those hits
+// is the point of the modifier. TardigradeMod_SharedDamage instead carries a
+// damage response that zeroes every incoming hit (the same response Blizzard's
+// own DamageTakenNone uses), and the damage-absorbed event hands the intercepted
+// amount to CycleMod_OnSharedDamageAbsorbed to deal back out. The redealt hits
+// use c_cycleShareEffect, which that response excludes, so they land normally
+// and can never be absorbed and shared a second time.
+//--------------------------------------------------------------------------------------------------
+
+// A damage response runs before armor (a WoL Immortal's Hardened Shield capped
+// hits at 10 and shield armor still came off after), so the absorbed amount is
+// pre-armor. Take the victim's armor off here, scaled by the effect's own
+// ArmorReduction so that armor-piercing spells (Storm, 0) stay whole, and the
+// redealt hits then skip armor - X is the "after modifiers" number.
+fixed CycleMod_SharedHitAmount(unit victim, fixed absorbed, string effect, int sourcePlayer) {
+    fixed  armor;
+    fixed  reduction;
+    string reductionText;
+    fixed  amount;
+    int    catalogPlayer;
+
+    if (UnitGetPropertyFixed(victim, c_unitPropShields, c_unitPropCurrent) > 0.0) {
+        armor = UnitGetPropertyFixed(victim, c_unitPropShieldArmor, c_unitPropCurrent);
+    } else {
+        armor = UnitGetPropertyFixed(victim, c_unitPropLifeArmor, c_unitPropCurrent);
+    }
+
+    reduction = 1.0;
+    if (effect != "" && CatalogEntryIsValid(c_gameCatalogEffect, effect)) {
+        catalogPlayer = sourcePlayer;
+        if (catalogPlayer < 1 || catalogPlayer > 15) { catalogPlayer = UnitGetOwner(victim); }
+        reductionText = CatalogFieldValueGet(c_gameCatalogEffect, effect, "ArmorReduction", catalogPlayer);
+        if (reductionText != "") { reduction = StringToFixed(reductionText); }
+    }
+
+    amount = absorbed - armor * reduction;
+    if (amount < c_cycleMinDamage) { amount = c_cycleMinDamage; }
+    return amount;
+}
+
+// The victim's partners: other units within range that carry the behavior
+// themselves (so eligibility is decided in one place, CycleMod_CanShareDamage,
+// when the scan hands the behavior out) and can actually take damage right now.
+unitgroup CycleMod_SharePartners(unit victim) {
+    unitgroup found;
+    unitgroup partners;
+    unit      candidate;
+    int       count;
+    int       i;
+
+    found = UnitGroupAlliance(UnitGetOwner(victim), c_unitAllianceAlly,
+        RegionCircle(UnitGetPosition(victim), c_cycleShareRadius),
+        UnitFilter(0, 0, (1 << c_targetFilterMissile),
+            (1 << (c_targetFilterStasis - 32)) | (1 << (c_targetFilterDead - 32))
+            | (1 << (c_targetFilterHidden - 32)) | (1 << (c_targetFilterInvulnerable - 32))), 0);
+
+    partners = UnitGroupEmpty();
+    count = UnitGroupCount(found, c_unitCountAll);
+    i = 1;
+    while (i <= count) {
+        candidate = UnitGroupUnit(found, i);
+        if (candidate != victim && UnitBehaviorCount(candidate, c_cycleShareBehavior) > 0) {
+            UnitGroupAdd(partners, candidate);
+        }
+        i = i + 1;
+    }
+    return partners;
+}
+
+bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
+    unit      victim;
+    unit      attacker;
+    unit      partner;
+    unitgroup partners;
+    fixed     absorbed;
+    fixed     total;
+    fixed     kept;
+    fixed     share;
+    int       count;
+    int       i;
+
+    victim   = EventUnit();
+    absorbed = EventUnitDamageAbsorbed();
+    // Hedge: if the engine reports the zeroed hit as attempted-minus-landed
+    // instead of as absorbed, recover it that way rather than letting the hit
+    // vanish (which would make every Shared Damage unit invulnerable).
+    if (absorbed <= 0.0) { absorbed = EventUnitDamageAttempted() - EventUnitDamageAmount(); }
+    if (absorbed <= 0.0) { return true; }
+
+    partners = CycleMod_SharePartners(victim);
+    count    = UnitGroupCount(partners, c_unitCountAll);
+    total    = CycleMod_SharedHitAmount(victim, absorbed, EventUnitDamageEffect(),
+        EventUnitDamageSourcePlayer());
+
+    // The victim keeps c_cycleShareKeptFraction of the hit outright; only the
+    // rest is split, and only among the partners. Alone, it takes it all.
+    if (count > 0) {
+        kept  = total * c_cycleShareKeptFraction;
+        share = (total - kept) / IntToFixed(count);
+    } else {
+        kept  = total;
+        share = 0.0;
+    }
+
+    // Redealt in the attacker's name, so kill credit, Veteran Forces and
+    // Predator Protocol all see the attacker's damage. If it is already gone
+    // (a Baneling that just popped), the victim stands in; the damage handler
+    // ignores a share with a friendly author.
+    attacker = EventUnitDamageSourceUnit();
+    if (attacker == null || !UnitIsAlive(attacker)) { attacker = victim; }
+
+    // Partners first and back to front: a share can kill, and a dead unit may
+    // drop out of the group mid-loop, which would shift the ones not yet hit.
+    // The victim goes last so it is still alive to author any shares it has to.
+    i = count;
+    while (i >= 1) {
+        partner = UnitGroupUnit(partners, i);
+        if (partner != null && UnitIsAlive(partner)) {
+            UnitDamage(attacker, c_cycleShareEffect, partner, share);
+        }
+        i = i - 1;
+    }
+    UnitDamage(attacker, c_cycleShareEffect, victim, kept);
+    return true;
 }
 
 bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
@@ -1024,10 +1818,26 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     fixed maxShields;
     fixed healing;
     fixed overflow;
+    bool  overwatchArmed;
 
     target = EventUnit();
     source = EventUnitDamageSourceUnit();
     if (source == null) { return true; }
+
+    // Overwatch's own bonus damage re-enters this handler. Bail before anything
+    // else: it must not re-arm/re-consume Overwatch (which would recurse), must
+    // not reset the idle timer, and must not feed Predator Protocol a second
+    // helping of lifesteal off damage the attacker never actually swung for.
+    if (EventUnitDamageEffect() == c_cycleOverwatchEffect) { return true; }
+
+    // A redealt Shared Damage hit normally carries the original attacker and is
+    // handled below like any hit - Predator heals off it, Overwatch boosts it
+    // (the bonus is excluded from the absorb, so it lands and is not re-split).
+    // But when the attacker was already gone the victim authors the shares
+    // itself, and a friendly-authored share is bookkeeping, not an attack: it
+    // must not heal the victim's side through Predator or arm Overwatch.
+    if (EventUnitDamageEffect() == c_cycleShareEffect
+        && !CycleMod_IsHostileTarget(source, target)) { return true; }
 
     // Overwatch bookkeeping runs BEFORE the structure filter below. The scan
     // arms static defence exactly like a mobile unit, so when a cannon's damage
@@ -1038,18 +1848,41 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     // unit in the armed state.
     UnitSetCustomValue(source, c_cycleStateLastAttack, GameGetMissionTime());
 
-    // Consume Overwatch's bonus damage the instant this shot lands, so it
-    // covers exactly the one attack instead of lingering for several.
-    if (UnitBehaviorCount(source, "TardigradeMod_OverwatchReady") > 0) {
-        libNtve_gf_SetBehaviorCount(source, "TardigradeMod_OverwatchReady", source, 0);
+    // Recorded before the Overwatch bonus below, which can be the blow that
+    // actually kills: CycleMod_OnUnitDied reads this to award Veteran Forces,
+    // and it fires from inside that UnitDamage call.
+    targetIndex = FixedToInt(UnitGetCustomValue(target, c_cycleStateRegistered));
+    if (targetIndex > 0 && targetIndex < c_cycleWeaponLimit
+        && CycleMod_IsCombatUnit(source)) {
+        g_cycle_lastAttacker[targetIndex] = source;
+    }
+
+    // Overwatch's +50% is dealt here rather than by a DamageDealtFraction on
+    // TardigradeMod_OverwatchReady. That modifier only reaches damage the
+    // engine routes through the source's weapon-damage modifiers, so splash,
+    // Baneling blasts and spell damage were left at face value - and its index
+    // list never covered the Spell kind at all. EventUnitDamageAmount() is the
+    // damage that actually landed on this target, whatever produced it, so
+    // scaling off it covers every case uniformly.
+    //
+    // The armed marker is consumed on the first damage event of the shot and
+    // replaced by a two-loop Firing marker, so the remaining damage events of
+    // the same volley (each splash target, a Colossus' second beam) are still
+    // boosted while a genuinely separate later attack is not.
+    overwatchArmed = UnitBehaviorCount(source, "TardigradeMod_OverwatchReady") > 0;
+    if (overwatchArmed || UnitBehaviorCount(source, "TardigradeMod_OverwatchFiring") > 0) {
+        if (overwatchArmed) {
+            libNtve_gf_SetBehaviorCount(source, "TardigradeMod_OverwatchReady", source, 0);
+            UnitBehaviorAdd(source, "TardigradeMod_OverwatchFiring", source, 1);
+        }
+        if (EventUnitDamageAmount() > 0.0 && UnitIsAlive(target)
+            && CycleMod_IsHostileTarget(source, target)) {
+            UnitDamage(source, c_cycleOverwatchEffect, target,
+                EventUnitDamageAmount() * c_cycleOverwatchBonus);
+        }
     }
 
     if (!CycleMod_IsCombatUnit(source)) { return true; }
-
-    targetIndex = FixedToInt(UnitGetCustomValue(target, c_cycleStateRegistered));
-    if (targetIndex > 0 && targetIndex < c_cycleWeaponLimit) {
-        g_cycle_lastAttacker[targetIndex] = source;
-    }
 
     // Predator Protocol tops up life first, then spills whatever is left over
     // into shields - otherwise the mod is dead weight on a full-health Protoss
@@ -1246,15 +2079,28 @@ void CycleMod_RenderRows(int activePhase) {
 
 //--------------------------------------------------------------------------------------------------
 // Draft mode: apply (or clear) a single drafted modifier's passive buff on a
-// unit. Ability-based modifiers (Medivac Boost, Battle Blink) grant a
+// unit. Ability-based modifiers (Medivac Boost, Battle Blink, Salvage) grant a
 // clickable ability instead of a buff, so they're skipped here and handled by
-// CycleMod_UpdateAbilityMods; Free Labor (Workers cost no supply) is skipped
-// down to worker units only, so it doesn't discount every unit's supply cost.
+// CycleMod_UpdateAbilityMods; Auto Refineries runs from
+// CycleMod_UpdateAutoRefinery and No Bans only acts on the roster draft, so
+// neither has a buff either. Free Labor (Workers cost no supply) is narrowed
+// down to worker units only, so it doesn't discount every unit's supply cost,
+// and Shared Damage to the units CycleMod_CanShareDamage allows.
 //--------------------------------------------------------------------------------------------------
 void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
     string beh;
     beh = CycleMod_Behavior(modIdx);
-    if (beh == "" || beh == "TardigradeMod_MedivacBoost" || beh == "TardigradeMod_BattleBlink") {
+    if (beh == "" || beh == "TardigradeMod_MedivacBoost" || beh == "TardigradeMod_BattleBlink"
+        || beh == "TardigradeMod_Salvage" || beh == "TardigradeMod_AutoRefinery"
+        || beh == "TardigradeMod_NoBans") {
+        return;
+    }
+    if (beh == c_cycleShareBehavior) {
+        if (CycleMod_UnitModActive(u, beh) && CycleMod_CanShareDamage(u)) {
+            UnitBehaviorAdd(u, beh, u, 1);
+        } else {
+            libNtve_gf_SetBehaviorCount(u, beh, u, 0);
+        }
         return;
     }
     if (beh == "TardigradeMod_WorkersNoSupply") {
@@ -1275,9 +2121,9 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
 }
 
 // Show/enable (or hide/disable) a granted-but-hidden ability on a unit. The
-// abilities themselves are granted hidden to every combat unit + worker via
-// AbilArray in UnitData.xml; UnitAbilityExists guards units that never got
-// the grant (e.g. structures caught by the broad scan filter).
+// abilities themselves are granted hidden via AbilArray in UnitData.xml - Blink
+// and Medivac Boost to every combat unit (not workers), Salvage to every structure -
+// and UnitAbilityExists guards units that never got a given grant.
 void CycleMod_SetAbilAvailable(unit u, string abilId, bool available) {
     if (!UnitAbilityExists(u, abilId)) { return; }
     UnitAbilityShow(u, abilId, available);
@@ -1289,6 +2135,8 @@ void CycleMod_UpdateAbilityMods(unit u) {
         CycleMod_UnitModActive(u, "TardigradeMod_MedivacBoost"));
     CycleMod_SetAbilAvailable(u, "TardigradeAbil_Blink",
         CycleMod_UnitModActive(u, "TardigradeMod_BattleBlink"));
+    CycleMod_SetAbilAvailable(u, "TardigradeAbil_Salvage",
+        CycleMod_UnitModActive(u, "TardigradeMod_Salvage"));
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1308,6 +2156,10 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
         if (!c_cyclePhaseMode) {
             if (!g_cycle_delayedApplied && GameGetMissionTime() >= c_cycleActivationDelay) {
                 CycleMod_ActivateDelayedMods();
+                // Here rather than inside ActivateDelayedMods, which is defined
+                // above the Auto Refineries section it would need to call.
+                if (CycleMod_P1HasModIdx(c_cycleModAutoRefinery)) { CycleMod_BlockGasHarvestTeam(CycleMod_P1Team()); }
+                if (CycleMod_P2HasModIdx(c_cycleModAutoRefinery)) { CycleMod_BlockGasHarvestTeam(CycleMod_P2Team()); }
                 g_cycle_delayedApplied = true;
             }
         }
@@ -1345,6 +2197,7 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
                         p = p + 1;
                     }
                     CycleMod_UpdateAbilityMods(u);
+                    CycleMod_UpdateAutoRefinery(u);
                 }
                 CycleMod_UpdateConditionalBehaviors(u);
                 i = i + 1;
@@ -1371,6 +2224,7 @@ bool CycleMod_PhaseTrigger(bool testConds, bool runActions) {
         modIdx                  = g_cycle_chosen[phase];
         g_cycle_activeBehavior  = CycleMod_Behavior(modIdx);
         CycleMod_SetOpenSkies(g_cycle_activeBehavior == "TardigradeMod_OpenSkies");
+        CycleMod_SetArcaneSurge(g_cycle_activeBehavior == "TardigradeMod_ArcaneSurge");
 
         if (phase >= c_cyclePhaseCount) { nextPhase = 1; }
         else                            { nextPhase = phase + 1; }
@@ -1401,81 +2255,180 @@ bool CycleMod_PhaseTrigger(bool testConds, bool runActions) {
 
 //--------------------------------------------------------------------------------------------------
 // In-game reference panel (draft mode): both sides' 3 always-active modifiers.
-// Per viewer it reads YOURS / OPPONENT; spectators see PLAYER 1 / PLAYER 2.
+// Players read YOURS / OPPONENT; spectators and referees see PLAYER 1 / PLAYER 2.
+//
+// One dialog per viewer, collapsible independently - see the g_cycle_panel*
+// declarations for why a shared dialog cannot do this. The audience gets a
+// panel on exactly the same terms as the players, so a spectator can see both
+// modifier sets and can fold the panel away like anyone else.
 //--------------------------------------------------------------------------------------------------
+
+// 1 = sees team1's picks as "theirs", 2 = team2's, 0 = neutral spectator view.
+int CycleMod_PanelRole(int player) {
+    if (PlayerGroupHasPlayer(g_draft_team1, player)) { return 1; }
+    if (PlayerGroupHasPlayer(g_draft_team2, player)) { return 2; }
+    return 0;
+}
+
+// Panel keys: a team player's own slot (1..15) for their private panel, and 0
+// for the one shared spectator panel. Spectators have no player slot to key a
+// private dialog on (the referee/spectator player types are obsolete - they
+// are reached only through PlayerGroupAll()-derived groups, see
+// Tardigrade_RefreshViewerGroups), so they share one panel addressed to the
+// audience group, and folding it folds it for all of them.
+playergroup CycleMod_PanelViewers(int key) {
+    if (key == 0) { return Tardigrade_Audience(); }
+    return PlayerGroupSingle(key);
+}
+
+// Collapsed shows the toggle button only; expanded shows both mod lists. Width
+// is constant across both states so every control's anchor offset (relative to
+// the dialog's centre) stays put instead of shifting when the height changes.
+void CycleMod_SetPanelExpanded(int player, bool expanded) {
+    playergroup viewer;
+    int         i;
+
+    viewer = CycleMod_PanelViewers(player);
+
+    if (expanded) { DialogSetSize(g_cycle_panelDlg[player], 470, 232); }
+    else          { DialogSetSize(g_cycle_panelDlg[player], 470, 34); }
+
+    DialogControlSetVisible(g_cycle_panelTitle[player], viewer, expanded);
+    DialogControlSetVisible(g_cycle_panelHdrMine[player], viewer, expanded);
+    DialogControlSetVisible(g_cycle_panelHdrOpp[player], viewer, expanded);
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        DialogControlSetVisible(g_cycle_panelRowMine[player][i], viewer, expanded);
+        DialogControlSetVisible(g_cycle_panelRowOpp[player][i], viewer, expanded);
+        i = i + 1;
+    }
+
+    if (expanded) {
+        DialogControlSetPropertyAsText(g_cycle_panelBtn[player], c_triggerControlPropertyText,
+            viewer, StringToText("Active Modifiers  [-]"));
+    } else {
+        DialogControlSetPropertyAsText(g_cycle_panelBtn[player], c_triggerControlPropertyText,
+            viewer, StringToText("Active Modifiers  [+]"));
+    }
+    g_cycle_panelExpanded[player] = expanded;
+}
+
+bool CycleMod_OnPanelToggle(bool testConds, bool runActions) {
+    int key;
+    key = EventPlayer();
+    // Anyone who isn't on a team clicked the shared spectator panel.
+    if (CycleMod_PanelRole(key) == 0) { key = 0; }
+    CycleMod_SetPanelExpanded(key, !g_cycle_panelExpanded[key]);
+    return true;
+}
+
+void CycleMod_InitPanelForPlayer(int player, trigger t) {
+    playergroup viewer;
+    int         role;
+    int         i;
+    int         mineMod;
+    int         oppMod;
+
+    viewer = CycleMod_PanelViewers(player);
+    role   = CycleMod_PanelRole(player);   // key 0 is on no team -> spectator view
+
+    g_cycle_panelDlg[player] = DialogCreate(470, 232, c_anchorTop, 0, 22, false);
+    DialogSetVisible(g_cycle_panelDlg[player], viewer, true);
+    DialogSetImageVisible(g_cycle_panelDlg[player], true);
+
+    g_cycle_panelBtn[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeButton);
+    DialogControlSetSize(g_cycle_panelBtn[player], viewer, 200, 26);
+    DialogControlSetPosition(g_cycle_panelBtn[player], viewer, c_anchorTop, 0, 4);
+
+    g_cycle_panelTitle[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_panelTitle[player], viewer, 450, 20);
+    DialogControlSetPosition(g_cycle_panelTitle[player], viewer, c_anchorTop, 0, 34);
+    DialogControlSetPropertyAsText(g_cycle_panelTitle[player], c_triggerControlPropertyText,
+        viewer, StringToText("<c val=\"888888\">(active at 3:00)</c>"));
+
+    g_cycle_panelHdrMine[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_panelHdrMine[player], viewer, 450, 16);
+    DialogControlSetPosition(g_cycle_panelHdrMine[player], viewer, c_anchorTop, 8, 58);
+    if (role == 0) {
+        DialogControlSetPropertyAsText(g_cycle_panelHdrMine[player], c_triggerControlPropertyText,
+            viewer, StringToText("<c val=\"7FD0FF\">PLAYER 1</c>"));
+    } else {
+        DialogControlSetPropertyAsText(g_cycle_panelHdrMine[player], c_triggerControlPropertyText,
+            viewer, StringToText("<c val=\"7FD0FF\">YOURS</c>"));
+    }
+
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        if (role == 2) { mineMod = CycleMod_Team2Mod(i); }
+        else           { mineMod = CycleMod_Team1Mod(i); }
+        g_cycle_panelRowMine[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
+        DialogControlSetSize(g_cycle_panelRowMine[player][i], viewer, 450, 18);
+        DialogControlSetPosition(g_cycle_panelRowMine[player][i], viewer, c_anchorTop, 8, 76 + (i - 1) * 20);
+        DialogControlSetPropertyAsText(g_cycle_panelRowMine[player][i], c_triggerControlPropertyText,
+            viewer, StringToText(CycleMod_ModLine(mineMod)));
+        i = i + 1;
+    }
+
+    g_cycle_panelHdrOpp[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_panelHdrOpp[player], viewer, 450, 16);
+    DialogControlSetPosition(g_cycle_panelHdrOpp[player], viewer, c_anchorTop, 8, 144);
+    if (role == 0) {
+        DialogControlSetPropertyAsText(g_cycle_panelHdrOpp[player], c_triggerControlPropertyText,
+            viewer, StringToText("<c val=\"FF9F7F\">PLAYER 2</c>"));
+    } else {
+        DialogControlSetPropertyAsText(g_cycle_panelHdrOpp[player], c_triggerControlPropertyText,
+            viewer, StringToText("<c val=\"FF9F7F\">OPPONENT</c>"));
+    }
+
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        if (role == 2) { oppMod = CycleMod_Team1Mod(i); }
+        else           { oppMod = CycleMod_Team2Mod(i); }
+        g_cycle_panelRowOpp[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
+        DialogControlSetSize(g_cycle_panelRowOpp[player][i], viewer, 450, 18);
+        DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, 8, 162 + (i - 1) * 20);
+        DialogControlSetPropertyAsText(g_cycle_panelRowOpp[player][i], c_triggerControlPropertyText,
+            viewer, StringToText(CycleMod_ModLine(oppMod)));
+        i = i + 1;
+    }
+
+    // Starts open: this panel was always-on before, and the point of the toggle
+    // is to let people get it out of the way, not to hide it by default.
+    CycleMod_SetPanelExpanded(player, true);
+    if (player == 0) {
+        TriggerAddEventDialogControl(t, c_playerAny, g_cycle_panelBtn[player], c_triggerControlEventTypeClick);
+    } else {
+        TriggerAddEventDialogControl(t, player, g_cycle_panelBtn[player], c_triggerControlEventTypeClick);
+    }
+}
+
 void CycleMod_InitDraftPanel() {
-    int title;
-    int hdr;
-    int lbl;
-    int i;
+    trigger t;
+    int     n;
+    int     i;
 
-    g_cycle_draftPanel = DialogCreate(470, 214, c_anchorTop, 0, 22, false);
-    DialogSetVisible(g_cycle_draftPanel, Tardigrade_Viewers(), true);
-    DialogSetImageVisible(g_cycle_draftPanel, true);
+    if (g_cycle_panelBuilt) { return; }
+    g_cycle_panelBuilt = true;
 
-    title = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
-    DialogControlSetSize(title, Tardigrade_Viewers(), 450, 20);
-    DialogControlSetPosition(title, Tardigrade_Viewers(), c_anchorTop, 0, 6);
-    DialogControlSetPropertyAsText(title, c_triggerControlPropertyText,
-        Tardigrade_Viewers(), StringToText("<c val=\"FFD54A\">ACTIVE MODIFIERS</c>  <c val=\"888888\">(active at 3:00)</c>"));
+    t = TriggerCreate("CycleMod_OnPanelToggle");
 
-    // YOURS header
-    hdr = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
-    DialogControlSetSize(hdr, Tardigrade_Viewers(), 450, 16);
-    DialogControlSetPosition(hdr, Tardigrade_Viewers(), c_anchorTop, 8, 30);
-    DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
-        g_draft_team1, StringToText("<c val=\"7FD0FF\">YOURS</c>"));
-    DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
-        g_draft_team2, StringToText("<c val=\"7FD0FF\">YOURS</c>"));
-    if (Tardigrade_HasAudience()) {
-        DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
-            Tardigrade_Audience(), StringToText("<c val=\"7FD0FF\">PLAYER 1</c>"));
-    }
-
+    // A private panel for every team player...
+    n = PlayerGroupCount(g_draft_team1);
     i = 1;
-    while (i <= c_cyclePicksEach) {
-        lbl = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
-        DialogControlSetSize(lbl, Tardigrade_Viewers(), 450, 18);
-        DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 8, 48 + (i - 1) * 20);
-        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
-            g_draft_team1, StringToText(CycleMod_ModLine(CycleMod_Team1Mod(i))));
-        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
-            g_draft_team2, StringToText(CycleMod_ModLine(CycleMod_Team2Mod(i))));
-        if (Tardigrade_HasAudience()) {
-            DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
-                Tardigrade_Audience(), StringToText(CycleMod_ModLine(CycleMod_Team1Mod(i))));
-        }
+    while (i <= n) {
+        CycleMod_InitPanelForPlayer(PlayerGroupPlayer(g_draft_team1, i), t);
         i = i + 1;
     }
-
-    // OPPONENT header
-    hdr = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
-    DialogControlSetSize(hdr, Tardigrade_Viewers(), 450, 16);
-    DialogControlSetPosition(hdr, Tardigrade_Viewers(), c_anchorTop, 8, 116);
-    DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
-        g_draft_team1, StringToText("<c val=\"FF9F7F\">OPPONENT</c>"));
-    DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
-        g_draft_team2, StringToText("<c val=\"FF9F7F\">OPPONENT</c>"));
-    if (Tardigrade_HasAudience()) {
-        DialogControlSetPropertyAsText(hdr, c_triggerControlPropertyText,
-            Tardigrade_Audience(), StringToText("<c val=\"FF9F7F\">PLAYER 2</c>"));
-    }
-
+    n = PlayerGroupCount(g_draft_team2);
     i = 1;
-    while (i <= c_cyclePicksEach) {
-        lbl = DialogControlCreate(g_cycle_draftPanel, c_triggerControlTypeLabel);
-        DialogControlSetSize(lbl, Tardigrade_Viewers(), 450, 18);
-        DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 8, 134 + (i - 1) * 20);
-        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
-            g_draft_team1, StringToText(CycleMod_ModLine(CycleMod_Team2Mod(i))));
-        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
-            g_draft_team2, StringToText(CycleMod_ModLine(CycleMod_Team1Mod(i))));
-        if (Tardigrade_HasAudience()) {
-            DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText,
-                Tardigrade_Audience(), StringToText(CycleMod_ModLine(CycleMod_Team2Mod(i))));
-        }
+    while (i <= n) {
+        CycleMod_InitPanelForPlayer(PlayerGroupPlayer(g_draft_team2, i), t);
         i = i + 1;
     }
+    // ...and one shared panel for the audience (key 0). Built unconditionally:
+    // Tardigrade_HasAudience() counts slots, and spectators have none, so it
+    // can't be trusted to say whether anyone is watching.
+    CycleMod_InitPanelForPlayer(0, t);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1486,7 +2439,7 @@ void CycleMod_StartCycle() {
     trigger tPhase;
     trigger tEconomicEgg;
 
-    if (g_cycle_hud != c_invalidDialogId || g_cycle_draftPanel != c_invalidDialogId) { return; }
+    if (g_cycle_hud != c_invalidDialogId || g_cycle_panelBuilt) { return; }
 
     CycleMod_LoadConfig();
 
@@ -1503,6 +2456,12 @@ void CycleMod_StartCycle() {
         c_unitDamageTypeAny, c_unitDamageEither, null);
     TriggerAddEventUnitStartedAttack(g_cycle_attackTrig, null);
     TriggerAddEventUnitDied(g_cycle_deathTrig, null);
+
+    // Shared Damage's redistribution. Registered unconditionally like the
+    // triggers above: it only ever fires for units carrying the behavior,
+    // which the scan hands out only to the side that drafted it, from 3:00.
+    g_cycle_shareTrig = TriggerCreate("CycleMod_OnSharedDamageAbsorbed");
+    TriggerAddEventUnitDamageAbsorbed(g_cycle_shareTrig, null, c_cycleShareBehavior);
 
     tEconomicEgg = TriggerCreate("CycleMod_OnEconomicEggStarted");
     TriggerAddEventUnitAbility(tEconomicEgg, null,

@@ -56,9 +56,13 @@
     <!--   pickable. There are no protected "core" units. Workers and supply         -->
     <!--   (SCV/Probe/Drone, Supply Depot/Pylon/Overlord) are never in the pool and  -->
     <!--   are always available.                                                     -->
-    <!--   Ravager / Lurker / Brood Lord get a direct larva-build path (AbilData)    -->
-    <!--   so they are buildable without their parent. Archon is NOT a pool pick;    -->
-    <!--   it is unlocked by drafting either templar (see RosterEnforce.galaxy).     -->
+    <!--   Derived units are their own picks, not freebies: you only get a unit   -->
+    <!--   by drafting it, and drafting it alone is enough.                          -->
+    <!--   - Baneling / Ravager / Lurker / Brood Lord: direct larva-build path.      -->
+    <!--   - Hellbat (HellionTank): trains from the Factory in LotV already.         -->
+    <!--   - Archon: direct Gateway / Warp Gate build path (AbilData).               -->
+    <!--   Transforms into an undrafted unit (Hellion<->Hellbat, Templar merge)      -->
+    <!--   are blocked in RosterEnforce.galaxy.                                      -->
     <!-- ════════════════════════════════════════════════════════════════════════  -->
     <CUser id="TardigradeRosterConfig">
         <Fields Id="Pool1"     Type="GameLink" GameLinkType="Unit"/>
@@ -81,7 +85,7 @@
         <Fields Id="PoolCount" Type="Int"/>
 
         <Instances Id="Terran">
-            <Int Int="15"><Field Id="PoolCount"/></Int>
+            <Int Int="16"><Field Id="PoolCount"/></Int>
             <GameLink GameLink="Marine"><Field Id="Pool1"/></GameLink>
             <GameLink GameLink="Medivac"><Field Id="Pool2"/></GameLink>
             <GameLink GameLink="Marauder"><Field Id="Pool3"/></GameLink>
@@ -97,9 +101,10 @@
             <GameLink GameLink="Raven"><Field Id="Pool13"/></GameLink>
             <GameLink GameLink="Banshee"><Field Id="Pool14"/></GameLink>
             <GameLink GameLink="Battlecruiser"><Field Id="Pool15"/></GameLink>
+            <GameLink GameLink="HellionTank"><Field Id="Pool16"/></GameLink>
         </Instances>
         <Instances Id="Protoss">
-            <Int Int="16"><Field Id="PoolCount"/></Int>
+            <Int Int="17"><Field Id="PoolCount"/></Int>
             <GameLink GameLink="Zealot"><Field Id="Pool1"/></GameLink>
             <GameLink GameLink="Stalker"><Field Id="Pool2"/></GameLink>
             <GameLink GameLink="Sentry"><Field Id="Pool3"/></GameLink>
@@ -116,6 +121,7 @@
             <GameLink GameLink="Carrier"><Field Id="Pool14"/></GameLink>
             <GameLink GameLink="Tempest"><Field Id="Pool15"/></GameLink>
             <GameLink GameLink="Mothership"><Field Id="Pool16"/></GameLink>
+            <GameLink GameLink="Archon"><Field Id="Pool17"/></GameLink>
         </Instances>
         <Instances Id="Zerg">
             <Int Int="14"><Field Id="PoolCount"/></Int>

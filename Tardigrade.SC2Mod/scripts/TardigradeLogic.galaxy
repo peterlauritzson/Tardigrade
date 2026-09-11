@@ -5,9 +5,10 @@
 //
 //   1. Race Draft    - P1 bans a race, P2 picks, P1 gets the remainder.
 //                      Each team is set to a single race.
-//   2. Modifier Draft - each player bans 2 of 10 global modifiers, then picks
-//                      3. Each pick is ALWAYS active in-game, but only for the
-//                      drafting player's own units (no rotation, no phases).
+//   2. Modifier Draft - each player bans 2 of 14 global modifiers, then picks
+//                      3 (four go unpicked). Each pick is ALWAYS active in-game,
+//                      but only for the drafting player's own units (no
+//                      rotation, no phases). No Bans acts on step 3.
 //   3. Unit Draft    - ban phase + snake pick; each side ends with 6 units.
 //                      The chosen cycle phases are shown here. Enforced in-game.
 //
@@ -52,6 +53,63 @@ void Tardigrade_Countdown() {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Post both rosters and both modifier sets to chat at game start.
+//
+// This is deliberately redundant with the HUD panels. Those are trigger dialogs,
+// and whether a dialog renders for a referee/spectator slot has proven to be the
+// unreliable part of this whole area - chat is the one channel we can watch land.
+// Players get a scrollback summary they can refer to; a spectator gets the only
+// copy of the information that is guaranteed not to depend on dialog visibility.
+//--------------------------------------------------------------------------------------------------
+void Tardigrade_AnnounceDraftSummary() {
+    string line;
+    int    i;
+
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"FFD54A\">========  DRAFT SUMMARY  ========</c>"));
+
+    line = "";
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        if (i > 1) { line = line + ", "; }
+        line = line + CycleMod_Name(CycleMod_Team1Mod(i));
+        i = i + 1;
+    }
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"7FD0FF\">P1 " + RaceName(g_roster_p1Race) + " modifiers:</c> " + line));
+
+    line = "";
+    i = 1;
+    while (i <= c_rosterRosterSize) {
+        if (i > 1) { line = line + ", "; }
+        line = line + RosterUnitDisplayName(g_roster_p1Units[i]);
+        i = i + 1;
+    }
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"7FD0FF\">P1 units:</c> " + line));
+
+    line = "";
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        if (i > 1) { line = line + ", "; }
+        line = line + CycleMod_Name(CycleMod_Team2Mod(i));
+        i = i + 1;
+    }
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"FF9F7F\">P2 " + RaceName(g_roster_p2Race) + " modifiers:</c> " + line));
+
+    line = "";
+    i = 1;
+    while (i <= c_rosterRosterSize) {
+        if (i > 1) { line = line + ", "; }
+        line = line + RosterUnitDisplayName(g_roster_p2Units[i]);
+        i = i + 1;
+    }
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"FF9F7F\">P2 units:</c> " + line));
+}
+
+//--------------------------------------------------------------------------------------------------
 // Core game-start logic - shared by the normal draft chain and the debug auto-run.
 //--------------------------------------------------------------------------------------------------
 void Tardigrade_StartGame() {
@@ -80,6 +138,8 @@ void Tardigrade_StartGame() {
 
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
         StringToText("<c val=\"FFD700\">The battle begins.</c>"));
+
+    Tardigrade_AnnounceDraftSummary();
 }
 
 //--------------------------------------------------------------------------------------------------

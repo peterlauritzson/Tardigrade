@@ -62,11 +62,22 @@ bool        g_tard_groupsReady = false;
 // Rebuild the viewer and audience groups from the current player slots.
 // Call once the teams are known.
 void Tardigrade_RefreshViewerGroups() {
-    int i;
-    int p;
+    int    i;
+    int    p;
 
-    g_tard_viewers  = PlayerGroupActive();
-    g_tard_audience = PlayerGroupCopy(g_tard_viewers);
+    // Built from PlayerGroupAll(), the engine's own "everyone" group, and
+    // nothing else. It is the ONE group confirmed in playtest to reach a
+    // referee/spectator: they saw "Tardigrade Loaded." (sent to
+    // PlayerGroupAll() in Tardigrade_Init) and nothing after it - not the
+    // draft chat, and not even a probe line addressed to every slot 0..15
+    // individually, their own included. So a group assembled slot by slot
+    // cannot reach them however it is filtered, which is why the three
+    // earlier versions of this function (PlayerGroupActive, a status filter,
+    // then "add every slot") all failed identically. Whatever makes the
+    // built-in group reach observers, a copy keeps it; the audience is that
+    // copy minus the two teams.
+    g_tard_viewers = PlayerGroupAll();
+    g_tard_audience = PlayerGroupCopy(PlayerGroupAll());
 
     i = 1;
     while (i <= PlayerGroupCount(g_draft_team1)) {
@@ -83,10 +94,42 @@ void Tardigrade_RefreshViewerGroups() {
     }
 
     g_tard_groupsReady = true;
-    Debug_Log("Viewer groups: active=" + IntToString(PlayerGroupCount(g_tard_viewers))
+    Debug_Log("Viewer groups: viewers=" + IntToString(PlayerGroupCount(g_tard_viewers))
         + " team1=" + IntToString(PlayerGroupCount(g_draft_team1))
         + " team2=" + IntToString(PlayerGroupCount(g_draft_team2))
         + " audience=" + IntToString(PlayerGroupCount(g_tard_audience)));
+
+    // TEMPORARY PROBE - remove once spectator visibility is confirmed working.
+    //
+    // Round one proved per-slot messages never reach a spectator, so this
+    // round reports through the channels that might. A spectator should see:
+    //   [all]      - sent to PlayerGroupAll() (known to reach them)
+    //   [audience] - sent to the audience group built above; if this arrives,
+    //                every spectator view in the mod now reaches them
+    //   the slot table, via PlayerGroupAll(): every non-empty slot 0..15 with
+    //   its type and status. natives.galaxy marks the referee/spectator player
+    //   types (5/6) "obsolete and no longer exist in code", so observers are
+    //   expected NOT to appear - the table shows what "all" is made of instead.
+    //   A PlayerGroupAll count of 17 would mean it carries a member beyond
+    //   slot 15 (c_playerAny) - one way it could reach slot-less observers.
+    //   (Deliberately not tested with PlayerGroupHasPlayer(.., 16): if 16 is
+    //   out of range that could raise and abort the whole race draft start.)
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
+        "<c val=\"888888\">Tardigrade probe [all]: PlayerGroupAll count "
+        + IntToString(PlayerGroupCount(PlayerGroupAll()))
+        + ", audience count " + IntToString(PlayerGroupCount(g_tard_audience)) + "</c>"));
+    UIDisplayMessage(g_tard_audience, c_messageAreaChat, StringToText(
+        "<c val=\"888888\">Tardigrade probe [audience]: this reached you</c>"));
+    p = 0;
+    while (p < c_maxPlayers) {
+        if (PlayerStatus(p) != c_playerStatusUnused) {
+            UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
+                "<c val=\"888888\">  slot " + IntToString(p)
+                + ": type " + IntToString(PlayerType(p))
+                + ", status " + IntToString(PlayerStatus(p)) + "</c>"));
+        }
+        p = p + 1;
+    }
 }
 
 // Broadcast group for dialogs and chat: all active slots, falling back to
@@ -102,9 +145,13 @@ playergroup Tardigrade_Audience() {
     return g_tard_audience;
 }
 
-// True if there is at least one spectator/referee to render read-only views for.
+// Whether to render the read-only spectator views. Always, once the groups are
+// built: it used to require a non-empty audience group, but spectators occupy
+// no player slot, so counting slots can't tell whether anyone is watching - and
+// a zero count silently skipped every spectator view in the mod. Rendering for
+// nobody costs nothing.
 bool Tardigrade_HasAudience() {
-    return g_tard_groupsReady && PlayerGroupCount(g_tard_audience) > 0;
+    return g_tard_groupsReady;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -299,6 +346,8 @@ void SetPlayerRace(int player, int race) {
     PlayerModifyPropertyInt(player, c_playerPropVespene, c_playerPropOperSetTo, vespene);
 }
 
+const fixed c_tardigradeNexusStartEnergy = 50.0;  // melee Nexus opening energy
+
 //--------------------------------------------------------------------------------------------------
 // Public: spawn every player's deferred workers + extra unit (e.g. Overlord)
 // and set the workers mining. Called once, right after the pre-game
@@ -313,6 +362,8 @@ void Tardigrade_SpawnDeferredWorkers() {
     point     loc;
     int       count;
     unitgroup workers;
+    unitgroup halls;
+    int       i;
 
     player = 1;
     while (player <= 15) {
@@ -331,6 +382,19 @@ void Tardigrade_SpawnDeferredWorkers() {
             }
 
             Tardigrade_OrderMine(race, loc, workers);
+
+            // The Nexus has been on the map since the race draft finished, but
+            // it doesn't open with the 50 energy a melee Nexus normally has
+            // (Chrono Boost on the first Probe). Set it here, as the game
+            // actually begins - set to, not added, so whatever happened to it
+            // during the draft can't leave it with more or less.
+            halls = UnitGroup("Nexus", player, RegionCircle(loc, 10.0), UnitFilter(0, 0, 0, 0), 0);
+            i = 1;
+            while (i <= UnitGroupCount(halls, c_unitCountAll)) {
+                UnitSetPropertyFixed(UnitGroupUnit(halls, i), c_unitPropEnergy, c_tardigradeNexusStartEnergy);
+                i = i + 1;
+            }
+
             g_start_race[player] = 0;
         }
         player = player + 1;
@@ -444,12 +508,12 @@ void RaceDraft_UpdateAudienceUI() {
     aud = Tardigrade_Audience();
 
     if (g_draft_phase == 0) {
-        lbl = "Spectating  -  a race is being BANNED...";
+        lbl = "<c val=\"FF6060\">Spectating  -  a race is being BANNED...</c>";
         DialogControlSetVisible(g_draft_btnTerran,  aud, true);
         DialogControlSetVisible(g_draft_btnProtoss, aud, true);
         DialogControlSetVisible(g_draft_btnZerg,    aud, true);
     } else {
-        lbl = "Spectating  -  a race is being PICKED...";
+        lbl = "<c val=\"888888\">Spectating  -  a race is being PICKED...</c>";
         DialogControlSetVisible(g_draft_btnTerran,  aud, (g_draft_bannedRace != c_tardigrade_raceTerran));
         DialogControlSetVisible(g_draft_btnProtoss, aud, (g_draft_bannedRace != c_tardigrade_raceProtoss));
         DialogControlSetVisible(g_draft_btnZerg,    aud, (g_draft_bannedRace != c_tardigrade_raceZerg));
@@ -470,7 +534,8 @@ void RaceDraft_UpdateAudienceUI() {
 void RaceDraft_UpdateUI() {
     if (g_draft_phase == 0) {
         // Ban Phase (P1)
-        DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p1), StringToText("BAN a Race"));
+        DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p1),
+            StringToText("<c val=\"FF4444\">BAN a Race</c>"));
         
         // Show all buttons to P1
         DialogControlSetVisible(g_draft_btnTerran, PlayerGroupSingle(g_draft_p1), true);
@@ -479,7 +544,8 @@ void RaceDraft_UpdateUI() {
         
         // Only update P2 view if P2 is a different player (avoids overwriting P1 view in solo testing)
         if (g_draft_p1 != g_draft_p2) {
-            DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p2), StringToText("Opponent is Banning..."));
+            DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p2),
+                StringToText("<c val=\"FF6060\">Opponent is BANNING a race...</c>"));
             
             // Hide buttons from P2
             DialogControlSetVisible(g_draft_btnTerran, PlayerGroupSingle(g_draft_p2), false);

@@ -31,8 +31,9 @@ string[7] g_roster_p2Units;
 // Draft tracking
 int       g_roster_phase       = 0;   // 0 = ban phase, 1 = pick phase
 int       g_roster_banIndex    = 0;
-int[5]    g_roster_banOrder;          // [1..4] who is doing the banning
-bool[5]   g_roster_banIsP1;           // [1..4] true = P1 is banning (from P2's pool)
+int       g_roster_banCount    = 0;   // bans actually scheduled: c_rosterBanTotal minus No Bans skips
+int[5]    g_roster_banOrder;          // [1..banCount] who is doing the banning
+bool[5]   g_roster_banIsP1;           // [1..banCount] true = P1 is banning (from P2's pool)
 bool[19]  g_roster_p1Banned;          // units banned FROM P1's pool (by P2)
 bool[19]  g_roster_p2Banned;          // units banned FROM P2's pool (by P1)
 int       g_roster_pickIndex   = 0;
@@ -150,12 +151,12 @@ string RosterUnitRole(string unitType) {
     if (unitType == "Marauder")     { return "Anti-Armor  ·  Slow"; }
     if (unitType == "Reaper")       { return "Scout  ·  Raider"; }
     if (unitType == "Ghost")        { return "Sniper  ·  EMP"; }
-    if (unitType == "Hellion")      { return "AoE  ·  + Hellbat"; }
+    if (unitType == "Hellion")      { return "AoE  ·  Fast Raider"; }
     if (unitType == "SiegeTank")    { return "Siege  ·  Artillery"; }
     if (unitType == "Thor")         { return "Heavy Assault  ·  AA"; }
     if (unitType == "VikingFighter"){ return "Air Superiority"; }
     if (unitType == "Banshee")      { return "Cloaked Strike"; }
-    if (unitType == "HellionTank")  { return "AoE Brawler"; }
+    if (unitType == "HellionTank")  { return "AoE Brawler  ·  Factory"; }
     if (unitType == "Cyclone")      { return "Lock-On  ·  Skirmisher"; }
     if (unitType == "Liberator")    { return "Zone Control  ·  Air"; }
     if (unitType == "Raven")        { return "Tech Support  ·  Turret"; }
@@ -168,15 +169,15 @@ string RosterUnitRole(string unitType) {
     if (unitType == "Sentry")       { return "Force Field  ·  Support"; }
     if (unitType == "Immortal")     { return "Hardened Shield  ·  AA"; }
     if (unitType == "Colossus")     { return "AoE  ·  Siege"; }
-    if (unitType == "HighTemplar")  { return "Psionic Storm  ·  unlocks Archon"; }
-    if (unitType == "DarkTemplar")  { return "Permanent Cloak  ·  unlocks Archon"; }
+    if (unitType == "HighTemplar")  { return "Psionic Storm  ·  Feedback"; }
+    if (unitType == "DarkTemplar")  { return "Permanent Cloak  ·  Assassin"; }
     if (unitType == "VoidRay")      { return "Prismatic Beam  ·  Air"; }
     if (unitType == "Phoenix")      { return "Air  ·  Graviton Beam"; }
     if (unitType == "Adept")        { return "Psionic Transfer"; }
     if (unitType == "Disruptor")    { return "Nova Burst"; }
     if (unitType == "Carrier")      { return "Interceptor Swarm  ·  Air"; }
     if (unitType == "Oracle")       { return "Revelation  ·  Stasis"; }
-    if (unitType == "Archon")       { return "Splash Melee  ·  from Templar"; }
+    if (unitType == "Archon")       { return "Psionic Splash  ·  Gateway"; }
     if (unitType == "WarpPrism")    { return "Transport  ·  Pylon"; }
     if (unitType == "Tempest")      { return "Long-Range  ·  Capital"; }
     if (unitType == "Mothership")   { return "Cloak Field  ·  Capital"; }
@@ -302,7 +303,7 @@ void RosterDraft_UpdateUI() {
     if (g_roster_phase == 1) {
         // BAN PHASE: active player bans from opponent's pool
         stepNum      = g_roster_banIndex + 1;
-        stepTotal    = c_rosterBanTotal;
+        stepTotal    = g_roster_banCount;
         activePicker = g_roster_banOrder[stepNum];
         activeIsP1   = g_roster_banIsP1[stepNum];
         // The pool shown is the OPPONENT's pool
@@ -531,7 +532,7 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
             StringToText("<c val=\"FF4444\">BANNED: " + RosterUnitDisplayName(unitType) + "</c>"));
 
         g_roster_banIndex = g_roster_banIndex + 1;
-        if (g_roster_banIndex >= c_rosterBanTotal) {
+        if (g_roster_banIndex >= g_roster_banCount) {
             // Bans done -> resume picking (pickIndex continues from the opening picks)
             g_roster_phase = 2;
             UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
@@ -571,10 +572,16 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
         g_roster_pickIndex = g_roster_pickIndex + 1;
 
         if (g_roster_phase == 0 && g_roster_pickIndex >= c_rosterPreBanPicks) {
-            // Opening picks done -> ban phase
-            g_roster_phase = 1;
-            UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
-                StringToText("<c val=\"FF4444\">Opening picks done! Ban phase begins.</c>"));
+            // Opening picks done -> ban phase, unless No Bans left nothing to ban
+            // (only possible if both sides had it, which one draft cannot produce -
+            // but an empty ban phase would otherwise wait on a click that can't come).
+            if (g_roster_banCount > 0) {
+                g_roster_phase = 1;
+                UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
+                    StringToText("<c val=\"FF4444\">Opening picks done! Ban phase begins.</c>"));
+            } else {
+                g_roster_phase = 2;
+            }
             RosterDraft_UpdateUI();
         } else if (g_roster_pickIndex >= c_rosterPickTotal) {
             RosterDraft_Finish();
@@ -584,6 +591,35 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
     }
 
     return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// No Bans (modifier draft pick): the drafter's pool can't be banned from. The
+// modifier draft runs before this one, so both sides' picks are already known.
+//--------------------------------------------------------------------------------------------------
+// Append a ban step for this banner unless their target pool is protected.
+// bannerIsP1 = true means P1 bans from P2's pool, so P2's No Bans cancels it.
+void RosterDraft_ScheduleBan(int banner, bool bannerIsP1) {
+    if (bannerIsP1 && CycleMod_P2HasModIdx(c_cycleModNoBans)) { return; }
+    if (!bannerIsP1 && CycleMod_P1HasModIdx(c_cycleModNoBans)) { return; }
+    g_roster_banCount = g_roster_banCount + 1;
+    g_roster_banOrder[g_roster_banCount] = banner;
+    g_roster_banIsP1[g_roster_banCount]  = bannerIsP1;
+}
+
+// Say so up front: otherwise the protected side's opponent just finds their
+// ban turns missing and has no way to tell why.
+void RosterDraft_AnnounceNoBans() {
+    if (CycleMod_P1HasModIdx(c_cycleModNoBans)) {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"7FD0FF\">P1</c> drafted <c val=\"FFD54A\">No Bans</c>"
+            + " <c val=\"AAAAAA\">- P2 gets no bans against P1's units.</c>"));
+    }
+    if (CycleMod_P2HasModIdx(c_cycleModNoBans)) {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"FF9F7F\">P2</c> drafted <c val=\"FFD54A\">No Bans</c>"
+            + " <c val=\"AAAAAA\">- P1 gets no bans against P2's units.</c>"));
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -642,11 +678,15 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     }
 
     // Ban order: P1 bans from P2's pool, P2 bans from P1's pool, repeat x2
-    // (banIsP1 = true means P1 is the one banning, targeting P2's pool)
-    g_roster_banOrder[1] = p1;  g_roster_banIsP1[1] = true;
-    g_roster_banOrder[2] = p2;  g_roster_banIsP1[2] = false;
-    g_roster_banOrder[3] = p1;  g_roster_banIsP1[3] = true;
-    g_roster_banOrder[4] = p2;  g_roster_banIsP1[4] = false;
+    // (banIsP1 = true means P1 is the one banning, targeting P2's pool).
+    // The No Bans modifier protects its drafter's pool: the opponent's ban steps
+    // are dropped, not passed, so the other side's two bans run back to back.
+    g_roster_banCount = 0;
+    RosterDraft_ScheduleBan(p1, true);
+    RosterDraft_ScheduleBan(p2, false);
+    RosterDraft_ScheduleBan(p1, true);
+    RosterDraft_ScheduleBan(p2, false);
+    RosterDraft_AnnounceNoBans();
 
     // Pick order: 2 OPENING picks each (P1 P2 P2 P1) happen BEFORE bans so
     // players can secure key units, then bans, then the remaining FINAL picks.

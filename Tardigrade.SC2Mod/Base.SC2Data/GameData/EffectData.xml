@@ -20,4 +20,62 @@
 	<CEffectApplyBehavior id="TardigradeAbil_MedivacBoost">
 		<Behavior value="TardigradeMod_MedivacBoost"/>
 	</CEffectApplyBehavior>
+
+	<!-- Overwatch's +50%, dealt by CycleMod_OnUnitDamaged via UnitDamage() with
+	     the bonus passed as the amount. Amount is 0 so the whole payload comes
+	     from that argument, and ArmorReduction is 0 because the trigger already
+	     works from EventUnitDamageAmount() - the damage that actually landed,
+	     after armor - so mitigating it a second time would undercount the bonus.
+	     Kind Splash keeps it out of Ranged-only damage responses (Guardian
+	     Shield and friends) that already took their cut out of the original hit.
+	     Kill credit deliberately left on: the bonus is part of the attacker's
+	     shot, so a kill it lands should read as the attacker's kill. -->
+	<CEffectDamage id="TardigradeMod_OverwatchBonus">
+		<Amount value="0"/>
+		<Kind value="Splash"/>
+		<KindSplash value="Splash"/>
+		<ArmorReduction value="0"/>
+		<Flags index="NoDamageTimerReset" value="1"/>
+	</CEffectDamage>
+
+	<!-- Shared Damage: one unit's share of a split hit, dealt by
+	     CycleMod_OnSharedDamageAbsorbed to the victim and each partner in the
+	     original attacker's name. Same shape as the Overwatch bonus: Amount 0
+	     so the payload is UnitDamage's argument, ArmorReduction 0 because the
+	     script already took the victim's armor off the whole hit. Kind Spell
+	     keeps it out of weapon-kind responses (Guardian Shield) that already
+	     had their chance at the original hit. TardigradeMod_SharedDamage lists
+	     this effect in its ExcludeEffectArray - that exclusion is the only
+	     thing stopping a share from being absorbed and split again.
+	     The damage timer is left to reset, unlike the Overwatch bonus: every
+	     partner really is taking damage, so its shields stop regenerating. -->
+	<CEffectDamage id="TardigradeMod_SharedDamageHit">
+		<Amount value="0"/>
+		<Kind value="Spell"/>
+		<ArmorReduction value="0"/>
+	</CEffectDamage>
+
+	<!-- Salvage payout, the ExpireEffect of TardigradeMod_Salvaging. The same
+	     engine salvage the Bunker and Sensor Tower use (liberty's SalvageShared
+	     effect): the Salvage flag removes the structure and refunds
+	     SalvageFactor x its CostResource, where negative = refund. CostResource
+	     is cumulative for morphs in the data (Lair 475 = Hatchery 325 + 150,
+	     Zerg costs include the Drone), so one factor is right for all of them. -->
+	<CEffectModifyUnit id="TardigradeMod_SalvageRefund">
+		<ModifyFlags index="Salvage" value="1"/>
+		<SalvageFactor>
+			<Resource index="Minerals" value="-0.75"/>
+			<Resource index="Vespene" value="-0.75"/>
+			<Resource index="Terrazine" value="-0.75"/>
+			<Resource index="Custom" value="-0.75"/>
+		</SalvageFactor>
+	</CEffectModifyUnit>
+
+	<!-- Cancels a salvage when the structure takes damage (fired from
+	     TardigradeMod_Salvaging's damage response). Mirrors LotV's
+	     SalvageCombatRB on the Bunker. -->
+	<CEffectRemoveBehavior id="TardigradeMod_SalvageInterrupt">
+		<WhichUnit Value="Caster"/>
+		<BehaviorLink value="TardigradeMod_Salvaging"/>
+	</CEffectRemoveBehavior>
 </Catalog>

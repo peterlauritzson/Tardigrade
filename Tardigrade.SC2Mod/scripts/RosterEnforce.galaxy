@@ -1,9 +1,10 @@
 //--------------------------------------------------------------------------------------------------
 // Roster Enforcement
 //
-// After the drafts resolve, each team may only build the units it drafted
-// (2 core + 4 drafted = 6 unit types). Every other combat unit in the race's
-// arsenal is disabled for that team via TechTreeUnitAllow(..., false).
+// After the drafts resolve, each team may only build the 6 unit types it
+// drafted - derived units (Hellbat, Archon, the Zerg morphs) included. Every
+// other combat unit in the race's arsenal is disabled for that team via
+// TechTreeUnitAllow(..., false), and transforms into them are blocked too.
 //
 // Workers, town halls, tech/production structures, and supply units are never
 // touched, so the economy and tech tree still function normally.
@@ -70,23 +71,78 @@ bool RosterEnforce_InRoster(int whichRoster, string unitType) {
     return false;
 }
 
-// A unit is allowed if it is in the roster. Archon is the one exception: it has
-// no standalone build path in SC2 (it is a templar merge), so it is available
-// whenever the player drafted either templar type. The Zerg morph units
-// (Ravager / Lurker / Brood Lord) need no special case here — they have a
-// direct larva-build path in AbilData, so being in the roster is enough.
+// A unit is allowed if and only if it is in the roster. Derived units used to
+// ride along for free (Hellbat with Hellion, Archon with either templar); they
+// are now picks of their own, and each has a way to be built when drafted
+// alone - see RosterEnforce_GateTransforms / _GateArchonFallback / the larva
+// fallbacks below.
 bool RosterEnforce_IsAllowed(int whichRoster, string unitType) {
-    if (RosterEnforce_InRoster(whichRoster, unitType)) { return true; }
+    return RosterEnforce_InRoster(whichRoster, unitType);
+}
 
-    // Hellbat rides with Hellion: they freely transform into each other, so
-    // drafting Hellion grants both, and banning Hellion removes both.
-    if (unitType == "HellionTank" && RosterEnforce_InRoster(whichRoster, "Hellion")) { return true; }
+//--------------------------------------------------------------------------------------------------
+// Transforms into an undrafted unit. TechTreeUnitAllow(false) on the result
+// should already stop a morph or merge from producing it, but that is the
+// engine's call to make on every path; disallowing the transform command too
+// makes the rule explicit and takes the button off the card.
+//   Hellion <-> Hellbat: each direction needs its target drafted.
+//   Templar merge: needs Archon drafted. ArchonWarp has two commands,
+//   SelectedUnits (0) and WithTarget (1); both go.
+//--------------------------------------------------------------------------------------------------
+void RosterEnforce_BlockUnlessDrafted(int player, int whichRoster, string result,
+                                      string abil, int cmd) {
+    if (!RosterEnforce_IsAllowed(whichRoster, result)) {
+        TechTreeAbilityAllow(player, AbilityCommand(abil, cmd), false);
+    }
+}
 
-    if (unitType == "Archon"
-        && (RosterEnforce_InRoster(whichRoster, "HighTemplar")
-            || RosterEnforce_InRoster(whichRoster, "DarkTemplar"))) { return true; }
+void RosterEnforce_GateTransforms(int player, int race, int whichRoster) {
+    if (race == c_tardigrade_raceTerran) {
+        RosterEnforce_BlockUnlessDrafted(player, whichRoster, "HellionTank", "MorphToHellionTank", 0);
+        RosterEnforce_BlockUnlessDrafted(player, whichRoster, "Hellion",     "MorphToHellion",     0);
+    } else if (race == c_tardigrade_raceProtoss) {
+        RosterEnforce_BlockUnlessDrafted(player, whichRoster, "Archon", "ArchonWarp", 0);
+        RosterEnforce_BlockUnlessDrafted(player, whichRoster, "Archon", "ArchonWarp", 1);
+    }
+}
 
-    return false;
+// Archon drafted without either templar builds straight from Gateway / Warp
+// Gate (AbilData.xml GatewayTrain / WarpGateTrain Train8). With a templar in
+// the roster that path is disallowed and Archons are merged as normal, the
+// same "fallback only when the parent is missing" rule as the larva builds.
+void RosterEnforce_GateArchonFallback(int player, int whichRoster) {
+    if (RosterEnforce_IsAllowed(whichRoster, "HighTemplar")
+        || RosterEnforce_IsAllowed(whichRoster, "DarkTemplar")) {
+        TechTreeAbilityAllow(player, AbilityCommand("GatewayTrain", 7), false);    // Train8
+        TechTreeAbilityAllow(player, AbilityCommand("WarpGateTrain", 7), false);   // Train8
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Zerg larva fallbacks (AbilData.xml LarvaTrain Train6/9/14/16) let a morph unit
+// be built straight from larva when its parent wasn't drafted. Each button sits
+// on its PARENT's cell of the Larva card (UnitData.xml), which only works if the
+// two never show at once:
+//   - parent undrafted: TechTreeUnitAllow(false) above removes the parent's
+//     button, so the fallback has the cell to itself;
+//   - parent drafted: the fallback is disallowed here, so the cell shows the
+//     parent and the child is morphed from it the normal way.
+// Before this gate, a drafted parent and a drafted child competed for one cell.
+//
+// Command indices are zero-based positions in LarvaTrain's InfoArray, so
+// "TrainN" is command N-1.
+//--------------------------------------------------------------------------------------------------
+void RosterEnforce_GateLarvaFallback(int player, int whichRoster, string parent, int trainCmd) {
+    if (RosterEnforce_IsAllowed(whichRoster, parent)) {
+        TechTreeAbilityAllow(player, AbilityCommand("LarvaTrain", trainCmd), false);
+    }
+}
+
+void RosterEnforce_GateLarvaFallbacks(int player, int whichRoster) {
+    RosterEnforce_GateLarvaFallback(player, whichRoster, "Roach",     5);   // Train6  Ravager
+    RosterEnforce_GateLarvaFallback(player, whichRoster, "Hydralisk", 8);   // Train9  Lurker
+    RosterEnforce_GateLarvaFallback(player, whichRoster, "Corruptor", 13);  // Train14 Brood Lord
+    RosterEnforce_GateLarvaFallback(player, whichRoster, "Zergling",  15);  // Train16 Baneling
 }
 
 // Disable every non-allowed master unit for a single player.
@@ -110,6 +166,13 @@ void RosterEnforce_ApplyToPlayer(int player, int race, int whichRoster) {
         }
         i = i + 1;
     }
+
+    if (race == c_tardigrade_raceZerg) {
+        RosterEnforce_GateLarvaFallbacks(player, whichRoster);
+    } else if (race == c_tardigrade_raceProtoss) {
+        RosterEnforce_GateArchonFallback(player, whichRoster);
+    }
+    RosterEnforce_GateTransforms(player, race, whichRoster);
 }
 
 // Apply enforcement to every player in a team.

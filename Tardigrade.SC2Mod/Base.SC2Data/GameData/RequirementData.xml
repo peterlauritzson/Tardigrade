@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Catalog>
+
+    <!-- =====================================================================
+         TARDIGRADE: UPGRADE BUTTONS THE ROSTER DRAFT MUST NOT HIDE
+
+         RosterEnforce.galaxy disables every undrafted unit with
+         TechTreeUnitAllow(player, unitType, false). Blizzard's melee data
+         gates a handful of UPGRADE buttons on exactly that flag, through
+         CRequirementAllowUnit nodes, on the theory that an upgrade is clutter
+         if you cannot build the unit it was designed for. In ladder no unit is
+         ever disallowed, so those gates never fire. Here they fire constantly,
+         and the button is not merely greyed out - the gate sits on the
+         requirement's *Show* node and the buttons are State="Restricted", so
+         the button does not render at all and the command card looks empty.
+
+         There are exactly five CRequirementAllowUnit nodes in the whole melee
+         dependency chain (Phoenix, Marine, Colossus, Immortal, Observer). Three
+         are left alone deliberately:
+           - AllowUnitColossus gates Extended Thermal Lance, which only the
+             Colossus uses. Hiding it with the Colossus undrafted is correct.
+           - AllowUnitObserver gates Gravitic Booster, likewise - and the
+             Observer is not in the draft pool at all, so it never fires.
+           - AllowUnitImmortal gates LearnIncreasedRange, which no live
+             CAbilResearch button references any more.
+
+         The two below are wrong for this mod and are patched by pointing the
+         Show node at the same requirement minus its AllowUnit operand. The
+         Use nodes are untouched, so the real tech prerequisites (Fleet Beacon
+         for level 2/3, previous level complete, Tech Lab for Stimpack) all
+         still apply exactly as in ladder.
+    ===================================================================== -->
+
+    <!-- The reported bug. All six Cybernetics Core air upgrades were gated on
+         AllowUnitPhoenix, so a Protoss player who drafted Tempest / Void Ray /
+         Carrier / Oracle but NOT the Phoenix got an empty upgrade card and no
+         way to upgrade their air army at all. The Phoenix is simply Blizzard's
+         stand-in for "can this player build anything that flies" - it is the
+         cheapest Cybernetics-tier air unit - and that shorthand does not
+         survive a drafted roster.
+
+         Each Show node keeps its EqCountUpgrade...QueuedOrBetter0 half, which
+         is what makes levels 1/2/3 share one command-card cell: a level's
+         button hides once that level is queued or researched, revealing the
+         next. Dropping only the AllowUnit half leaves that intact. -->
+    <CRequirement id="LearnProtossAirWeapon1">
+        <NodeArray index="Show" Link="EqCountUpgradeProtossAirWeaponsLevel1QueuedOrBetter0"/>
+    </CRequirement>
+    <CRequirement id="LearnProtossAirWeapon2">
+        <NodeArray index="Show" Link="EqCountUpgradeProtossAirWeaponsLevel2QueuedOrBetter0"/>
+    </CRequirement>
+    <CRequirement id="LearnProtossAirWeapon3">
+        <NodeArray index="Show" Link="EqCountUpgradeProtossAirWeaponsLevel3QueuedOrBetter0"/>
+    </CRequirement>
+    <CRequirement id="LearnProtossAirArmor1">
+        <NodeArray index="Show" Link="EqCountUpgradeProtossAirArmorsLevel1QueuedOrBetter0"/>
+    </CRequirement>
+    <CRequirement id="LearnProtossAirArmor2">
+        <NodeArray index="Show" Link="EqCountUpgradeProtossAirArmorsLevel2QueuedOrBetter0"/>
+    </CRequirement>
+    <CRequirement id="LearnProtossAirArmor3">
+        <NodeArray index="Show" Link="EqCountUpgradeProtossAirArmorsLevel3QueuedOrBetter0"/>
+    </CRequirement>
+
+    <!-- Same failure on Terran: Stimpack was gated on AllowUnitMarine, but the
+         Marauder stims too. A roster of Marauder without Marine lost Stimpack
+         entirely. Show keeps its "hide once researched" half. -->
+    <CRequirement id="LearnStimpack">
+        <NodeArray index="Show" Link="NotCountUpgradeStimpackQueuedOrBetter"/>
+    </CRequirement>
+
+</Catalog>

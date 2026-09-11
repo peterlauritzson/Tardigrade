@@ -35,21 +35,25 @@ rather than hardcoded, so it tracks whatever the current patch uses.
 
 ### 2. Modifier Draft
 
-There are **10 battlefield modifiers**. This is a **per-player** draft — there is
+There are **14 battlefield modifiers**. This is a **per-player** draft — there is
 no rotation and no shared phase:
 
-- Each player **bans 2** (10 → 6), ban order `P1, P2, P1, P2`.
-- Each player then **picks 3** (6 → 0), snake order `P1, P2, P2, P1, P1, P2`.
+- Each player **bans 2** (14 → 10), ban order `P1, P2, P1, P2`.
+- Each player then **picks 3** (10 → 4), snake order `P1, P2, P2, P1, P1, P2`.
 
-Every modifier is taken; each pick is **always active in-game, but only for the
-picking side's own units** — never the opponent's. A top-center panel lists both
-sides' picks (YOURS / OPPONENT).
+Four modifiers go unpicked every game. Each pick is **always active in-game, but
+only for the picking side's own units** — never the opponent's. A top-center
+panel lists both sides' picks (YOURS / OPPONENT).
 
 All modifiers stay **dormant for the first 3 minutes** and switch on at the 3:00
 mark (`c_cycleActivationDelay` in `CycleMod.galaxy`), so the early game is
-untouched.
+untouched. The one exception is **No Bans**, which acts on the unit draft that
+immediately follows.
 
-The 10 modifiers:
+Modifiers **never affect workers** (SCV, Probe, Drone, MULE), except Free
+Labor and Auto Refineries, which are about workers to begin with.
+
+The 14 modifiers:
 
 | # | Modifier | Effect (applies to your units only) |
 |---|---|---|
@@ -59,12 +63,16 @@ The 10 modifiers:
 | 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full |
 | 5 | Eyes Everywhere | The battlefield and hidden units are revealed, for you only (excludes neutrals — minerals, Xel'Naga towers, critters) |
 | 6 | Entrenchment | Your stationary units gain +2 armor and +1 range after 6 seconds |
-| 7 | Arcane Surge | +2 energy per second |
+| 7 | Arcane Surge | Double energy regeneration on all your units and structures |
 | 8 | Overwatch | Your first attack after 10 seconds idle deals +50% damage — for that one shot only |
 | 9 | Battle Blink | Clickable ability: short-range teleport (8 range) any unit, 12s cooldown |
 | 10 | Veteran Forces | Each kill grants a permanent +3% time-speed (haste) buff, stacking to 15 |
+| 11 | Auto Refineries | Your finished gas buildings mine by themselves at the three-worker rate (rich geysers double). Workers can't go in — any sent there are redirected to minerals |
+| 12 | No Bans | Your opponent gets no bans against your pool in the unit draft; their ban turns are skipped |
+| 13 | Salvage | Every structure gets a Salvage button: 5 seconds, then it is removed for 75% of its cost. Taking damage cancels it, as on the Bunker |
+| 14 | Shared Damage | Every hit on one of your units (after armor): it takes half, and the other half is split evenly between your other units within 3 range. Alone, it takes the full hit |
 
-Medivac Boost and Battle Blink are the only two modifiers that grant a
+Medivac Boost, Battle Blink and Salvage are the modifiers that grant a
 **clickable ability** (with its own command-card button) instead of a passive
 buff — every other pick is always-on for as long as the modifier is active.
 
@@ -81,6 +89,8 @@ arsenal is bannable and pickable.
 - **Opening picks:** 2 each, made *before* the bans, so players can secure key
   units (`P1, P2, P2, P1`).
 - **Cross-bans:** 2 each, banning from the *opponent's* pool (`P1, P2, P1, P2`).
+  If a side drafted **No Bans**, the opponent's ban turns are dropped and the
+  protected side bans twice in a row.
 - **Final snake picks:** the remaining 4 each, until both rosters hold 6.
 
 Both rosters are shown live side by side (YOUR / OPPONENT) so players can
@@ -92,17 +102,23 @@ structures and supply are never touched, so the economy and tech tree work
 normally.
 
 Draft pools live in `TardigradeRosterConfig` (`GameData.xml`) and are
-independent per race — Terran 15, Protoss 16, Zerg 14 units.
+independent per race — Terran 16, Protoss 17, Zerg 14 units.
 
 Special cases:
 
 - **Detection floor:** Observer (Protoss) and Overseer (Zerg) sit outside the
   pool entirely and are **always buildable**, so detection is never drafted away.
-- **Hellbat** comes with Hellion (they transform into each other).
-- **Archon** is not a pool pick; it unlocks if you drafted either templar.
-- **Ravager / Lurker / Brood Lord / Baneling** get a direct larva-build path
-  (`AbilData.xml`), so they stay buildable even when their morph parent was
-  banned.
+- **Derived units are their own picks.** Hellbat, Archon, Baneling, Ravager,
+  Lurker and Brood Lord are only available if drafted — you can't train them
+  or transform/merge into them otherwise (Hellion ↔ Hellbat and the templar
+  merge are blocked when the result isn't in your roster). Drafting one alone
+  is enough to build it:
+  - **Hellbat** trains from the Factory (as in LotV).
+  - **Archon** trains from the Gateway / warps in from a Warp Gate (100/300,
+    Templar Archives), if you drafted neither templar; with a templar in your
+    roster you merge as usual.
+  - **Ravager / Lurker / Brood Lord / Baneling** train straight from larva, if
+    you didn't draft their parent; with the parent drafted you morph as usual.
 
 ---
 
