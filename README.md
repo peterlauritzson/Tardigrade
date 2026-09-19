@@ -45,10 +45,14 @@ Four modifiers go unpicked every game. Each pick is **always active in-game, but
 only for the picking side's own units** — never the opponent's. A top-center
 panel lists both sides' picks (YOURS / OPPONENT).
 
-All modifiers stay **dormant for the first 3 minutes** and switch on at the 3:00
-mark (`c_cycleActivationDelay` in `CycleMod.galaxy`), so the early game is
-untouched. The one exception is **No Bans**, which acts on the unit draft that
-immediately follows.
+All modifiers stay **dormant at first** and switch on at **about 2:09 on the game
+clock** (`c_cycleActivationDelay` = 180 game seconds in `CycleMod.galaxy`; the clock
+runs on Faster, 1.4× quicker), so the early game is untouched — except that
+**everyone plays with Eyes Everywhere** (full map vision and detection) until that
+moment. The opening vision is tied to the same constant, so changing the
+activation time moves it too; afterwards only a side that drafted Eyes
+Everywhere keeps it. **No Bans** is also exempt from the delay, since it acts
+on the unit draft that immediately follows.
 
 Modifiers **never affect workers** (SCV, Probe, Drone, MULE), except Free
 Labor and Auto Refineries, which are about workers to begin with.
@@ -57,7 +61,7 @@ The 14 modifiers:
 
 | # | Modifier | Effect (applies to your units only) |
 |---|---|---|
-| 1 | Open Skies | All your weapons can target ground and air |
+| 1 | Open Skies | All your weapons can target ground and air. Against the plane a unit couldn't hit before, it deals half damage (Zealot vs air, Phoenix vs ground); units that already hit both are unchanged |
 | 2 | Medivac Boost | Clickable ability: burst a unit's move speed (the Medivac's afterburners), 15s cooldown |
 | 3 | Free Labor | Your workers no longer cost supply |
 | 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full |
@@ -66,8 +70,8 @@ The 14 modifiers:
 | 7 | Arcane Surge | Double energy regeneration on all your units and structures |
 | 8 | Overwatch | Your first attack after 10 seconds idle deals +50% damage — for that one shot only |
 | 9 | Battle Blink | Clickable ability: short-range teleport (8 range) any unit, 12s cooldown |
-| 10 | Veteran Forces | Each kill grants a permanent +3% time-speed (haste) buff, stacking to 15 |
-| 11 | Auto Refineries | Your finished gas buildings mine by themselves at the three-worker rate (rich geysers double). Workers can't go in — any sent there are redirected to minerals |
+| 10 | Veteran Forces | Each kill grants a permanent +3% to movement speed, attack speed, ability cooldowns/charges, and life/shield/energy regeneration, stacking to 15 (shown on the unit as "Veteran"). Kills by Interceptors, Locusts, Broodlings and Auto-Turrets count for the unit that spawned them |
+| 11 | Auto Refineries | Your finished gas buildings mine by themselves at the three-worker rate (rich geysers double). Workers physically can't harvest them — the building stops being a resource at all, and its worker counter disappears |
 | 12 | No Bans | Your opponent gets no bans against your pool in the unit draft; their ban turns are skipped |
 | 13 | Salvage | Every structure gets a Salvage button: 5 seconds, then it is removed for 75% of its cost. Taking damage cancels it, as on the Bunker |
 | 14 | Shared Damage | Every hit on one of your units (after armor): it takes half, and the other half is split evenly between your other units within 3 range. Alone, it takes the full hit |

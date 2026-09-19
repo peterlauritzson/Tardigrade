@@ -31,6 +31,7 @@ void Tardigrade_Countdown() {
     int n;
 
     dlg = DialogCreate(320, 150, c_anchorCenter, 0, -80, false);
+    Tardigrade_ObservableDialog(dlg);
     DialogSetVisible(dlg, Tardigrade_Viewers(), true);
     DialogSetImageVisible(dlg, true);
 

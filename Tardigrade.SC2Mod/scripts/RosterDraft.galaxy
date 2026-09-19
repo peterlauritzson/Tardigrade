@@ -296,6 +296,7 @@ void RosterDraft_UpdateUI() {
     playergroup activeGroup;
     playergroup waitGroup;
     int         waiter;
+    bool        hasWaiter;
     int         stepNum;
     int         stepTotal;
 
@@ -350,7 +351,19 @@ void RosterDraft_UpdateUI() {
                 "<c val=\"00FF88\">YOUR TURN  —  Select a unit to add to your roster</c>"));
     }
 
-    // ── Pool buttons for the active player ───────────────────────────────────
+    // The waiting player sees the same pool the active player is acting on,
+    // disabled - during bans that is their own pool, being banned from. It used
+    // to be hidden, but a spectator only sees a dialog through the player they
+    // are watching (Tardigrade_ObservableDialog), so a blank waiting screen
+    // blanked the draft for anyone watching that player.
+    hasWaiter = (g_roster_p1 != g_roster_p2);
+    if (hasWaiter) {
+        if (activeIsP1) { waiter = g_roster_p2; }
+        else            { waiter = g_roster_p1; }
+        waitGroup = PlayerGroupSingle(waiter);
+    }
+
+    // ── Pool buttons for the active (and, disabled, the waiting) player ──────
     i = 1;
     while (i <= c_rosterPoolMax) {
         if (i <= poolCount) {
@@ -378,6 +391,15 @@ void RosterDraft_UpdateUI() {
             DialogControlSetPropertyAsText(g_roster_btnPool[i], c_triggerControlPropertyText,
                 activeGroup, StringToText(btnTxt));
             DialogControlSetVisible(g_roster_btnPool[i], activeGroup, !unavailable);
+            // Explicitly, since this player's buttons were disabled on their
+            // last waiting turn.
+            DialogControlSetEnabled(g_roster_btnPool[i], activeGroup, true);
+            if (hasWaiter) {
+                DialogControlSetPropertyAsText(g_roster_btnPool[i], c_triggerControlPropertyText,
+                    waitGroup, StringToText(btnTxt));
+                DialogControlSetVisible(g_roster_btnPool[i], waitGroup, !unavailable);
+                DialogControlSetEnabled(g_roster_btnPool[i], waitGroup, false);
+            }
             // Spectators see the same pool, but disabled so they can't click.
             if (Tardigrade_HasAudience()) {
                 DialogControlSetPropertyAsText(g_roster_btnPool[i], c_triggerControlPropertyText,
@@ -387,6 +409,9 @@ void RosterDraft_UpdateUI() {
             }
         } else {
             DialogControlSetVisible(g_roster_btnPool[i], activeGroup, false);
+            if (hasWaiter) {
+                DialogControlSetVisible(g_roster_btnPool[i], waitGroup, false);
+            }
             if (Tardigrade_HasAudience()) {
                 DialogControlSetVisible(g_roster_btnPool[i], Tardigrade_Audience(), false);
             }
@@ -394,18 +419,8 @@ void RosterDraft_UpdateUI() {
         i = i + 1;
     }
 
-    // ── Waiting player: hide buttons, show message ────────────────────────────
-    if (g_roster_p1 != g_roster_p2) {
-        if (activeIsP1) { waiter = g_roster_p2; }
-        else            { waiter = g_roster_p1; }
-        waitGroup = PlayerGroupSingle(waiter);
-
-        i = 1;
-        while (i <= c_rosterPoolMax) {
-            DialogControlSetVisible(g_roster_btnPool[i], waitGroup, false);
-            i = i + 1;
-        }
-
+    // ── Waiting player: message (their buttons were set in the loop above) ───
+    if (hasWaiter) {
         if (g_roster_phase == 1) {
             DialogControlSetPropertyAsText(g_roster_lblSubtitle, c_triggerControlPropertyText,
                 waitGroup, StringToText(
@@ -718,6 +733,7 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
 
     // ── Build Dialog: 860 × 600 ───────────────────────────────────────
     g_roster_dialog = DialogCreate(860, 600, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_roster_dialog);
     DialogSetVisible(g_roster_dialog, Tardigrade_Viewers(), true);
 
     // Title label — centered, top
@@ -929,6 +945,7 @@ void RosterHUD_InitAudience() {
     aud = Tardigrade_Audience();
 
     g_rhud_audDialog = DialogCreate(410, 226, c_anchorTopLeft, 6, 28, false);
+    Tardigrade_ObservableDialog(g_rhud_audDialog);
     DialogSetVisible(g_rhud_audDialog, aud, true);
     DialogSetImageVisible(g_rhud_audDialog, true);
 
@@ -968,6 +985,7 @@ void RosterHUD_InitForPlayer(int player, int whichRoster, trigger t) {
     // is relative to the dialog's current center) stays correct in both
     // states instead of visibly shifting when the dialog resizes.
     g_rhud_dialog[player] = DialogCreate(390, 34, c_anchorTopLeft, 6, 28, false);
+    Tardigrade_ObservableDialog(g_rhud_dialog[player]);
     DialogSetVisible(g_rhud_dialog[player], viewer, true);
     DialogSetImageVisible(g_rhud_dialog[player], true);
 

@@ -71,6 +71,11 @@ const int    c_cycleAutoGasTrip     = 4;
 const int    c_cycleAutoGasTripRich = 8;
 // Radius the evicted workers search for a mineral patch to go mine instead.
 const fixed  c_cycleAutoGasMineralRange = 12.0;
+// The script-side redirect (CycleMod_OnWorkerGatherOrder / _KeepWorkerOutOfGas)
+// is a fallback for the data block below it, not the intended mechanism: it
+// works by replacing the player's order, which is visible and can fight the
+// player's own clicks. Set false to rely on the data block alone.
+const bool   c_cycleAutoGasRedirect = true;
 
 // Shared Damage: every hit on one of your units is half taken by it and half
 // split evenly between your other units within this radius. The behavior absorbs the hit whole (see
@@ -149,6 +154,10 @@ const int c_cycleStateWasLow       = 5;
 const int c_cycleStateLastAttack   = 6;
 const int c_cycleStateEconomicEgg  = 7;
 const int c_cycleStateAutoGas      = 8;   // gas building: mission time its last auto trip was paid up to
+const int c_cycleStateAutoGasLeft  = 9;   // gas building: gas it still holds, once auto (see CycleMod_AutoRefineryTick)
+// Bound on the Open Skies WEAPON CATALOG cache only - Galaxy array sizes must
+// be constants, and the game data holds far fewer weapons than this. It is no
+// longer any kind of limit on units: per-unit state is keyed by unit tag.
 const int c_cycleWeaponLimit       = 2048;
 const int c_cycleSplashEffectCount = 12;
 string[2048] g_cycle_weaponEntry;
@@ -175,8 +184,13 @@ const int    c_cycleUnitWeaponProbe = 4;
 string[64]   g_cycle_skipWeapon;
 int          g_cycle_skipCount = 0;
 bool         g_cycle_skipBuilt = false;
-unit[2048]   g_cycle_lastAttacker;
-int          g_cycle_registeredCount = 0;
+// Per-unit references (who last hit a unit; which unit owns a spawn's kills)
+// live in the global data table, keyed by UnitGetTag - see CycleMod_UnitKey.
+// They used to be two unit[2048] arrays indexed by a counter handed out at
+// registration, which capped the mod at 2048 units for the whole match: past
+// that, new units silently stopped being tracked, and a long game makes
+// Interceptors and Locusts without end. A data table has no such bound, and
+// CycleMod_ForgetUnit drops a unit's keys when it dies so nothing accumulates.
 
 // Arcane Surge doubles EnergyRegenRate per player, which is a catalog change on
 // the Unit catalog rather than a buff (see CycleMod_EnsureEnergyCache). Cached
@@ -244,7 +258,7 @@ string CycleMod_Name(int idx) {
 }
 
 string CycleMod_Desc(int idx) {
-    if (idx == 1)  { return "all weapons target ground and air"; }
+    if (idx == 1)  { return "weapons hit ground and air; half damage to the new one"; }
     if (idx == 2)  { return "click a unit to burst its move speed (Medivac afterburners)"; }
     if (idx == 3)  { return "your workers no longer cost supply"; }
     if (idx == 4)  { return "attacks restore 30% of damage dealt"; }
@@ -253,7 +267,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 7)  { return "double energy regeneration, units and structures"; }
     if (idx == 8)  { return "first attack after 10s idle deals +50% damage"; }
     if (idx == 9)  { return "click a unit to short-range teleport it"; }
-    if (idx == 10) { return "kills grant permanent +3% time speed, stacking to 15"; }
+    if (idx == 10) { return "kills: permanent +3% to all speeds and regen, stacks to 15"; }
     if (idx == 11) { return "gas buildings mine by themselves at full rate, no workers"; }
     if (idx == 12) { return "your opponent gets no unit bans against your roster"; }
     if (idx == 13) { return "any structure can be salvaged for 75% of its cost"; }
@@ -648,14 +662,20 @@ void CycleMod_UpdateDraftUI() {
         i = i + 1;
     }
 
-    // Waiting player (if distinct): hide all buttons, show a wait message.
+    // Waiting player (if distinct): the same options, disabled. They used to
+    // be hidden, but a spectator sees a dialog only through the player they
+    // are watching (see Tardigrade_ObservableDialog), so a blank waiting screen
+    // meant watching that player showed nothing of the draft.
     if (g_cycle_p1 != g_cycle_p2) {
         if (picker == g_cycle_p1) { waiter = g_cycle_p2; }
         else                      { waiter = g_cycle_p1; }
         waitGroup = PlayerGroupSingle(waiter);
         i = 1;
         while (i <= c_cycleModCount) {
-            DialogControlSetVisible(g_cycle_btnMod[i], waitGroup, false);
+            DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
+                waitGroup, StringToText(CycleMod_DraftButtonText(i, isBan)));
+            DialogControlSetVisible(g_cycle_btnMod[i], waitGroup, !g_cycle_taken[i]);
+            DialogControlSetEnabled(g_cycle_btnMod[i], waitGroup, false);
             i = i + 1;
         }
         if (isBan) {
@@ -789,6 +809,7 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     // Dialog: 640 x 540, two columns of seven buttons (same layout as legacy).
     // Buttons start at y=80 on a 64px pitch: 80 + 7*64 = 528, plus a margin.
     g_cycle_dialog = DialogCreate(640, 540, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
 
     g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
@@ -846,6 +867,7 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
 
     // Dialog: 640 x 540, two columns of seven buttons.
     g_cycle_dialog = DialogCreate(640, 540, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
 
     g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
@@ -1086,14 +1108,12 @@ bool CycleMod_ListHasToken(string list, string wanted) {
 // 1 = can hit ground, 2 = can hit air, 3 = both. A weapon is locked out of a
 // plane either by REQUIRING the other one or by EXCLUDING that one, which is
 // why both halves of the filter string have to be read.
-int CycleMod_WeaponPlanes(string weapon) {
-    string filters;
+int CycleMod_FilterPlanes(string filters) {
     string required;
     string excluded;
     int    separator;
     int    planes;
 
-    filters = CatalogFieldValueGet(c_gameCatalogWeapon, weapon, "TargetFilters", 1);
     separator = StringFind(filters, ";", c_stringCase);
     if (separator < 0) {
         required = filters;
@@ -1109,6 +1129,29 @@ int CycleMod_WeaponPlanes(string weapon) {
     if (!CycleMod_ListHasToken(required, "Ground")
         && !CycleMod_ListHasToken(excluded, "Air")) { planes = planes + 2; }
     return planes;
+}
+
+// Live read, player 1's catalog. Only valid for "what did Blizzard ship" before
+// Open Skies patches anything, or for weapons it never patches.
+int CycleMod_WeaponPlanes(string weapon) {
+    return CycleMod_FilterPlanes(
+        CatalogFieldValueGet(c_gameCatalogWeapon, weapon, "TargetFilters", 1));
+}
+
+// Data-table key holding a weapon's shipped TargetFilters, saved by
+// CycleMod_EnsureWeaponCache before Open Skies rewrites anyone's copy.
+string CycleMod_OriginalFilterKey(string weapon) {
+    return "TgOSW_" + weapon;
+}
+
+// What a weapon could hit before Open Skies. Weapons Open Skies patches have
+// their shipped filters saved; every other weapon is never patched, so its
+// live value still is the original.
+int CycleMod_WeaponOriginalPlanes(string weapon) {
+    if (DataTableValueExists(true, CycleMod_OriginalFilterKey(weapon))) {
+        return CycleMod_FilterPlanes(DataTableGetString(true, CycleMod_OriginalFilterKey(weapon)));
+    }
+    return CycleMod_WeaponPlanes(weapon);
 }
 
 // The derived skip list catches per-plane weapon pairs. These three are the
@@ -1224,6 +1267,9 @@ void CycleMod_EnsureWeaponCache() {
             g_cycle_weaponEntry[g_cycle_weaponCount]  = weapon;
             g_cycle_weaponFilter[g_cycle_weaponCount] = CatalogFieldValueGet(
                 c_gameCatalogWeapon, weapon, "TargetFilters", 1);
+            // Also keyed by name, for the cross-plane penalty's lookups.
+            DataTableSetString(true, CycleMod_OriginalFilterKey(weapon),
+                g_cycle_weaponFilter[g_cycle_weaponCount]);
             g_cycle_weaponCount = g_cycle_weaponCount + 1;
         }
         i = i + 1;
@@ -1502,7 +1548,8 @@ void CycleMod_ActivateDelayedMods() {
     if (CycleMod_P1HasModIdx(7)) { CycleMod_ApplyArcaneSurgeTeam(CycleMod_P1Team()); }
     if (CycleMod_P2HasModIdx(7)) { CycleMod_ApplyArcaneSurgeTeam(CycleMod_P2Team()); }
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"FFD54A\">Battlefield modifiers are now ACTIVE.</c>"));
+        "<c val=\"FFD54A\">Battlefield modifiers are now ACTIVE.</c>"
+        + "  <c val=\"AAAAAA\">Opening vision ends - only a side that drafted Eyes Everywhere keeps it.</c>"));
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1516,6 +1563,44 @@ void CycleMod_ActivateDelayedMods() {
 // over its geyser's contents when built - so a geyser runs dry on the same
 // schedule it would under three workers, and a depleted one stops paying.
 //--------------------------------------------------------------------------------------------------
+// The resource behavior that makes each gas building harvestable at all - and
+// draws the "x/3" worker count above it. One per building type (liberty
+// UnitData: Refinery/Assimilator/Extractor and their Rich variants).
+string CycleMod_GasResourceBehavior(int idx) {
+    if (idx == 1) { return "HarvestableVespeneGeyserGas"; }
+    if (idx == 2) { return "HarvestableVespeneGeyserGasProtoss"; }
+    if (idx == 3) { return "HarvestableVespeneGeyserGasZerg"; }
+    if (idx == 4) { return "HarvestableRichVespeneGeyserGas"; }
+    if (idx == 5) { return "HarvestableRichVespeneGeyserGasProtoss"; }
+    if (idx == 6) { return "HarvestableRichVespeneGeyserGasZerg"; }
+    return "";
+}
+
+// THE block on workers: strip the building's resource behavior. Without it the
+// refinery is not a resource any more, just a structure - a worker can no more
+// harvest it than a MULE can harvest gas, so no gather order onto it is even
+// possible, and the "x/3" counter goes with it. (Blocking at the worker's end
+// was tried twice - per-player ResourceAllowed on the harvest abilities, then
+// re-ordering workers - and neither held in playtest.) Returns true if the
+// building is clean afterwards.
+bool CycleMod_MakeUnharvestable(unit building) {
+    int    i;
+    string beh;
+    bool   clean;
+
+    clean = true;
+    i = 1;
+    while (i <= 6) {
+        beh = CycleMod_GasResourceBehavior(i);
+        if (UnitBehaviorCount(building, beh) > 0) {
+            UnitBehaviorRemove(building, beh, c_unitBehaviorCountAll);
+            if (UnitBehaviorCount(building, beh) > 0) { clean = false; }
+        }
+        i = i + 1;
+    }
+    return clean;
+}
+
 void CycleMod_AutoRefineryTick(unit building) {
     fixed now;
     fixed paidUpTo;
@@ -1527,26 +1612,36 @@ void CycleMod_AutoRefineryTick(unit building) {
 
     now      = GameGetMissionTime();
     paidUpTo = UnitGetCustomValue(building, c_cycleStateAutoGas);
-    // First sight since it finished (or since the modifier switched on): start
-    // the clock now instead of back-paying time that never counted.
+    // First sight since it finished (or since the modifier switched on). Order
+    // matters: the gas it holds lives in the resource behavior, so it is read
+    // into a custom value BEFORE that behavior is removed, and from then on
+    // this building's gas is tracked there. The clock starts now - no back-pay.
     if (paidUpTo <= 0.0) {
+        UnitSetCustomValue(building, c_cycleStateAutoGasLeft,
+            IntToFixed(UnitGetPropertyInt(building, c_unitPropResources, c_unitPropCurrent)));
         UnitSetCustomValue(building, c_cycleStateAutoGas, now);
+        if (!CycleMod_MakeUnharvestable(building)) {
+            Debug_Log("Auto Refineries: could NOT remove the resource behavior from "
+                + UnitGetType(building) + " - workers can still enter it");
+        }
         return;
     }
+    // Cheap re-check in case anything ever restores it.
+    CycleMod_MakeUnharvestable(building);
 
     if (CycleMod_IsRichGasBuilding(building)) { trip = c_cycleAutoGasTripRich; }
     else                                       { trip = c_cycleAutoGasTrip; }
 
     while (now - paidUpTo >= c_cycleAutoGasInterval) {
         paidUpTo = paidUpTo + c_cycleAutoGasInterval;
-        left = UnitGetPropertyInt(building, c_unitPropResources, c_unitPropCurrent);
+        left = FixedToInt(UnitGetCustomValue(building, c_cycleStateAutoGasLeft));
         if (left <= 0) {
             paidUpTo = now;
             break;
         }
         pay = trip;
         if (pay > left) { pay = left; }
-        UnitSetPropertyInt(building, c_unitPropResources, left - pay);
+        UnitSetCustomValue(building, c_cycleStateAutoGasLeft, IntToFixed(left - pay));
         PlayerModifyPropertyInt(UnitGetOwner(building), c_playerPropVespene,
             c_playerPropOperAdd, pay);
         // Adding to the bank alone is invisible to the stats: the score
@@ -1557,6 +1652,25 @@ void CycleMod_AutoRefineryTick(unit building) {
             c_playerPropOperAdd, pay);
     }
     UnitSetCustomValue(building, c_cycleStateAutoGas, paidUpTo);
+}
+
+// Give the geyser under a destroyed automatic refinery the gas the refinery
+// still had. Waits a moment for the geyser to come back, then sets the nearest
+// raw geyser's resources. Called from the death handler (a trigger thread, so
+// the Wait is fine).
+void CycleMod_RestoreGeyserGas(point where, int left) {
+    unitgroup geysers;
+    unit      geyser;
+
+    Wait(0.5, c_timeGame);
+    geysers = UnitGroupSearch(null, c_playerAny, where, 2.0,
+        UnitFilter((1 << c_targetFilterRawResource), 0, 0, 0), 0);
+    geyser = UnitGroupClosestToPoint(geysers, where);
+    if (geyser == null) {
+        Debug_Log("Auto Refineries: no geyser found to restore " + IntToString(left) + " gas to");
+        return;
+    }
+    UnitSetPropertyInt(geyser, c_unitPropResources, left);
 }
 
 string CycleMod_WorkerHarvestAbil(unit worker) {
@@ -1575,13 +1689,20 @@ string CycleMod_WorkerHarvestAbil(unit worker) {
 // patch, or a plain stop if there is none in range. A worker already inside
 // when the modifier switches on comes out, returns its load, and is caught on
 // the way back.
+// Defined below, next to the order-event handler that shares it.
+void CycleMod_SendWorkerToMinerals(unit worker, string harvestAbil, point near);
+
 void CycleMod_KeepWorkerOutOfGas(unit worker) {
     string    harvestAbil;
     order     current;
     unit      target;
-    unitgroup patches;
-    unit      patch;
     point     gasPos;
+    bool      redirect;
+
+    // Standalone local, not a compound condition - the Galaxy compiler rejects
+    // a const bool inside && / || (see the gotchas in CURRENT_STATE.md).
+    redirect = c_cycleAutoGasRedirect;
+    if (!redirect) { return; }
 
     harvestAbil = CycleMod_WorkerHarvestAbil(worker);
     if (harvestAbil == "") { return; }
@@ -1603,13 +1724,22 @@ void CycleMod_KeepWorkerOutOfGas(unit worker) {
     // on gas. The order check alone let workers through in playtest.
     if (target == null && !UnitIsHarvesting(worker, c_resourceTypeVespene)) { return; }
 
-    // Minerals are the only harvestable resource the neutral player (0) owns:
-    // a bare geyser is RawResource, and every refinery belongs to someone.
     if (target != null) { gasPos = UnitGetPosition(target); }
     else                { gasPos = UnitGetPosition(worker); }
-    patches = UnitGroupSearch(null, 0, gasPos, c_cycleAutoGasMineralRange,
+    CycleMod_SendWorkerToMinerals(worker, harvestAbil, gasPos);
+}
+
+// Re-order a worker onto the mineral patch nearest `near`, or stop it if there
+// is none in range. Minerals are the only harvestable resource the neutral
+// player (0) owns: a bare geyser is RawResource, and every refinery belongs to
+// someone.
+void CycleMod_SendWorkerToMinerals(unit worker, string harvestAbil, point near) {
+    unitgroup patches;
+    unit      patch;
+
+    patches = UnitGroupSearch(null, 0, near, c_cycleAutoGasMineralRange,
         UnitFilter((1 << c_targetFilterHarvestableResource), 0, 0, 0), 0);
-    patch   = UnitGroupClosestToPoint(patches, gasPos);
+    patch   = UnitGroupClosestToPoint(patches, near);
     if (patch == null) {
         UnitIssueOrder(worker, Order(AbilityCommand("stop", 0)), c_orderQueueReplace);
         return;
@@ -1625,7 +1755,45 @@ void CycleMod_KeepWorkerOutOfGas(unit worker) {
     }
 }
 
-// The real block. Intercepting gather orders from the scan (above) turned out
+// The entry block (playtest: the 0.5s scan only ever caught workers on their
+// way OUT, after one trip). Fires the instant a worker receives a Gather order
+// - a right-click, a rally, the SCV that just finished building the refinery,
+// or the harvest AI sending it back after dropping off cargo - so it is
+// replaced before the worker has taken a step towards the refinery.
+//
+// The replacement waits one game loop: issuing a new order from inside the
+// event for the order being received risks being overwritten by that very
+// order as it finishes applying. One loop is far too short to reach a
+// refinery, even for an SCV standing next to the one it just built.
+bool CycleMod_OnWorkerGatherOrder(bool testConds, bool runActions) {
+    unit   worker;
+    unit   target;
+    string harvestAbil;
+    point  gasPos;
+    bool   redirect;
+
+    redirect = c_cycleAutoGasRedirect;
+    if (!redirect) { return true; }
+
+    worker = EventUnit();
+    target = OrderGetTargetUnit(EventUnitOrder());
+    if (target == null || !CycleMod_IsGasBuilding(target)) { return true; }
+    if (!CycleMod_UnitModActive(target, "TardigradeMod_AutoRefinery")) { return true; }
+    harvestAbil = CycleMod_WorkerHarvestAbil(worker);
+    if (harvestAbil == "") { return true; }
+
+    gasPos = UnitGetPosition(target);
+    Wait(0.0625, c_timeGame);
+    if (!UnitIsAlive(worker)) { return true; }
+    CycleMod_SendWorkerToMinerals(worker, harvestAbil, gasPos);
+    return true;
+}
+
+// A data-level block, kept alongside CycleMod_OnWorkerGatherOrder above. NOTE:
+// playtest round 2 still saw workers go in for one trip with this in place, so
+// it is apparently not taking effect - either the field path is refused or a
+// per-player ability edit doesn't reach live workers. Its debug-log line says
+// which. Intercepting gather orders from the scan turned out
 // not to stop workers in playtest - they still went in and mined. So the
 // drafting side's worker harvest abilities are simply not allowed to take gas:
 // ResourceAllowed[Vespene] = 0 on SCVHarvest / ProbeHarvest / DroneHarvest,
@@ -1636,7 +1804,11 @@ void CycleMod_KeepWorkerOutOfGas(unit worker) {
 //
 // Blizzard's scripts only ever index catalog arrays numerically, so it isn't
 // certain whether this enum-indexed array takes the name or the number in a
-// field path. Try the name, read it back, and fall back to the index.
+// field path. BOTH are written, unconditionally. The previous version wrote the
+// name form and only fell back to the index form if the value read back wrong -
+// which it never does: a per-player override reads back whatever was written to
+// it, real field path or not, so the fallback could never fire. Writing to a
+// path the engine doesn't recognise is a no-op, so writing both costs nothing.
 void CycleMod_BlockGasHarvest(int player, string harvestAbil) {
     string byName;
     string byIndex;
@@ -1644,11 +1816,10 @@ void CycleMod_BlockGasHarvest(int player, string harvestAbil) {
     byName  = "ResourceAllowed[" + c_resourceTypeVespeneName + "]";
     byIndex = "ResourceAllowed[" + IntToString(c_resourceTypeVespene) + "]";
     CatalogFieldValueSet(c_gameCatalogAbil, harvestAbil, byName, player, "0");
-    if (CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byName, player) != "0") {
-        CatalogFieldValueSet(c_gameCatalogAbil, harvestAbil, byIndex, player, "0");
-    }
-    Debug_Log("Auto Refineries: " + harvestAbil + " gas allowed for P" + IntToString(player)
-        + " = " + CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byIndex, player));
+    CatalogFieldValueSet(c_gameCatalogAbil, harvestAbil, byIndex, player, "0");
+    Debug_Log("Auto Refineries: " + harvestAbil + " P" + IntToString(player)
+        + " vespene allowed byName=" + CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byName, player)
+        + " byIndex=" + CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byIndex, player));
 }
 
 void CycleMod_BlockGasHarvestTeam(playergroup team) {
@@ -1664,6 +1835,34 @@ void CycleMod_BlockGasHarvestTeam(playergroup team) {
         CycleMod_BlockGasHarvest(p, "ProbeHarvest");
         CycleMod_BlockGasHarvest(p, "DroneHarvest");
         i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Opening vision: everyone plays with Eyes Everywhere until the drafted
+// modifiers switch on. Keyed to c_cycleActivationDelay itself rather than a
+// separate timer, so moving the activation moves this with it.
+//
+// Before activation: every participant's units carry the buff (workers
+// excepted, as for every modifier - structures carry it, and one unit is
+// enough to reveal the map). After: the opening copy is stripped from anyone
+// whose side didn't draft Eyes Everywhere; a side that did keeps it, applied as
+// usual by CycleMod_ApplyPickedBehavior. Stripped explicitly rather than left
+// to expire, since the buff lasts 8s and would otherwise linger past
+// activation.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_UpdateOpeningVision(unit u) {
+    string beh;
+
+    beh = CycleMod_Behavior(5);   // Eyes Everywhere
+    if (GameGetMissionTime() < c_cycleActivationDelay) {
+        if (CycleMod_IsParticipantUnit(u) && !CycleMod_IsWorker(u)) {
+            UnitBehaviorAdd(u, beh, u, 1);
+        }
+        return;
+    }
+    if (UnitBehaviorCount(u, beh) > 0 && !CycleMod_UnitModActive(u, beh)) {
+        libNtve_gf_SetBehaviorCount(u, beh, u, 0);
     }
 }
 
@@ -1786,6 +1985,15 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
         share = 0.0;
     }
 
+    // Debug mode only (solo tests): the exact split for every absorbed hit, so
+    // an odd-looking result can be checked against the numbers rather than
+    // eyeballed. "absorbed" is what the response caught, "total" is after the
+    // victim's armor, then what the victim keeps and what each partner gets.
+    Debug_Log("Shared Damage: " + UnitGetType(victim) + " hit by "
+        + EventUnitDamageEffect() + " absorbed " + FixedToString(absorbed, 2)
+        + " total " + FixedToString(total, 2) + " -> kept " + FixedToString(kept, 2)
+        + ", " + IntToString(count) + " partner(s) x " + FixedToString(share, 2));
+
     // Redealt in the attacker's name, so kill credit, Veteran Forces and
     // Predator Protocol all see the attacker's damage. If it is already gone
     // (a Baneling that just popped), the victim stands in; the damage handler
@@ -1808,10 +2016,97 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
     return true;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Veteran Forces and spawned units.
+//
+// A Carrier's Interceptors, a Swarm Host's Locusts, a Brood Lord's Broodlings
+// and a Raven's Auto-Turret do the killing, but they are disposable - stacks
+// earned on them die with them, which is not what drafting Veteran Forces
+// should buy. Their kills credit the unit that spawned them instead, and that
+// unit's stacks are mirrored onto everything it spawns, so a Carrier's whole
+// flight of Interceptors carries the Carrier's veterancy.
+//
+// Psi Storm and other caster damage needs none of this: the damage event
+// already names the caster as the source, so the High Templar is credited.
+//--------------------------------------------------------------------------------------------------
+// Per-unit storage, keyed by the engine's unique unit tag. Unbounded, unlike
+// the fixed arrays this replaced.
+const string c_cycleKeyLastAttacker = "TgLA_";   // who last damaged this unit
+
+// Veteran Forces' spawner link is NOT kept here - it is a buff on the spawned
+// unit whose caster is the spawner (BehaviorData.xml TardigradeMod_VeteranLink).
+const string c_cycleVeteranLink = "TardigradeMod_VeteranLink";
+
+string CycleMod_UnitKey(string prefix, unit u) {
+    return prefix + IntToString(UnitGetTag(u));
+}
+
+unit CycleMod_GetUnitRef(string prefix, unit u) {
+    string key;
+    key = CycleMod_UnitKey(prefix, u);
+    if (!DataTableValueExists(true, key)) { return null; }
+    return DataTableGetUnit(true, key);
+}
+
+void CycleMod_SetUnitRef(string prefix, unit u, unit value) {
+    DataTableSetUnit(true, CycleMod_UnitKey(prefix, u), value);
+}
+
+// Called when a unit dies, so its keys don't pile up over a long match (and
+// nothing keeps holding a reference to a dead unit).
+void CycleMod_ForgetUnit(unit u) {
+    string key;
+    key = CycleMod_UnitKey(c_cycleKeyLastAttacker, u);
+    if (DataTableValueExists(true, key)) { DataTableValueRemove(true, key); }
+}
+
+bool CycleMod_IsSpawnedChildType(string unitType) {
+    return unitType == "Interceptor" || unitType == "LocustMP"
+        || unitType == "LocustMPFlying" || unitType == "Broodling"
+        || unitType == "BroodlingEscort" || unitType == "AutoTurret"
+        || unitType == "InfestorTerran" || unitType == "DisruptorPhased";
+}
+
+// The unit a kill belongs to: the spawner for a spawned unit, otherwise the
+// unit itself. Falls back to the unit when its spawner is already dead.
+unit CycleMod_VeteranRoot(unit u) {
+    unit root;
+
+    if (u == null) { return null; }
+    if (!CycleMod_IsSpawnedChildType(UnitGetType(u))) { return u; }
+
+    // The spawner is the caster of the link buff CycleMod_OnUnitSpawned put on
+    // this unit - the buff IS the record, so there is nothing to clean up.
+    root = UnitBehaviorEffectUnit(u, c_cycleVeteranLink, c_effectLocationCasterUnit, 0);
+    // Interceptors also have an engine-level link to their Carrier, which
+    // covers them even if the spawn event never fired.
+    if (root == null) { root = UnitGetMagazine(u); }
+
+    if (root == null || root == u || !UnitIsAlive(root)) { return u; }
+    return root;
+}
+
+// Copy the spawner's veteran stacks onto a spawned unit. Called when it spawns
+// and from the scan, so stacks the spawner earns later reach units it already
+// spawned. Only ever raises the count - the stacks are permanent.
+void CycleMod_SyncVeteranStacks(unit child) {
+    unit   root;
+    int    count;
+    string stack;
+
+    root = CycleMod_VeteranRoot(child);
+    if (root == null || root == child || !UnitIsAlive(root)) { return; }
+
+    stack = CycleMod_HelperBehavior(6);
+    count = UnitBehaviorCount(root, stack);
+    if (count > UnitBehaviorCount(child, stack)) {
+        libNtve_gf_SetBehaviorCount(child, stack, child, count);
+    }
+}
+
 bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     unit  target;
     unit  source;
-    int   targetIndex;
     fixed currentLife;
     fixed maxLife;
     fixed currentShields;
@@ -1851,10 +2146,11 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     // Recorded before the Overwatch bonus below, which can be the blow that
     // actually kills: CycleMod_OnUnitDied reads this to award Veteran Forces,
     // and it fires from inside that UnitDamage call.
-    targetIndex = FixedToInt(UnitGetCustomValue(target, c_cycleStateRegistered));
-    if (targetIndex > 0 && targetIndex < c_cycleWeaponLimit
-        && CycleMod_IsCombatUnit(source)) {
-        g_cycle_lastAttacker[targetIndex] = source;
+    // Spawned units are tracked even when they are structures (the Raven's
+    // Auto-Turret), so their kills can be credited to whoever spawned them.
+    if (CycleMod_IsCombatUnit(source)
+        || CycleMod_IsSpawnedChildType(UnitGetType(source))) {
+        CycleMod_SetUnitRef(c_cycleKeyLastAttacker, target, source);
     }
 
     // Overwatch's +50% is dealt here rather than by a DamageDealtFraction on
@@ -1932,30 +2228,48 @@ bool CycleMod_OnUnitStartedAttack(bool testConds, bool runActions) {
 bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
     unit dead;
     unit killer;
-    int  deadIndex;
 
-    dead   = EventUnit();
-    deadIndex = FixedToInt(UnitGetCustomValue(dead, c_cycleStateRegistered));
-    if (deadIndex > 0 && deadIndex < c_cycleWeaponLimit) {
-        killer = g_cycle_lastAttacker[deadIndex];
-    } else {
-        killer = null;
+    dead = EventUnit();
+
+    // The damage responses are available on a death event too, so the killing
+    // blow names its own source; the recorded last attacker covers a death the
+    // engine doesn't attribute (and any case where it comes back empty).
+    killer = EventUnitDamageSourceUnit();
+    if (killer == null) { killer = CycleMod_GetUnitRef(c_cycleKeyLastAttacker, dead); }
+
+    if (CycleMod_IsCombatUnit(dead)) {
+        // An Interceptor's kill belongs to its Carrier, and so on.
+        killer = CycleMod_VeteranRoot(killer);
+
+        if (killer != null && UnitGetOwner(killer) != UnitGetOwner(dead)
+            && CycleMod_UnitModActive(killer, "TardigradeMod_VeteranForces")) {
+            CycleMod_AddHelperBehavior(killer, 6);
+            Debug_Log("Veteran Forces: +1 to " + UnitGetType(killer) + " (now "
+                + IntToString(UnitBehaviorCount(killer, CycleMod_HelperBehavior(6)))
+                + ") for killing " + UnitGetType(dead));
+        }
     }
-    if (!CycleMod_IsCombatUnit(dead)) { return true; }
 
-    if (killer != null && UnitGetOwner(killer) != UnitGetOwner(dead)
-        && CycleMod_UnitModActive(killer, "TardigradeMod_VeteranForces")) {
-        CycleMod_AddHelperBehavior(killer, 6);
+    CycleMod_ForgetUnit(dead);
+
+    // An automatic refinery kept its remaining gas in a custom value, not in
+    // the resource behavior it no longer has, so the geyser it leaves behind
+    // can't inherit that amount the normal way. Hand it over explicitly, once
+    // the geyser has reappeared.
+    if (CycleMod_IsGasBuilding(dead) && UnitGetCustomValue(dead, c_cycleStateAutoGas) > 0.0) {
+        CycleMod_RestoreGeyserGas(UnitGetPosition(dead),
+            FixedToInt(UnitGetCustomValue(dead, c_cycleStateAutoGasLeft)));
     }
     return true;
 }
 
+// c_cycleStateRegistered is now just a "seen before" flag. It used to hold a
+// slot index from a counter that ran out at 2048 units per match; per-unit
+// references are keyed by UnitGetTag instead, so there is no slot to run out.
 void CycleMod_RegisterUnit(unit u) {
     point pos;
     if (FixedToInt(UnitGetCustomValue(u, c_cycleStateRegistered)) != 0) { return; }
-    if (g_cycle_registeredCount + 1 >= c_cycleWeaponLimit) { return; }
-    g_cycle_registeredCount = g_cycle_registeredCount + 1;
-    UnitSetCustomValue(u, c_cycleStateRegistered, IntToFixed(g_cycle_registeredCount));
+    UnitSetCustomValue(u, c_cycleStateRegistered, 1.0);
     pos = UnitGetPosition(u);
     UnitSetCustomValue(u, c_cycleStateLastX, PointGetX(pos));
     UnitSetCustomValue(u, c_cycleStateLastY, PointGetY(pos));
@@ -1963,6 +2277,47 @@ void CycleMod_RegisterUnit(unit u) {
     UnitSetCustomValue(u, c_cycleStateAdrenalReady, 0.0);
     UnitSetCustomValue(u, c_cycleStateWasLow, 0.0);
     UnitSetCustomValue(u, c_cycleStateLastAttack, GameGetMissionTime());
+}
+
+// Link a spawned unit to whoever spawned it, for Veteran Forces.
+//
+// Which of the two units the event calls "the unit" and which "the created
+// unit" isn't documented either way, so the child is identified by its type
+// and the other one is taken as the spawner - correct whichever way round the
+// engine reports them. Ordinary production is ignored: only the handful of
+// disposable spawn types in CycleMod_IsSpawnedChildType link back, so a
+// Barracks never becomes the owner of its Marines' kills.
+//
+// The spawner's ROOT is stored, not the spawner itself, so a chain still ends
+// at the real owner - a Locust that lands as a fresh unit keeps pointing at
+// the Swarm Host rather than at the Locust that preceded it.
+bool CycleMod_OnUnitSpawned(bool testConds, bool runActions) {
+    unit first;
+    unit second;
+    unit child;
+    unit parent;
+
+    first  = EventUnit();
+    second = EventUnitCreatedUnit();
+    if (first == null || second == null || first == second) { return true; }
+
+    if (CycleMod_IsSpawnedChildType(UnitGetType(second))) {
+        child  = second;
+        parent = first;
+    } else if (CycleMod_IsSpawnedChildType(UnitGetType(first))) {
+        child  = first;
+        parent = second;
+    } else {
+        return true;
+    }
+    if (UnitGetOwner(child) != UnitGetOwner(parent)) { return true; }
+
+    CycleMod_RegisterUnit(child);
+    // The spawner's own root, so a chain still ends at the real owner, and the
+    // caster of this buff is what CycleMod_VeteranRoot reads back later.
+    UnitBehaviorAdd(child, c_cycleVeteranLink, CycleMod_VeteranRoot(parent), 1);
+    CycleMod_SyncVeteranStacks(child);
+    return true;
 }
 
 void CycleMod_UpdateConditionalBehaviors(unit u) {
@@ -2030,6 +2385,7 @@ void CycleMod_InitHUD() {
     int p;
 
     g_cycle_hud = DialogCreate(430, 116, c_anchorTop, 0, 24, false);
+    Tardigrade_ObservableDialog(g_cycle_hud);
     DialogSetVisible(g_cycle_hud, Tardigrade_Viewers(), true);
     DialogSetImageVisible(g_cycle_hud, true);
 
@@ -2087,9 +2443,54 @@ void CycleMod_RenderRows(int activePhase) {
 // down to worker units only, so it doesn't discount every unit's supply cost,
 // and Shared Damage to the units CycleMod_CanShareDamage allows.
 //--------------------------------------------------------------------------------------------------
+// What a unit type's weapons could reach before Open Skies: 1 ground, 2 air,
+// 3 both, 0 unarmed. Memoised per type in the global data table, since the scan
+// asks for every unit every tick.
+int CycleMod_UnitOriginalPlanes(string unitType) {
+    string key;
+    string weapon;
+    int    slot;
+    int    planes;
+
+    key = "TgOSU_" + unitType;
+    if (DataTableValueExists(true, key)) { return DataTableGetInt(true, key); }
+
+    planes = 0;
+    slot = 0;
+    while (slot < c_cycleUnitWeaponProbe) {
+        weapon = CycleMod_UnitWeaponSlot(unitType, slot);
+        if (weapon != "") { planes = planes | CycleMod_WeaponOriginalPlanes(weapon); }
+        slot = slot + 1;
+    }
+    DataTableSetInt(true, key, planes);
+    return planes;
+}
+
+// Open Skies' cross-plane penalty (BehaviorData.xml TardigradeMod_OpenSkiesVs*):
+// a unit that could only ever hit ground deals half damage to air, and the
+// reverse. Units that already covered both planes, or have no weapon, get
+// neither - Open Skies gave them nothing new to be penalised on.
+void CycleMod_ApplyOpenSkiesPenalty(unit u, bool active) {
+    int planes;
+
+    planes = 0;
+    if (active) { planes = CycleMod_UnitOriginalPlanes(UnitGetType(u)); }
+
+    if (planes == 1) { UnitBehaviorAdd(u, "TardigradeMod_OpenSkiesVsAir", u, 1); }
+    else             { libNtve_gf_SetBehaviorCount(u, "TardigradeMod_OpenSkiesVsAir", u, 0); }
+    if (planes == 2) { UnitBehaviorAdd(u, "TardigradeMod_OpenSkiesVsGround", u, 1); }
+    else             { libNtve_gf_SetBehaviorCount(u, "TardigradeMod_OpenSkiesVsGround", u, 0); }
+}
+
 void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
     string beh;
     beh = CycleMod_Behavior(modIdx);
+    if (beh == "TardigradeMod_OpenSkies") {
+        // The weapons themselves are opened up by catalog in
+        // CycleMod_OpenSkiesForPlayer; this adds the half-damage penalty per
+        // unit, then falls through to the plain marker buff below.
+        CycleMod_ApplyOpenSkiesPenalty(u, CycleMod_UnitModActive(u, beh));
+    }
     if (beh == "" || beh == "TardigradeMod_MedivacBoost" || beh == "TardigradeMod_BattleBlink"
         || beh == "TardigradeMod_Salvage" || beh == "TardigradeMod_AutoRefinery"
         || beh == "TardigradeMod_NoBans") {
@@ -2198,6 +2599,10 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
                     }
                     CycleMod_UpdateAbilityMods(u);
                     CycleMod_UpdateAutoRefinery(u);
+                    // Stacks the spawner earned since this unit spawned.
+                    CycleMod_SyncVeteranStacks(u);
+                    // Everyone sees everything until modifiers switch on.
+                    CycleMod_UpdateOpeningVision(u);
                 }
                 CycleMod_UpdateConditionalBehaviors(u);
                 i = i + 1;
@@ -2262,6 +2667,24 @@ bool CycleMod_PhaseTrigger(bool testConds, bool runActions) {
 // panel on exactly the same terms as the players, so a spectator can see both
 // modifier sets and can fold the panel away like anyone else.
 //--------------------------------------------------------------------------------------------------
+
+// When modifiers switch on, as the in-game clock shows it. c_cycleActivationDelay
+// is in game seconds (GameGetMissionTime), but the clock players read runs on
+// Faster, 1.4x quicker - so 180 game seconds shows as 2:09, not 3:00. Computed
+// from the constant so the text can't drift if the delay is changed.
+string CycleMod_ActivationClockText() {
+    int total;
+    int minutes;
+    int seconds;
+    string pad;
+
+    total   = FixedToInt(c_cycleActivationDelay / 1.4 + 0.5);
+    minutes = total / 60;
+    seconds = total - minutes * 60;
+    pad = "";
+    if (seconds < 10) { pad = "0"; }
+    return IntToString(minutes) + ":" + pad + IntToString(seconds);
+}
 
 // 1 = sees team1's picks as "theirs", 2 = team2's, 0 = neutral spectator view.
 int CycleMod_PanelRole(int player) {
@@ -2333,6 +2756,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     role   = CycleMod_PanelRole(player);   // key 0 is on no team -> spectator view
 
     g_cycle_panelDlg[player] = DialogCreate(470, 232, c_anchorTop, 0, 22, false);
+    Tardigrade_ObservableDialog(g_cycle_panelDlg[player]);
     DialogSetVisible(g_cycle_panelDlg[player], viewer, true);
     DialogSetImageVisible(g_cycle_panelDlg[player], true);
 
@@ -2344,7 +2768,8 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     DialogControlSetSize(g_cycle_panelTitle[player], viewer, 450, 20);
     DialogControlSetPosition(g_cycle_panelTitle[player], viewer, c_anchorTop, 0, 34);
     DialogControlSetPropertyAsText(g_cycle_panelTitle[player], c_triggerControlPropertyText,
-        viewer, StringToText("<c val=\"888888\">(active at 3:00)</c>"));
+        viewer, StringToText("<c val=\"888888\">(active at " + CycleMod_ActivationClockText()
+            + " on the game clock - full map vision for all until then)</c>"));
 
     g_cycle_panelHdrMine[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_panelHdrMine[player], viewer, 450, 16);
@@ -2438,6 +2863,8 @@ void CycleMod_StartCycle() {
     trigger tScan;
     trigger tPhase;
     trigger tEconomicEgg;
+    trigger tGasOrder;
+    trigger tSpawned;
 
     if (g_cycle_hud != c_invalidDialogId || g_cycle_panelBuilt) { return; }
 
@@ -2447,6 +2874,9 @@ void CycleMod_StartCycle() {
         CycleMod_InitHUD();
     } else {
         CycleMod_InitDraftPanel();
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"7FD0FF\">Eyes Everywhere is on for everyone until modifiers activate at "
+            + CycleMod_ActivationClockText() + ".</c>"));
     }
 
     g_cycle_damageTrig = TriggerCreate("CycleMod_OnUnitDamaged");
@@ -2462,6 +2892,19 @@ void CycleMod_StartCycle() {
     // which the scan hands out only to the side that drafted it, from 3:00.
     g_cycle_shareTrig = TriggerCreate("CycleMod_OnSharedDamageAbsorbed");
     TriggerAddEventUnitDamageAbsorbed(g_cycle_shareTrig, null, c_cycleShareBehavior);
+
+    // Auto Refineries: every Gather order any worker receives. Harmless for
+    // everyone else - the handler bails unless the target is an automatic
+    // refinery, which only exists for the drafting side after 3:00.
+    // Veteran Forces: catch every unit creation, to link spawned units
+    // (Interceptors, Locusts, Broodlings, Auto-Turrets) to their spawner.
+    tSpawned = TriggerCreate("CycleMod_OnUnitSpawned");
+    TriggerAddEventUnitCreated(tSpawned, null, null, null);
+
+    tGasOrder = TriggerCreate("CycleMod_OnWorkerGatherOrder");
+    TriggerAddEventUnitOrder(tGasOrder, null, AbilityCommand("SCVHarvest", 0));
+    TriggerAddEventUnitOrder(tGasOrder, null, AbilityCommand("ProbeHarvest", 0));
+    TriggerAddEventUnitOrder(tGasOrder, null, AbilityCommand("DroneHarvest", 0));
 
     tEconomicEgg = TriggerCreate("CycleMod_OnEconomicEggStarted");
     TriggerAddEventUnitAbility(tEconomicEgg, null,

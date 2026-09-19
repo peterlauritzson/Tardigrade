@@ -99,37 +99,15 @@ void Tardigrade_RefreshViewerGroups() {
         + " team2=" + IntToString(PlayerGroupCount(g_draft_team2))
         + " audience=" + IntToString(PlayerGroupCount(g_tard_audience)));
 
-    // TEMPORARY PROBE - remove once spectator visibility is confirmed working.
-    //
-    // Round one proved per-slot messages never reach a spectator, so this
-    // round reports through the channels that might. A spectator should see:
-    //   [all]      - sent to PlayerGroupAll() (known to reach them)
-    //   [audience] - sent to the audience group built above; if this arrives,
-    //                every spectator view in the mod now reaches them
-    //   the slot table, via PlayerGroupAll(): every non-empty slot 0..15 with
-    //   its type and status. natives.galaxy marks the referee/spectator player
-    //   types (5/6) "obsolete and no longer exist in code", so observers are
-    //   expected NOT to appear - the table shows what "all" is made of instead.
-    //   A PlayerGroupAll count of 17 would mean it carries a member beyond
-    //   slot 15 (c_playerAny) - one way it could reach slot-less observers.
-    //   (Deliberately not tested with PlayerGroupHasPlayer(.., 16): if 16 is
-    //   out of range that could raise and abort the whole race draft start.)
-    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
-        "<c val=\"888888\">Tardigrade probe [all]: PlayerGroupAll count "
-        + IntToString(PlayerGroupCount(PlayerGroupAll()))
-        + ", audience count " + IntToString(PlayerGroupCount(g_tard_audience)) + "</c>"));
-    UIDisplayMessage(g_tard_audience, c_messageAreaChat, StringToText(
-        "<c val=\"888888\">Tardigrade probe [audience]: this reached you</c>"));
-    p = 0;
-    while (p < c_maxPlayers) {
-        if (PlayerStatus(p) != c_playerStatusUnused) {
-            UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
-                "<c val=\"888888\">  slot " + IntToString(p)
-                + ": type " + IntToString(PlayerType(p))
-                + ", status " + IntToString(PlayerStatus(p)) + "</c>"));
-        }
-        p = p + 1;
-    }
+    // KNOWN LIMIT (playtest round 3, probe since removed): the audience group
+    // does NOT reach a referee/spectator. Only the unmodified PlayerGroupAll()
+    // does - a copy of it minus the two teams (14 of 16 slots) didn't, and
+    // neither did a hand-built group of all 16 slots in round 1, so it isn't
+    // about membership. There is no way to address spectators on their own:
+    // anything they must receive has to go to PlayerGroupAll(), players
+    // included. g_tard_audience remains useful only for per-player dialog
+    // text, and only if dialogs ever render for observers (they don't yet -
+    // see Tardigrade_ObservableDialog).
 }
 
 // Broadcast group for dialogs and chat: all active slots, falling back to
@@ -137,6 +115,18 @@ void Tardigrade_RefreshViewerGroups() {
 playergroup Tardigrade_Viewers() {
     if (!g_tard_groupsReady) { return PlayerGroupAll(); }
     return g_tard_viewers;
+}
+
+// Call on every dialog right after DialogCreate. Chat sent to PlayerGroupAll()
+// reaches a referee (confirmed: they get the viewer-group probe), but dialogs
+// sent to the very same group did not render for them at all. Referees and
+// spectators have no player slot (natives.galaxy: those player types are
+// obsolete), so SC2 shows an observer a dialog through a *player* - the one
+// they are watching in the vision dropdown, or the owner of what they have
+// selected - chosen by the dialog's observed type. This picks the most
+// permissive mode. Players are unaffected; it only changes what observers see.
+void Tardigrade_ObservableDialog(int dialog) {
+    DialogSetObservedType(dialog, c_triggerObservedTypeObservedOrSelectedPlayerId);
 }
 
 // Spectator-only group; empty until the groups are built.
@@ -531,6 +521,24 @@ void RaceDraft_UpdateAudienceUI() {
 // Logic: Update UI
 //--------------------------------------------------------------------------------------------------
 
+// The three race buttons for one viewer. The waiting player gets them too,
+// disabled, rather than hidden: a spectator only ever sees a dialog through the
+// player they are watching (Tardigrade_ObservableDialog), so hiding the waiting
+// player's buttons blanked the draft for anyone watching that player.
+// Enabled is set explicitly both ways - otherwise buttons disabled on a
+// player's waiting turn would stay disabled on their own turn.
+void RaceDraft_ShowRaceButtons(playergroup viewer, bool hideBanned, bool enabled) {
+    DialogControlSetVisible(g_draft_btnTerran, viewer,
+        !hideBanned || g_draft_bannedRace != c_tardigrade_raceTerran);
+    DialogControlSetVisible(g_draft_btnProtoss, viewer,
+        !hideBanned || g_draft_bannedRace != c_tardigrade_raceProtoss);
+    DialogControlSetVisible(g_draft_btnZerg, viewer,
+        !hideBanned || g_draft_bannedRace != c_tardigrade_raceZerg);
+    DialogControlSetEnabled(g_draft_btnTerran, viewer, enabled);
+    DialogControlSetEnabled(g_draft_btnProtoss, viewer, enabled);
+    DialogControlSetEnabled(g_draft_btnZerg, viewer, enabled);
+}
+
 void RaceDraft_UpdateUI() {
     if (g_draft_phase == 0) {
         // Ban Phase (P1)
@@ -538,19 +546,15 @@ void RaceDraft_UpdateUI() {
             StringToText("<c val=\"FF4444\">BAN a Race</c>"));
         
         // Show all buttons to P1
-        DialogControlSetVisible(g_draft_btnTerran, PlayerGroupSingle(g_draft_p1), true);
-        DialogControlSetVisible(g_draft_btnProtoss, PlayerGroupSingle(g_draft_p1), true);
-        DialogControlSetVisible(g_draft_btnZerg, PlayerGroupSingle(g_draft_p1), true);
-        
+        RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p1), false, true);
+
         // Only update P2 view if P2 is a different player (avoids overwriting P1 view in solo testing)
         if (g_draft_p1 != g_draft_p2) {
             DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p2),
                 StringToText("<c val=\"FF6060\">Opponent is BANNING a race...</c>"));
-            
-            // Hide buttons from P2
-            DialogControlSetVisible(g_draft_btnTerran, PlayerGroupSingle(g_draft_p2), false);
-            DialogControlSetVisible(g_draft_btnProtoss, PlayerGroupSingle(g_draft_p2), false);
-            DialogControlSetVisible(g_draft_btnZerg, PlayerGroupSingle(g_draft_p2), false);
+
+            // P2 sees the same races, disabled - see RaceDraft_ShowRaceButtons.
+            RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p2), false, false);
         }
     }
     else {
@@ -558,18 +562,14 @@ void RaceDraft_UpdateUI() {
         DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p2), StringToText("PICK your Race"));
 
         // Show available buttons to P2
-        DialogControlSetVisible(g_draft_btnTerran, PlayerGroupSingle(g_draft_p2), (g_draft_bannedRace != c_tardigrade_raceTerran));
-        DialogControlSetVisible(g_draft_btnProtoss, PlayerGroupSingle(g_draft_p2), (g_draft_bannedRace != c_tardigrade_raceProtoss));
-        DialogControlSetVisible(g_draft_btnZerg, PlayerGroupSingle(g_draft_p2), (g_draft_bannedRace != c_tardigrade_raceZerg));
+        RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p2), true, true);
 
         // Only update P1 view if P1 is a different player
         if (g_draft_p1 != g_draft_p2) {
             DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p1), StringToText("Opponent is Picking..."));
 
-            // Hide buttons from P1
-            DialogControlSetVisible(g_draft_btnTerran, PlayerGroupSingle(g_draft_p1), false);
-            DialogControlSetVisible(g_draft_btnProtoss, PlayerGroupSingle(g_draft_p1), false);
-            DialogControlSetVisible(g_draft_btnZerg, PlayerGroupSingle(g_draft_p1), false);
+            // P1 sees the remaining races, disabled.
+            RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p1), true, false);
         }
     }
 
@@ -794,8 +794,16 @@ void RaceDraft_Start(trigger callback) {
     // Identify referees / spectators now that the two teams are known.
     Tardigrade_RefreshViewerGroups();
 
+    // Spectators see the draft only through the player they watch (playtest:
+    // "Everyone" shows nothing, Player 1/2 shows that player's screen), so tell
+    // them. PlayerGroupAll() is the only group that reaches them at all, so the
+    // players see this line too.
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
+        "<c val=\"AAAAAA\">Spectating? Choose Player 1 or 2 in the observer vision menu to follow the draft.</c>"));
+
     // Create UI
     g_draft_dialog = DialogCreate(500, 500, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_draft_dialog);
     DialogSetTitle(g_draft_dialog, StringToText("Tardigrade  -  Race Draft"));
     DialogSetVisible(g_draft_dialog, Tardigrade_Viewers(), true);
 

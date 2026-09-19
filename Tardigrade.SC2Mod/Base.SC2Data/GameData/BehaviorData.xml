@@ -130,6 +130,47 @@
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
 
+    <!-- Open Skies cross-plane penalty: a unit hits the plane it could never
+         reach before at half damage (a Zealot vs air, a Phoenix vs ground).
+         CycleMod_ApplyPickedBehavior gives an Open Skies side's units one of
+         these, by what their weapons could originally reach: ground-only
+         armed units get VsAir, air-only ones VsGround, and units that already
+         covered both planes (or have no weapon) get neither.
+
+         Location="Attacker" makes the response act on damage this unit DEALS,
+         before it lands (Blizzard uses it for Charge and the Cloaking Drone),
+         so it is exact even on a killing blow. TargetFilters is read against
+         the other party - Blizzard's FlyerShield puts "Ground;-" on a buff for
+         air units to cap damage from ground attackers - so here it names the
+         victim's plane.
+
+         Spell kind is left out: an ability is not the weapon Open Skies
+         opened up, and Corrosive Bile or a Storm always could hit both
+         planes. The Overwatch bonus is excluded because it is computed from
+         the damage that already landed, i.e. already halved. -->
+    <CBehaviorBuff id="TardigradeMod_OpenSkiesVsAir">
+        <InfoFlags index="Hidden" value="1"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="0.5">
+            <Chance value="1"/>
+            <TargetFilters value="Air;-"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_OpenSkiesVsGround">
+        <InfoFlags index="Hidden" value="1"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="0.5">
+            <Chance value="1"/>
+            <TargetFilters value="Ground;-"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
     <CBehaviorBuff id="TardigradeMod_MedivacBoost">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
@@ -248,11 +289,52 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
-    <CBehaviorBuff id="TardigradeMod_VeteranStack">
+    <!-- Veteran Forces, spawned units: the link from an Interceptor to its
+         Carrier, a Locust to its Swarm Host, a Broodling to its Brood Lord, an
+         Auto-Turret to its Raven. The buff itself does nothing; what matters is
+         that CycleMod_OnUnitSpawned applies it with the SPAWNER as the caster,
+         so CycleMod_VeteranRoot can read the spawner back out of it with
+         UnitBehaviorEffectUnit(.., c_effectLocationCasterUnit, ..). Keeping the
+         link on the unit means it is cleaned up with the unit, with no
+         bookkeeping to maintain. Permanent (no Duration), one stack. -->
+    <CBehaviorBuff id="TardigradeMod_VeteranLink">
         <InfoFlags index="Hidden" value="1"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+
+    <!-- Visible on purpose (was Hidden): stacks are per unit and earned
+         unevenly, and with no way to see them it was impossible to tell
+         whether two units being compared - e.g. two Battlecruisers "attacking
+         at different speeds" - even had the same count. The buff bar shows the
+         icon with its stack count; name/tooltip are in GameStrings.txt. -->
+    <CBehaviorBuff id="TardigradeMod_VeteranStack">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-frenzy.dds"/>
         <Alignment value="Positive"/>
         <MaxStackCount value="15"/>
-        <Modification TimeScale="1.03"/>
+        <!-- "Everything a little faster", spelled out stat by stat instead of
+             TimeScale. TimeScale sped up movement reliably but the Battlecruiser's
+             attack only some of the time (playtest: same BC, movement boosted
+             throughout, attack boost intermittent) - the BC's attack ability
+             (CAbilAttack BattlecruiserAttack, Min/MaxAttackSpeedMultiplier) is
+             built around the attack-speed stat. So each piece gets its own
+             explicit multiplier:
+               - MoveSpeedMultiplier / AttackSpeedMultiplier: move and attack.
+               - RateMultiplierArray: ability cooldowns, charges, morphs
+                 (siege/assault modes), progress/queue (a Carrier building
+                 Interceptors), spawns (Swarm Host Locusts). This is exactly the
+                 set Blizzard's own current Chrono Boost (voidmulti) uses at
+                 1.5 - it too moved off TimeScale onto these. Creep is left out.
+               - VitalRegenMultiplier: energy regen. Not indexed by vital, so it
+                 scales life and shield regen too - which is what TimeScale did,
+                 so nothing is lost. -->
+        <Modification MoveSpeedMultiplier="1.03" AttackSpeedMultiplier="1.03" VitalRegenMultiplier="1.03">
+            <RateMultiplierArray index="Cooldown" value="1.03"/>
+            <RateMultiplierArray index="Charge" value="1.03"/>
+            <RateMultiplierArray index="Morph" value="1.03"/>
+            <RateMultiplierArray index="Progress" value="1.03"/>
+            <RateMultiplierArray index="Queueable" value="1.03"/>
+            <RateMultiplierArray index="Spawn" value="1.03"/>
+        </Modification>
     </CBehaviorBuff>
 
     <!-- 11-13: markers only. Auto Refineries is run by CycleMod_UpdateAutoRefinery,

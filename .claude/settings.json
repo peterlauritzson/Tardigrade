@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sed -n '/^void CycleMod_AutoRefineryTick/,/^}/p' CycleMod.galaxy)",
+      "Bash(sed -n '/^bool CycleMod_OnUnitDied/,/^}/p' CycleMod.galaxy)"
+    ]
+  }
+}
