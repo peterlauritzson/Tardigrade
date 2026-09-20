@@ -14,6 +14,22 @@
          when the parent IS available. Which units a player may actually build
          is gated per-player by RosterEnforce.galaxy (TechTreeUnitAllow).
          Command-card buttons for these live in UnitData.xml (on the Larva).
+
+         NOTE: this file holds NO modifier abilities. Battle Blink, Salvage
+         and Medivac Boost were all granted here once and shown per-unit at
+         runtime; every one of them is a condition now (CycleMod_TryBattleBlink,
+         CycleMod_PayRefund, and Forced March as a plain scan-applied buff), so
+         no drafted modifier adds a button, a hotkey or a CardLayouts cell to
+         any unit. That removed the whole class of problems this file used to
+         carry: fighting vanilla buttons for cells across 52 unit types, Row 3
+         not rendering, and a unit that already owned the ability ending up
+         with two of them. The TardigradeAbil_Blink TELEPORT EFFECT in
+         EffectData.xml is still there and still used - the script creates it
+         directly; it was only the ability wrapper that went.
+
+         Keep every comment in this file directly above an element. SC2's
+         parser attaches a comment to the element that FOLLOWS it, so a
+         trailing comment before </Catalog> warns "m_comment == nullptr".
     ===================================================================== -->
     <CAbilTrain id="LarvaTrain">
         <InfoArray index="Train6" Time="12">
@@ -71,58 +87,5 @@
             <Button DefaultButtonFace="Archon" State="Restricted" Requirements="HaveTemplarArchives"/>
         </InfoArray>
     </CAbilWarpTrain>
-
-    <!-- =====================================================================
-         TARDIGRADE: MODIFIER ABILITIES
-         Battle Blink and Medivac Boost are drafted modifiers that grant a
-         clickable ability instead of a passive buff. Both abilities are
-         granted (hidden) to every combat unit (not workers) in UnitData.xml, and
-         CycleMod.galaxy shows/enables them at runtime only for units on the
-         side that drafted the matching modifier.
-    ===================================================================== -->
-    <CAbilEffectTarget id="TardigradeAbil_Blink">
-        <Range value="500"/>
-        <Arc value="360"/>
-        <Flags index="BestUnit" value="0"/>
-        <Flags index="RequireTargetVision" value="0"/>
-        <Cost>
-            <Cooldown Link="TardigradeAbil_Blink" TimeUse="12"/>
-        </Cost>
-        <CmdButtonArray index="Execute" DefaultButtonFace="Blink">
-            <Flags index="Hidden" value="1"/>
-            <Flags index="ToSelection" value="1"/>
-        </CmdButtonArray>
-        <AbilSetId value="TgBl"/>
-    </CAbilEffectTarget>
-
-    <CAbilEffectInstant id="TardigradeAbil_MedivacBoost">
-        <Flags index="Transient" value="1"/>
-        <CmdButtonArray index="Execute" DefaultButtonFace="MedivacSpeedBoost">
-            <Flags index="Hidden" value="1"/>
-            <Flags index="ToSelection" value="1"/>
-        </CmdButtonArray>
-        <Cost>
-            <Cooldown Link="TardigradeAbil_MedivacBoost" TimeUse="15"/>
-        </Cost>
-    </CAbilEffectInstant>
-
-    <!-- Salvage (modifier 13): granted hidden to every structure in
-         UnitData.xml and shown by CycleMod_UpdateAbilityMods for the side that
-         drafted it. A toggle, like WoL's SalvageShared on the Bunker: On puts
-         TardigradeMod_Salvaging on the structure (5s, then 75% refund), Off
-         cancels it. HasNoCargo stops a loaded Command Center or Nydus from
-         being salvaged with units inside. Only On is hidden - Off can only
-         appear while a salvage this side started is already running. -->
-    <CAbilBehavior id="TardigradeAbil_Salvage">
-        <CmdButtonArray index="On" DefaultButtonFace="Salvage">
-            <Flags index="Hidden" value="1"/>
-            <Flags index="ToSelection" value="1"/>
-        </CmdButtonArray>
-        <CmdButtonArray index="Off" DefaultButtonFace="Cancel"/>
-        <Flags index="BestUnit" value="1"/>
-        <Flags index="Transient" value="1"/>
-        <BehaviorArray value="TardigradeMod_Salvaging"/>
-        <ValidatorArray value="HasNoCargo"/>
-    </CAbilBehavior>
 
 </Catalog>

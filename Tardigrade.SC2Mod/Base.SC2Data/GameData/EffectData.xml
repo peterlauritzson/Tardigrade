@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
-	<!-- Battle Blink: a short-range teleport granted to every unit while the
-	     modifier is active. Same parameters as the Stalker's Blink (8 range),
-	     kept as a separate id so it doesn't share the Stalker's own cooldown
-	     or its Blink-tech requirement. -->
+	<!-- Battle Blink: a short-range teleport, same parameters as the Stalker's
+	     Blink (8 range), kept as a separate id so it doesn't share the
+	     Stalker's own cooldown or its Blink-tech requirement.
+
+	     No ability wraps it any more. CycleMod_TryBattleBlink creates this
+	     effect directly with UnitCreateEffectPoint when a unit drops to 30%
+	     life, aimed away from whatever last hit it, and the cooldown is the
+	     TardigradeMod_BlinkCooldown behavior. TargetLocation is still
+	     TargetPoint - the script supplies that point. -->
 	<CEffectTeleport id="TardigradeAbil_Blink">
 		<ClearQueuedOrders value="0"/>
 		<PlacementAround Value="CasterUnit"/>
@@ -13,13 +18,6 @@
 		<TargetLocation Value="TargetPoint"/>
 		<TeleportFlags index="TestCliff" value="1"/>
 	</CEffectTeleport>
-
-	<!-- Medivac Boost: an instant self-cast that applies the existing
-	     TardigradeMod_MedivacBoost speed buff, instead of it being an
-	     always-on passive. -->
-	<CEffectApplyBehavior id="TardigradeAbil_MedivacBoost">
-		<Behavior value="TardigradeMod_MedivacBoost"/>
-	</CEffectApplyBehavior>
 
 	<!-- Overwatch's +50%, dealt by CycleMod_OnUnitDamaged via UnitDamage() with
 	     the bonus passed as the amount. Amount is 0 so the whole payload comes
@@ -54,28 +52,4 @@
 		<Kind value="Spell"/>
 		<ArmorReduction value="0"/>
 	</CEffectDamage>
-
-	<!-- Salvage payout, the ExpireEffect of TardigradeMod_Salvaging. The same
-	     engine salvage the Bunker and Sensor Tower use (liberty's SalvageShared
-	     effect): the Salvage flag removes the structure and refunds
-	     SalvageFactor x its CostResource, where negative = refund. CostResource
-	     is cumulative for morphs in the data (Lair 475 = Hatchery 325 + 150,
-	     Zerg costs include the Drone), so one factor is right for all of them. -->
-	<CEffectModifyUnit id="TardigradeMod_SalvageRefund">
-		<ModifyFlags index="Salvage" value="1"/>
-		<SalvageFactor>
-			<Resource index="Minerals" value="-0.75"/>
-			<Resource index="Vespene" value="-0.75"/>
-			<Resource index="Terrazine" value="-0.75"/>
-			<Resource index="Custom" value="-0.75"/>
-		</SalvageFactor>
-	</CEffectModifyUnit>
-
-	<!-- Cancels a salvage when the structure takes damage (fired from
-	     TardigradeMod_Salvaging's damage response). Mirrors LotV's
-	     SalvageCombatRB on the Bunker. -->
-	<CEffectRemoveBehavior id="TardigradeMod_SalvageInterrupt">
-		<WhichUnit Value="Caster"/>
-		<BehaviorLink value="TardigradeMod_Salvaging"/>
-	</CEffectRemoveBehavior>
 </Catalog>

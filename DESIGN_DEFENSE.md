@@ -23,8 +23,8 @@ to be built.
 ## Premise
 
 The 10 drafted modifiers are **working as intended, including the overpowered
-ones**. Location-agnostic Entrenchment, uncatchable Overwatch + Medivac Boost
-kiting, Veteran Forces stacking off kills — none of these are bugs to tune down.
+ones**. Location-agnostic Entrenchment, uncatchable Overwatch kiting, Veteran
+Forces stacking off kills — none of these are bugs to tune down.
 They are the toys, and they should feel like toys.
 
 The problem they create is not that any single modifier is too strong. It is
@@ -207,8 +207,13 @@ to that side's own units, so summons are covered automatically.
 
 Brief root or slow in an area. Deferred until mercs and tower have had a
 playtest. Worth building eventually because it is the only entry that answers
-the "I can never catch them" problem (Overwatch + Medivac Boost on a long-range
-unit), which is where this whole design thread started.
+the "I can never catch them" problem (Overwatch + the old Medivac Boost on a
+long-range unit), which is where this whole design thread started. Medivac Boost
+has since become Forced March, which switches off on damage taken *or dealt* and
+so cannot help a kiting unit at all — the first version broke only on damage
+taken, which still left a unit that out-ranges its target (Colossus into
+workers, Tempest into a Carrier) kiting at full march speed. It still favours
+the drafting side's disengage, so the entry stands.
 
 ### 2. Standalone keepers
 
@@ -283,8 +288,8 @@ Grounded in what the code already does. **None of this is built yet.**
   considering over adding a third element.
 - A top bar **avoids** the command-card problem entirely — no `CardLayouts`
   slot, no Row 3 failing to render, no collisions with vanilla buttons on 52
-  units. This is a real advantage over the per-unit ability approach used by
-  Medivac Boost and Battle Blink.
+  units. This was a real advantage over the per-unit ability approach modifiers
+  used to take — since made moot: no modifier grants an ability any more.
 - The bar is deliberately live from 0:00 while modifiers stay dormant until
   3:00. This gives the early game its own identity (vanilla + a small tactical
   toolkit) and keeps the two systems from interacting in the window where either

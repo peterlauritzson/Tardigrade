@@ -27,7 +27,7 @@ const int c_cyclePhaseCount = 3;
 // referenced by literal index where they were before.
 const int c_cycleModAutoRefinery = 11;
 const int c_cycleModNoBans       = 12;
-const int c_cycleModSalvage      = 13;
+const int c_cycleModRefund       = 13;
 const int c_cycleModSharedDamage = 14;
 
 // Master toggle for the legacy rotating-phase system (in-game Day/Dusk/Night
@@ -53,6 +53,21 @@ const fixed c_cycleActivationDelay = 180.0;  // buffs go live 3 minutes into the
 const fixed c_cycleArcaneRegenMult = 2.0;  // 2x each unit's own energy regen
 
 const int c_cycleEntrenchDelay  = 6;   // doc: 3s still before Entrenched
+
+// How far a unit may drift from where it settled and still count as holding
+// position. It used to be 0.01 map units - effectively pixel-perfect - and any
+// drift at all reset the whole 6s clock, so a unit bumped by an ally walking
+// past, shuffled by collision separation, or nudged while acquiring a target
+// lost everything and started over. That is not "moving" to a player, and
+// chasing it made the modifier miserable to use.
+//
+// This is a FIXED anchor, not a rolling "how far since N seconds ago" window.
+// A rolling window sounds equivalent but leaks: anything slower than the
+// window's allowance never trips it, so an Overlord (0.9/s, 1.8 map units over
+// 2s) would stay entrenched while flying across the map. An anchor bounds
+// TOTAL displacement instead - drift far enough in any direction, however
+// slowly, and it trips - so there is nothing to creep past.
+const fixed c_cycleEntrenchRadius = 1.5;
 const int c_cycleOverwatchDelay = 10;  // doc: 5s idle before Overwatch arms
 
 // Overwatch's payload. Applied as a second damage event in CycleMod_OnUnitDamaged
@@ -94,6 +109,45 @@ const fixed  c_cycleAutoGasMineralRange = 12.0;
 // works by replacing the player's order, which is visible and can fight the
 // player's own clicks. Set false to rely on the data block alone.
 const bool   c_cycleAutoGasRedirect = true;
+
+// Forced March (was Medivac Boost): a flat +30% move speed on everything you
+// own, switched off the moment a unit is in contact and switched back on 14
+// game seconds - 10 real seconds on Faster - after the last contact.
+//
+// "In contact" is both directions: damage TAKEN or damage DEALT. Taking damage
+// is any damage at all, friendly fire and own splash included.
+//
+// The old version was a clickable +70% burst on a 15s cooldown, which was the
+// half of "I can never catch them" that DESIGN_DEFENSE.md calls out: it could
+// be fired mid-fight, so a kiting long-range unit boosted while shooting. The
+// hit-only rule mostly closed that, but not for a unit that out-ranges what it
+// is shooting or shoots something that cannot shoot back - a Colossus burning
+// down workers, a Tempest hitting a Carrier from outside its range - which
+// kited at full march speed while never taking a hit. Breaking on the swing as
+// well makes it a travel and disengage tool with no combat use at all.
+//
+// The recovery timer is TardigradeMod_MarchBroken's Duration rather than a
+// per-unit timestamp: every break re-adds it, which refreshes the duration, so
+// the engine's own expiry IS "14 seconds since the last contact". Same trick
+// as the Battle Blink cooldown, and it spends no custom value slot.
+// CycleMod_BreakMarch is the one place that does it.
+const string c_cycleMarchBehavior = "TardigradeMod_ForcedMarch";
+const string c_cycleMarchBroken   = "TardigradeMod_MarchBroken";
+
+// Refund (was Salvage): anything of yours that an enemy kills pays back a
+// quarter of what it cost. Replaces the old clickable salvage entirely - see
+// CycleMod_PayRefund for why deaths are gated on an enemy killer.
+const fixed c_cycleRefundFraction = 0.25;
+
+// Battle Blink, now automatic. A unit that drops to this fraction of its
+// maximum life teleports c_cycleBlinkRange away from whatever last hit it,
+// then can't do it again until c_cycleBlinkCooldown has passed. The cooldown
+// is the TardigradeMod_BlinkCooldown behavior's Duration rather than a custom
+// value, so the engine expires it and there is no per-unit state to keep.
+const fixed  c_cycleBlinkThreshold = 0.30;  // fraction of max life
+const fixed  c_cycleBlinkRange     = 8.0;   // matches the Stalker's Blink
+const string c_cycleBlinkEffect    = "TardigradeAbil_Blink";
+const string c_cycleBlinkCooldown  = "TardigradeMod_BlinkCooldown";
 
 // Shared Damage: every hit on one of your units is half taken by it and half
 // handed out to your other units within this radius. The behavior absorbs the hit whole (see
@@ -236,7 +290,7 @@ bool         g_cycle_arcaneEnabled = false;
 //--------------------------------------------------------------------------------------------------
 string CycleMod_Behavior(int idx) {
     if (idx == 1)  { return "TardigradeMod_OpenSkies"; }
-    if (idx == 2)  { return "TardigradeMod_MedivacBoost"; }
+    if (idx == 2)  { return c_cycleMarchBehavior; }
     if (idx == 3)  { return "TardigradeMod_WorkersNoSupply"; }
     if (idx == 4)  { return "TardigradeMod_PredatorProtocol"; }
     if (idx == 5)  { return "TardigradeMod_EyesEverywhere"; }
@@ -245,14 +299,15 @@ string CycleMod_Behavior(int idx) {
     if (idx == 8)  { return "TardigradeMod_Overwatch"; }
     if (idx == 9)  { return "TardigradeMod_BattleBlink"; }
     if (idx == 10) { return "TardigradeMod_VeteranForces"; }
-    // 11-13 are keys only, never applied as buffs: Auto Refineries and Salvage
-    // run from the scan (CycleMod_UpdateAutoRefinery / CycleMod_UpdateAbilityMods)
-    // and No Bans acts on the roster draft, before any unit exists. The ids
-    // still exist as markers in BehaviorData.xml so legacy phase mode, which
-    // adds every chosen behavior blindly, has something valid to add.
+    // 11-13 are keys only, never applied as buffs: Auto Refineries runs from
+    // the scan (CycleMod_UpdateAutoRefinery), Refund from the unit-died event
+    // (CycleMod_PayRefund) and No Bans acts on the roster draft, before any
+    // unit exists. The ids still exist as markers in BehaviorData.xml so legacy
+    // phase mode, which adds every chosen behavior blindly, has something valid
+    // to add.
     if (idx == 11) { return "TardigradeMod_AutoRefinery"; }
     if (idx == 12) { return "TardigradeMod_NoBans"; }
-    if (idx == 13) { return "TardigradeMod_Salvage"; }
+    if (idx == 13) { return "TardigradeMod_Refund"; }
     if (idx == 14) { return c_cycleShareBehavior; }
     return "";
 }
@@ -269,7 +324,7 @@ string CycleMod_HelperBehavior(int idx) {
 
 string CycleMod_Name(int idx) {
     if (idx == 1)  { return "Open Skies"; }
-    if (idx == 2)  { return "Medivac Boost"; }
+    if (idx == 2)  { return "Forced March"; }
     if (idx == 3)  { return "Free Labor"; }
     if (idx == 4)  { return "Predator Protocol"; }
     if (idx == 5)  { return "Eyes Everywhere"; }
@@ -280,25 +335,25 @@ string CycleMod_Name(int idx) {
     if (idx == 10) { return "Veteran Forces"; }
     if (idx == 11) { return "Auto Refineries"; }
     if (idx == 12) { return "No Bans"; }
-    if (idx == 13) { return "Salvage"; }
+    if (idx == 13) { return "Refund"; }
     if (idx == 14) { return "Shared Damage"; }
     return "";
 }
 
 string CycleMod_Desc(int idx) {
     if (idx == 1)  { return "weapons hit ground and air; half damage to the new one"; }
-    if (idx == 2)  { return "click a unit to burst its move speed (Medivac afterburners)"; }
+    if (idx == 2)  { return "+30% move speed, lost on damage dealt or taken, back 14s later"; }
     if (idx == 3)  { return "your workers no longer cost supply"; }
     if (idx == 4)  { return "attacks restore 30% of damage dealt"; }
     if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
     if (idx == 6)  { return "stationary units gain +2 armor and +1 range"; }
     if (idx == 7)  { return "double energy regeneration, units and structures"; }
     if (idx == 8)  { return "first attack after 10s idle deals +50% damage"; }
-    if (idx == 9)  { return "click a unit to short-range teleport it"; }
+    if (idx == 9)  { return "units at 30% health blink away from their attacker"; }
     if (idx == 10) { return "kills: permanent +3% to all speeds and regen, stacks to 15"; }
     if (idx == 11) { return "gas buildings mine by themselves at full rate, no workers"; }
     if (idx == 12) { return "your opponent gets no unit bans against your roster"; }
-    if (idx == 13) { return "any structure can be salvaged for 75% of its cost"; }
+    if (idx == 13) { return "anything of yours that dies refunds 25% of its cost"; }
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
     return "";
 }
@@ -376,6 +431,11 @@ bool CycleMod_IsWorker(unit candidate) {
 // Entrenchment, lifesteal, Overwatch, veteran stacks, detection, anything -
 // except the two that are ABOUT workers: Free Labor (their supply) and Auto
 // Refineries (which has to keep acting on them to keep them out of the gas).
+//
+// Refund is NOT an exception: a dead worker pays nothing. The rule is worth
+// more than the edge case - "modifiers never touch workers" is one sentence a
+// player can hold in their head, and it also keeps the modifier off worker
+// trades and harassment, which is not what it is for.
 bool CycleMod_ModReachesWorkers(string beh) {
     return beh == "TardigradeMod_WorkersNoSupply" || beh == "TardigradeMod_AutoRefinery";
 }
@@ -2247,6 +2307,140 @@ void CycleMod_SyncVeteranStacks(unit child) {
     }
 }
 
+//--------------------------------------------------------------------------------------------------
+// Refund (modifier 13): a quarter of the cost of anything of yours an enemy
+// kills comes straight back. Replaces the old Salvage ability outright - no
+// command-card button, no hotkey, no 5-second channel to interrupt.
+//
+// Gated on an ENEMY killer, deliberately. The unit-died event fires for far
+// more than combat deaths: a Zergling morphing into a Baneling is killed by
+// MorphZerglingToBaneling's KillOnFinish, a MULE times out, an Adept shade
+// expires, a Larva is consumed. Paying out on those would refund units the
+// player never lost, and morphs would be an outright minerals printer. A
+// killer that is null (a despawn) or friendly (your own Baneling, a morph)
+// pays nothing.
+//
+// Hallucinations are excluded for the same reason in reverse: they carry the
+// real unit's type, so CostResource would read the real unit's price and a
+// Sentry could print minerals by making copies and feeding them to the enemy.
+//--------------------------------------------------------------------------------------------------
+
+// A unit type's build cost for one player, straight from the catalog so morph
+// costs (Lair = Hatchery + 150) and per-player balance overrides are whatever
+// the engine currently thinks they are.
+// NB: not named "text" - that is a Galaxy TYPE (what StringToText returns), so
+// declaring a variable with that name is a compile error.
+fixed CycleMod_UnitCost(string unitType, string resource, int player) {
+    string costText;
+    costText = CatalogFieldValueGet(c_gameCatalogUnit, unitType,
+        "CostResource[" + resource + "]", player);
+    if (costText == "") { return 0.0; }
+    return StringToFixed(costText);
+}
+
+void CycleMod_PayRefund(unit dead, unit killer) {
+    int   owner;
+    fixed minerals;
+    fixed gas;
+
+    if (killer == null) { return; }
+    owner = UnitGetOwner(dead);
+    if (UnitGetOwner(killer) == owner) { return; }
+    if (!CycleMod_UnitModActive(dead, "TardigradeMod_Refund")) { return; }
+    if (UnitTestState(dead, c_unitStateHallucination)) { return; }
+
+    minerals = CycleMod_UnitCost(UnitGetType(dead), "Minerals", owner)
+        * c_cycleRefundFraction;
+    gas      = CycleMod_UnitCost(UnitGetType(dead), "Vespene", owner)
+        * c_cycleRefundFraction;
+    if (minerals <= 0.0 && gas <= 0.0) { return; }
+
+    // Paid as fixed, not rounded to whole resources: a Marine is 50/4 = 12.5,
+    // and rounding every payout down would quietly lose an eighth of the
+    // modifier across an army's worth of deaths.
+    if (minerals > 0.0) {
+        PlayerModifyPropertyFixed(owner, c_playerPropMinerals, c_playerPropOperAdd, minerals);
+    }
+    if (gas > 0.0) {
+        PlayerModifyPropertyFixed(owner, c_playerPropVespene, c_playerPropOperAdd, gas);
+    }
+    Debug_Log("Refund: " + UnitGetType(dead) + " -> player " + IntToString(owner)
+        + " +" + FixedToString(minerals, 2) + "m +" + FixedToString(gas, 2) + "g");
+}
+
+//--------------------------------------------------------------------------------------------------
+// Battle Blink (modifier 9): no longer a button. A unit that drops to 30% life
+// teleports away from whatever last hit it, once per cooldown.
+//
+// Driven from the damage handler rather than the 0.5s scan on purpose: the
+// scan could easily miss the window entirely, because a unit that crosses 30%
+// is usually dead well inside half a second. Reacting to the hit that took it
+// there is the only way the escape is reliable.
+//
+// The threshold is an edge, not a state: the cooldown behavior is what stops a
+// unit that is sitting below 30% from blinking on every subsequent hit.
+// Shields count toward the total, so a Protoss unit blinks on its real health
+// bar rather than the moment its shields break.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_TryBattleBlink(unit u, unit attacker) {
+    fixed life;
+    fixed lifeMax;
+    fixed total;
+    fixed totalMax;
+    point from;
+    point to;
+
+    if (u == null || attacker == null || !UnitIsAlive(u))     { return; }
+    if (!CycleMod_IsCombatUnit(u))                            { return; }
+    if (!CycleMod_UnitModActive(u, "TardigradeMod_BattleBlink")) { return; }
+    if (UnitBehaviorCount(u, c_cycleBlinkCooldown) > 0)       { return; }
+
+    life     = UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent);
+    lifeMax  = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent);
+    if (lifeMax <= 0.0) { return; }
+    total    = life + UnitGetPropertyFixed(u, c_unitPropShields, c_unitPropCurrent);
+    totalMax = lifeMax + UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent);
+    if (total > totalMax * c_cycleBlinkThreshold) { return; }
+
+    // Straight back along the line from the attacker: the angle FROM the
+    // attacker TO this unit, continued past it. An attacker standing on top of
+    // the unit gives a degenerate angle, which PointWithOffsetPolar resolves
+    // to some direction anyway - any direction is an escape there.
+    from = UnitGetPosition(u);
+    to   = PointWithOffsetPolar(from, c_cycleBlinkRange,
+        AngleBetweenPoints(UnitGetPosition(attacker), from));
+
+    // The teleport effect does its own placement validation (TestCliff, and it
+    // settles the unit on a free spot near the target point), so an escape into
+    // a cliff or a wall lands short rather than failing outright.
+    UnitCreateEffectPoint(u, c_cycleBlinkEffect, to);
+    UnitBehaviorAdd(u, c_cycleBlinkCooldown, u, 1);
+    Debug_Log("Battle Blink: " + UnitGetType(u) + " at "
+        + FixedToString(total / totalMax * 100.0, 0) + "% away from "
+        + UnitGetType(attacker));
+}
+
+// Forced March drops the moment a unit is in contact, and "in contact" is both
+// directions: damage taken OR damage dealt. Taking a hit is any damage at all,
+// friendly splash included - the rule a player holds in their head is "if
+// anything is hitting you, you are not marching", and carving out own-team
+// damage buys an edge case nobody can see in exchange for a longer sentence.
+//
+// Re-adding MarchBroken REFRESHES its duration, so the buff returns 14 game
+// seconds after the last contact rather than the first, and no per-unit
+// timestamp is needed. Stripping ForcedMarch here rather than leaving it to the
+// scan makes the slowdown land on the event that caused it instead of up to
+// half a tick later; CycleMod_ApplyPickedBehavior is what puts it back.
+//
+// UnitModActive is the draft gate, not "is the buff on right now" - a unit
+// already inside the window has no buff to strip but still needs the refresh.
+void CycleMod_BreakMarch(unit u) {
+    if (u == null) { return; }
+    if (!CycleMod_UnitModActive(u, c_cycleMarchBehavior)) { return; }
+    UnitBehaviorAdd(u, c_cycleMarchBroken, u, 1);
+    libNtve_gf_SetBehaviorCount(u, c_cycleMarchBehavior, u, 0);
+}
+
 bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     unit  target;
     unit  source;
@@ -2334,6 +2528,16 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
         UnitSetCustomValue(overwatchOwner, c_cycleStateLastAttack, GameGetMissionTime());
     }
 
+    // Dealing damage breaks Forced March too, for the same reason taking it
+    // does: the modifier is a travel and disengage tool, and a unit that is
+    // shooting is neither travelling nor disengaging. Started-attack below is
+    // the primary signal - it fires even when the shot lands on nothing - but
+    // this catches damage that is not a weapon attack at all (splash, a
+    // Baneling, spell damage), and the spawner root is covered for the same
+    // reason its idle timer is: a Carrier only ever deals damage by proxy.
+    CycleMod_BreakMarch(source);
+    if (overwatchOwner != source) { CycleMod_BreakMarch(overwatchOwner); }
+
     overwatchArmed = UnitBehaviorCount(overwatchOwner, "TardigradeMod_OverwatchReady") > 0;
     if (overwatchArmed
         || UnitBehaviorCount(overwatchOwner, "TardigradeMod_OverwatchFiring") > 0) {
@@ -2357,6 +2561,21 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
                 EventUnitDamageAmount() * c_cycleOverwatchBonus);
         }
     }
+
+    // Both of these belong to the VICTIM, so they run above the filter below -
+    // that one is about the SOURCE, and a unit shot by a Planetary Fortress
+    // needs to escape, and loses its march, every bit as much as one shot by a
+    // Marine.
+    //
+    // They differ on friendly fire. Battle Blink stays gated on a hostile hit:
+    // your own splash clipping your army should not teleport it around. Forced
+    // March is not - any damage taken breaks it, because "if anything is
+    // hitting you, you are not marching" is the rule, and a unit standing in
+    // its own Psi Storm is not marching anywhere either.
+    if (CycleMod_IsHostileTarget(source, target)) {
+        CycleMod_TryBattleBlink(target, source);
+    }
+    CycleMod_BreakMarch(target);
 
     if (!CycleMod_IsCombatUnit(source)) { return true; }
 
@@ -2402,6 +2621,13 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
 // can leave a unit permanently armed.
 bool CycleMod_OnUnitStartedAttack(bool testConds, bool runActions) {
     UnitSetCustomValue(EventUnit(), c_cycleStateLastAttack, GameGetMissionTime());
+    // Forced March asks the same question Overwatch's idle timer does, so it
+    // gets the same answer from the same event. This is the attacker's primary
+    // break: it fires on the swing rather than on the landed damage, so a shot
+    // whose target dies mid-flight, or that is fully absorbed, still counts -
+    // and the slowdown arrives as the unit engages instead of a projectile
+    // flight later. The damage path in CycleMod_OnUnitDamaged covers the rest.
+    CycleMod_BreakMarch(EventUnit());
     return true;
 }
 
@@ -2416,6 +2642,11 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
     // engine doesn't attribute (and any case where it comes back empty).
     killer = EventUnitDamageSourceUnit();
     if (killer == null) { killer = CycleMod_GetUnitRef(c_cycleKeyLastAttacker, dead); }
+
+    // Before CycleMod_ForgetUnit below, which drops the recorded attacker that
+    // the enemy-killer test depends on. Structures included - a Refund side
+    // gets a quarter back on a razed Barracks as well as on a dead Marine.
+    CycleMod_PayRefund(dead, killer);
 
     if (CycleMod_IsCombatUnit(dead)) {
         // An Interceptor's kill belongs to its Carrier, and so on.
@@ -2511,9 +2742,14 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
     x = PointGetX(pos);
     y = PointGetY(pos);
 
+    // LastX/LastY are the ANCHOR - where the unit settled - not its position
+    // last tick. It stays put while the unit fidgets inside
+    // c_cycleEntrenchRadius, and only moves (resetting the clock with it) once
+    // the unit has genuinely left. Keeping it fixed is the whole point: an
+    // anchor that followed the unit each tick would let it creep indefinitely.
     if (CycleMod_UnitModActive(u, "TardigradeMod_Entrenchment")) {
-        if (FixedToInt(x * 100.0) != FixedToInt(UnitGetCustomValue(u, c_cycleStateLastX) * 100.0)
-            || FixedToInt(y * 100.0) != FixedToInt(UnitGetCustomValue(u, c_cycleStateLastY) * 100.0)) {
+        if (DistanceBetweenPoints(pos, Point(UnitGetCustomValue(u, c_cycleStateLastX),
+                UnitGetCustomValue(u, c_cycleStateLastY))) > c_cycleEntrenchRadius) {
             UnitSetCustomValue(u, c_cycleStateLastX, x);
             UnitSetCustomValue(u, c_cycleStateLastY, y);
             UnitSetCustomValue(u, c_cycleStateStillTime, now);
@@ -2521,6 +2757,12 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
             CycleMod_AddHelperBehavior(u, 3);
         }
     } else {
+        // Anchor here too, so a unit whose side drafts nothing - or that is
+        // still inside the 3:00 activation delay - starts from where it
+        // actually is rather than from wherever it last happened to be
+        // anchored.
+        UnitSetCustomValue(u, c_cycleStateLastX, x);
+        UnitSetCustomValue(u, c_cycleStateLastY, y);
         UnitSetCustomValue(u, c_cycleStateStillTime, now);
     }
 
@@ -2623,11 +2865,12 @@ void CycleMod_RenderRows(int activePhase) {
 
 //--------------------------------------------------------------------------------------------------
 // Draft mode: apply (or clear) a single drafted modifier's passive buff on a
-// unit. Ability-based modifiers (Medivac Boost, Battle Blink, Salvage) grant a
-// clickable ability instead of a buff, so they're skipped here and handled by
-// CycleMod_UpdateAbilityMods; Auto Refineries runs from
-// CycleMod_UpdateAutoRefinery and No Bans only acts on the roster draft, so
-// neither has a buff either. Free Labor (Workers cost no supply) is narrowed
+// unit. NO modifier grants a clickable ability any more - Medivac Boost was the
+// last one, and it is Forced March now. Battle Blink and Refund are conditions
+// with no buff at all (CycleMod_TryBattleBlink off the damage event,
+// CycleMod_PayRefund off the death event), Auto Refineries runs from
+// CycleMod_UpdateAutoRefinery, and No Bans only acts on the roster draft, so
+// none of those four has a buff here either. Free Labor (Workers cost no supply) is narrowed
 // down to worker units only, so it doesn't discount every unit's supply cost,
 // and Shared Damage to the units CycleMod_CanShareDamage allows.
 //--------------------------------------------------------------------------------------------------
@@ -2679,9 +2922,23 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
         // unit, then falls through to the plain marker buff below.
         CycleMod_ApplyOpenSkiesPenalty(u, CycleMod_UnitModActive(u, beh));
     }
-    if (beh == "" || beh == "TardigradeMod_MedivacBoost" || beh == "TardigradeMod_BattleBlink"
-        || beh == "TardigradeMod_Salvage" || beh == "TardigradeMod_AutoRefinery"
+    if (beh == "" || beh == "TardigradeMod_BattleBlink"
+        || beh == "TardigradeMod_Refund" || beh == "TardigradeMod_AutoRefinery"
         || beh == "TardigradeMod_NoBans") {
+        return;
+    }
+    if (beh == c_cycleMarchBehavior) {
+        // On for everything the side owns, off while the unit is inside the
+        // recovery window after its last contact. CycleMod_BreakMarch strips
+        // the buff the instant that contact happens so the slowdown is
+        // immediate rather than up to half a scan tick late; this branch is
+        // what keeps it off afterwards, and what turns it back on once
+        // MarchBroken expires.
+        if (CycleMod_UnitModActive(u, beh) && UnitBehaviorCount(u, c_cycleMarchBroken) == 0) {
+            UnitBehaviorAdd(u, beh, u, 1);
+        } else {
+            libNtve_gf_SetBehaviorCount(u, beh, u, 0);
+        }
         return;
     }
     if (beh == c_cycleShareBehavior) {
@@ -2709,24 +2966,6 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
     else { libNtve_gf_SetBehaviorCount(u, beh, u, 0); }
 }
 
-// Show/enable (or hide/disable) a granted-but-hidden ability on a unit. The
-// abilities themselves are granted hidden via AbilArray in UnitData.xml - Blink
-// and Medivac Boost to every combat unit (not workers), Salvage to every structure -
-// and UnitAbilityExists guards units that never got a given grant.
-void CycleMod_SetAbilAvailable(unit u, string abilId, bool available) {
-    if (!UnitAbilityExists(u, abilId)) { return; }
-    UnitAbilityShow(u, abilId, available);
-    UnitAbilityEnable(u, abilId, available);
-}
-
-void CycleMod_UpdateAbilityMods(unit u) {
-    CycleMod_SetAbilAvailable(u, "TardigradeAbil_MedivacBoost",
-        CycleMod_UnitModActive(u, "TardigradeMod_MedivacBoost"));
-    CycleMod_SetAbilAvailable(u, "TardigradeAbil_Blink",
-        CycleMod_UnitModActive(u, "TardigradeMod_BattleBlink"));
-    CycleMod_SetAbilAvailable(u, "TardigradeAbil_Salvage",
-        CycleMod_UnitModActive(u, "TardigradeMod_Salvage"));
-}
 
 //--------------------------------------------------------------------------------------------------
 // Scan loop: apply the active modifier to every unit, remove the other two.
@@ -2785,7 +3024,6 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
                         CycleMod_ApplyPickedBehavior(u, g_cycle_p2Mods[p]);
                         p = p + 1;
                     }
-                    CycleMod_UpdateAbilityMods(u);
                     CycleMod_UpdateAutoRefinery(u);
                     // Stacks the spawner earned since this unit spawned.
                     CycleMod_SyncVeteranStacks(u);

@@ -8,7 +8,19 @@
       "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/lotv.py\")",
       "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/bane.py\")",
       "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/check.py\")",
-      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/doc.py\")"
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/doc.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/unitdata.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/move.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/order.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/doc2.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/doc3.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/doc4.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/reserved.py\")",
+      "Bash(awk -F'\"' '{print}')",
+      "Bash(awk '/<CAbilTrain id=\"GatewayTrain\">/,/<\\\\/CAbilTrain>/' liberty.sc2mod/base.sc2data/GameData/AbilData.xml)",
+      "Bash(awk '/id=\"GatewayTrain\"/,/<\\\\/CAbil/' void.sc2mod/base.sc2data/GameData/AbilData.xml)",
+      "Bash(awk '/<CAbilWarpTrain id=\"WarpGateTrain\">/,/<\\\\/CAbilWarpTrain>/' liberty.sc2mod/base.sc2data/GameData/AbilData.xml)",
+      "PowerShell([xml]$x = Get-Content 'C:\\\\Sc2Mods\\\\Tardigrade\\\\Tardigrade\\\\Tardigrade.SC2Mod\\\\Base.SC2Data\\\\GameData\\\\UnitData.xml' -Raw; $x.Catalog.CUnit | ForEach-Object { $_.id })"
     ]
   }
 }

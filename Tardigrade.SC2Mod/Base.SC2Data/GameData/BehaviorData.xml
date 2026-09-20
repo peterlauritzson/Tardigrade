@@ -171,12 +171,34 @@
         </DamageResponse>
     </CBehaviorBuff>
 
-    <CBehaviorBuff id="TardigradeMod_MedivacBoost">
+    <!-- Forced March (modifier 2, was Medivac Boost). A flat passive now, not
+         a clicked burst: the 0.5s scan keeps it on every unit the drafting
+         side owns, and CycleMod_ApplyPickedBehavior withholds it while
+         TardigradeMod_MarchBroken is up. Duration 8 is the usual
+         "never lapse between scan ticks" figure, not a real lifetime.
+
+         1.3, down from the button's 1.7: the old value was a burst with ~53%
+         uptime and this is on whenever the unit is out of contact - neither
+         taking damage nor dealing it - which is most of the game. -->
+    <CBehaviorBuff id="TardigradeMod_ForcedMarch">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
         <Duration value="8"/>
         <MaxStackCount value="1"/>
-        <Modification MoveSpeedMultiplier="1.7"/>
+        <Modification MoveSpeedMultiplier="1.3"/>
+    </CBehaviorBuff>
+
+    <!-- The recovery window. CycleMod_BreakMarch re-adds this on every contact
+         - damage taken from anyone, or damage dealt / an attack started - and
+         that REFRESHES the duration, so it expires 14 game seconds after the
+         LAST contact rather than the first. That expiry is what lets Forced
+         March back on, so no timestamp is kept per unit. 14 game seconds is
+         10 real seconds on Faster. -->
+    <CBehaviorBuff id="TardigradeMod_MarchBroken">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Neutral"/>
+        <Duration value="14"/>
+        <MaxStackCount value="1"/>
     </CBehaviorBuff>
 
     <!-- Marker only - the actual supply exemption is done in script via
@@ -215,10 +237,17 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
+    <!-- Duration is the GRACE PERIOD on losing entrenchment, not how long it
+         lasts: CycleMod_UpdateConditionalBehaviors re-adds this every 0.5s
+         scan tick for as long as the unit is still holding position, so it
+         only actually counts down once the unit has moved off its anchor.
+         3s (up from 2) so a brief reposition doesn't strip 2 armor and 1
+         range the instant it starts - re-earning it still takes the full
+         c_cycleEntrenchDelay. -->
     <CBehaviorBuff id="TardigradeMod_Entrenched">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
-        <Duration value="2"/>
+        <Duration value="3"/>
         <MaxStackCount value="1"/>
         <Modification WeaponRange="1" WeaponScanBonus="1" ShieldArmorBonus="2">
             <LifeArmorBonus value="2"/>
@@ -338,10 +367,11 @@
     </CBehaviorBuff>
 
     <!-- 11-13: markers only. Auto Refineries is run by CycleMod_UpdateAutoRefinery,
-         Salvage by the TardigradeAbil_Salvage grant, and No Bans acts on the
-         roster draft before any unit exists - none of them is a buff. The
-         scan never applies these in draft mode; they exist so legacy phase
-         mode, which adds every chosen behavior id blindly, adds a valid one. -->
+         Refund pays out from CycleMod_PayRefund on the unit-died event, and
+         No Bans acts on the roster draft before any unit exists - none of them
+         is a buff. The scan never applies these in draft mode; they exist so
+         legacy phase mode, which adds every chosen behavior id blindly, adds a
+         valid one. -->
     <CBehaviorBuff id="TardigradeMod_AutoRefinery">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
@@ -354,49 +384,25 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
-    <CBehaviorBuff id="TardigradeMod_Salvage">
+    <CBehaviorBuff id="TardigradeMod_Refund">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
 
-    <!-- Salvage in progress, put on the structure by TardigradeAbil_Salvage.
-         A copy of Blizzard's own Salvage behavior - the one the Bunker has
-         used since WoL - retargeted at our effects: 5 seconds with the
-         structure shut down (no attacking, producing, detecting, lifting),
-         then TardigradeMod_SalvageRefund pays out 75% and removes it.
-
-         Like the live LotV Bunker, taking damage cancels it (the damage
-         response removes this behavior, and removal is not expiry, so no
-         refund). Otherwise a building could be salvaged from under an
-         attacker for 75% of its value the moment it started losing a fight.
-         Terran burndown is exempt, as it is on the Bunker: a burning
-         building could otherwise never be salvaged at all. -->
-    <CBehaviorBuff id="TardigradeMod_Salvaging">
+    <!-- Battle Blink's cooldown. CycleMod_TryBattleBlink adds this the moment
+         it teleports a unit and refuses to fire again while it is up, so the
+         engine expiring the buff IS the cooldown - there is no timer to keep
+         per unit. Duration is in game seconds, so 17 is the old clickable
+         ability's 12 scaled the same way c_cycleOverwatchDelay is. -->
+    <CBehaviorBuff id="TardigradeMod_BlinkCooldown">
         <InfoFlags index="Hidden" value="1"/>
-        <Duration value="5"/>
-        <ExpireEffect value="TardigradeMod_SalvageRefund"/>
-        <DisplayDuration index="Self" value="1"/>
-        <DisplayDuration index="Ally" value="1"/>
-        <DisplayDuration index="Enemy" value="1"/>
-        <DisplayDuration index="Neutral" value="1"/>
-        <DamageResponse Handled="TardigradeMod_SalvageInterrupt">
-            <Chance value="1"/>
-            <ExcludeEffectArray value="BurndownDamage"/>
-        </DamageResponse>
-        <Modification>
-            <ModifyFlags index="DisableAbils" value="1"/>
-            <ModifyFlags index="SuppressMoving" value="1"/>
-            <ModifyFlags index="SuppressTurning" value="1"/>
-            <StateFlags index="SuppressAttack" value="1"/>
-            <StateFlags index="SuppressCloak" value="1"/>
-            <StateFlags index="SuppressDetection" value="1"/>
-            <StateFlags index="SuppressRadar" value="1"/>
-            <!-- DisableAbils would otherwise disable the Off (cancel) command. -->
-            <AbilLinkEnableArray value="TardigradeAbil_Salvage"/>
-        </Modification>
+        <Alignment value="Neutral"/>
+        <Duration value="17"/>
+        <MaxStackCount value="1"/>
     </CBehaviorBuff>
+
 
     <!-- 14: Shared Damage. Absorbs every hit whole - the same response as
          Blizzard's DamageTakenNone in core.sc2mod (ModifyFraction 0 multiplies

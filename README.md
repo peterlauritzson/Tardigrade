@@ -62,23 +62,25 @@ The 14 modifiers:
 | # | Modifier | Effect (applies to your units only) |
 |---|---|---|
 | 1 | Open Skies | All your weapons can target ground and air. Against the plane a unit couldn't hit before, it deals half damage (Zealot vs air, Phoenix vs ground); units that already hit both are unchanged |
-| 2 | Medivac Boost | Clickable ability: burst a unit's move speed (the Medivac's afterburners), 15s cooldown |
+| 2 | Forced March | +30% move speed on all your units. Being in combat switches it off — taking damage or dealing it, either one. It comes back 10 real seconds (14 game seconds) after the last time the unit was hit or attacked |
 | 3 | Free Labor | Your workers no longer cost supply |
 | 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full |
 | 5 | Eyes Everywhere | The battlefield and hidden units are revealed, for you only (excludes neutrals — minerals, Xel'Naga towers, critters) |
-| 6 | Entrenchment | Your stationary units gain +2 armor and +1 range after 6 seconds |
+| 6 | Entrenchment | Your units gain +2 armor and +1 range after holding position for 6 seconds. “Holding” is lenient — drifting up to 1.5 from where you settled still counts, so being bumped by an ally or shuffling to acquire a target doesn't reset it. Once earned it lingers ~3s after you move off, but re-earning it takes the full 6 |
 | 7 | Arcane Surge | Double energy regeneration on all your units and structures |
 | 8 | Overwatch | Your first attack after 10 seconds idle deals +50% damage — for that one shot only. Spells count as attacking, so a caster gets it once and is then "active". Banelings always get it (they only ever attack once) |
-| 9 | Battle Blink | Clickable ability: short-range teleport (8 range) any unit, 12s cooldown |
+| 9 | Battle Blink | Automatic: a unit that drops to 30% health teleports 8 range straight back from whatever last hit it. Once per 17s per unit — no button, no hotkey |
 | 10 | Veteran Forces | Each kill grants a permanent +3% to movement speed, attack speed, ability cooldowns/charges, and life/shield/energy regeneration, stacking to 15 (shown on the unit as "Veteran"). Kills by Interceptors, Locusts, Broodlings and Auto-Turrets count for the unit that spawned them |
 | 11 | Auto Refineries | Your finished gas buildings mine by themselves at the three-worker rate (rich geysers double). Workers physically can't harvest them — the building stops being a resource at all, and its worker counter disappears |
 | 12 | No Bans | Your opponent gets no bans against your pool in the unit draft; their ban turns are skipped |
-| 13 | Salvage | Every structure gets a Salvage button: 5 seconds, then it is removed for 75% of its cost. Taking damage cancels it, as on the Bunker |
+| 13 | Refund | Any unit or building of yours an enemy kills pays back 25% of its cost (a Marine returns 12.5 minerals). Workers are excluded, like every other modifier. Deaths with no enemy killer, such as a Zergling morphing into a Baneling, pay nothing |
 | 14 | Shared Damage | Every hit on one of your units (after armor): it keeps half, rounded up, and the other half is dealt out in whole points — at least 1 each — to as many of your other units within 3 range as it stretches to. Alone, or with nothing left over, it takes the full hit |
 
-Medivac Boost, Battle Blink and Salvage are the modifiers that grant a
-**clickable ability** (with its own command-card button) instead of a passive
-buff — every other pick is always-on for as long as the modifier is active.
+**No modifier grants a clickable ability.** Every pick is either always-on or
+fires itself off a condition. Battle Blink, Salvage and Medivac Boost all used
+to be buttons; making them conditions removed every command-card slot and
+hotkey the mod added to ~113 unit types, and with them the collision where a
+Stalker ended up owning two separate Blinks.
 
 An older set of ten flat stat modifiers (`TardigradeMod_FleetFooted`,
 `Ironhide`, `Juggernaut`, …) is still defined in `BehaviorData.xml` as a legacy
