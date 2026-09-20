@@ -61,6 +61,24 @@ const int c_cycleOverwatchDelay = 10;  // doc: 5s idle before Overwatch arms
 const fixed  c_cycleOverwatchBonus  = 0.5;   // +50% of the damage that landed
 const string c_cycleOverwatchEffect = "TardigradeMod_OverwatchBonus";
 
+// Three damage sources can never be boosted by the trigger, because the unit
+// that deals the damage is already DEAD by the time the damage event reaches
+// triggers - its behaviors are gone, so the armed marker reads 0, and it cannot
+// author the bonus UnitDamage either. A Baneling's blast is weapon
+// VolatileBurst -> effect set [..., VolatileBurstU, Suicide]; a Disruptor's
+// nova and a Reaper's KD8 Charge are both separate units that die detonating.
+//
+// For all three, "first attack after 10s idle" and "every attack" are the same
+// sentence: they get exactly one attack in their life and have to travel to
+// use it. So the bonus is baked into their damage numbers per-player instead of
+// being tracked as state (CycleMod_ApplyOverwatchDamageTeam) - no trigger, no
+// dead-attacker problem, and it reads honestly as what it is.
+//
+// Both halves of a Baneling's payload are scaled: Amount alone would leave a
+// Marine taking 45 rather than 52.5, because 15 of its 35 comes from the Light
+// attribute bonus.
+const fixed  c_cycleOverwatchFlatMult = 1.5;
+
 // Auto Refineries: a finished gas building mines itself at the rate three
 // workers would. A saturated LotV geyser yields ~160 gas per real minute on
 // Faster - 40 trips of 4 gas, one every 1.5 real seconds. GameGetMissionTime()
@@ -78,12 +96,22 @@ const fixed  c_cycleAutoGasMineralRange = 12.0;
 const bool   c_cycleAutoGasRedirect = true;
 
 // Shared Damage: every hit on one of your units is half taken by it and half
-// split evenly between your other units within this radius. The behavior absorbs the hit whole (see
+// handed out to your other units within this radius. The behavior absorbs the hit whole (see
 // BehaviorData.xml) and CycleMod_OnSharedDamageAbsorbed deals the split out
 // again through c_cycleShareEffect, which that behavior lets through.
+//
+// The split is in whole points of damage, and it stops once the pot is empty
+// rather than being spread across everyone in range. An even split over N made
+// a mess of small hits: a 4-damage Zergling bite with ten partners around
+// handed each of them 0.2, which SC2 floors at its own minimum anyway, so a
+// blob turned every scratch into ten scratches. Now the victim keeps
+// ceil(X / 2) and the remaining floor(X / 2) is dealt out in chunks of at least
+// c_cycleShareMinShare - so that same bite reaches exactly two partners for 1
+// each, and the rest of the blob is untouched. The handed-out points always sum
+// to exactly X, so the mod never invents or loses damage.
 const fixed  c_cycleShareRadius    = 3.0;
-const fixed  c_cycleShareKeptFraction = 0.5;  // victim's own part; the rest goes to partners
-const fixed  c_cycleMinDamage      = 0.5;    // SC2's floor on any single hit
+const int    c_cycleShareMinTotal  = 1;   // a hit is never rounded away to nothing
+const int    c_cycleShareMinShare  = 1;   // smallest chunk a single partner can be handed
 const string c_cycleShareBehavior  = "TardigradeMod_SharedDamage";
 const string c_cycleShareEffect    = "TardigradeMod_SharedDamageHit";
 
@@ -942,6 +970,15 @@ bool CycleMod_IsHostileTarget(unit source, unit target) {
     return true;
 }
 
+// Units whose Overwatch bonus is baked into their damage numbers by
+// CycleMod_ApplyOverwatchDamageTeam, and which the trigger must therefore
+// leave alone so the two can't stack.
+bool CycleMod_OverwatchIsFlatBoosted(unit candidate) {
+    string unitType;
+    unitType = UnitGetType(candidate);
+    return unitType == "Baneling" || unitType == "BanelingBurrowed";
+}
+
 bool CycleMod_IsRichGasBuilding(unit candidate) {
     string unitType;
     unitType = UnitGetType(candidate);
@@ -1440,6 +1477,77 @@ void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Overwatch, the Baneling half: the +50% baked into the damage numbers.
+//
+// See c_cycleOverwatchFlatMult for why this can't go through the trigger. Only
+// the enemy-facing payloads are scaled - VolatileBurstFriendlyUnitDamage and
+// VolatileBurstFriendlyBuildingDamage are left alone, or drafting Overwatch
+// would make your own Banelings hurt your own army 50% more, which is the same
+// friendly-fire trap CycleMod_IsHostileTarget keeps the trigger bonus out of.
+//
+// Both Amount and AttributeBonus[Light] are scaled: 16 + 19 vs Light is where a
+// Baneling's 35 against a Marine comes from, so scaling Amount alone would give
+// 43 rather than 52.5.
+//
+// Values are read back and multiplied rather than hardcoded, so a balance patch
+// that moves Baneling damage carries through on its own. One known gap: Zerg
+// melee attack upgrades are applied by the engine on top of the effect's
+// Amount, not by editing it, so the upgrade part of a Baneling's damage is not
+// scaled - a +3 Baneling does 52.5 + 3 rather than (35 + 3) x 1.5.
+//--------------------------------------------------------------------------------------------------
+const int c_cycleBaneEffectCount = 4;
+
+string CycleMod_BaneEffect(int i) {
+    if (i == 0) { return "VolatileBurstU"; }                                   // enemy units
+    if (i == 1) { return "VolatileBurstU2"; }                                  // enemy structures
+    if (i == 2) { return "VolatileBurstDirectFallbackEnemyNeutralUnit"; }
+    if (i == 3) { return "VolatileBurstDirectFallbackEnemyNeutralBuilding"; }
+    return "";
+}
+
+// Multiply one catalog field in place for one player. A field the effect does
+// not carry reads back empty and is skipped - the fallback payloads inherit
+// their numbers and may not define AttributeBonus at all.
+void CycleMod_ScaleEffectField(string effect, string field, int player) {
+    string current;
+    string scaled;
+
+    current = CatalogFieldValueGet(c_gameCatalogEffect, effect, field, player);
+    if (current == "") {
+        Debug_Log("Overwatch flat: " + effect + "." + field + " absent, skipped");
+        return;
+    }
+    scaled = FixedToString(StringToFixed(current) * c_cycleOverwatchFlatMult, 4);
+    CatalogFieldValueSet(c_gameCatalogEffect, effect, field, player, scaled);
+    Debug_Log("Overwatch flat: " + effect + "." + field + " " + current + " -> "
+        + CatalogFieldValueGet(c_gameCatalogEffect, effect, field, player));
+}
+
+void CycleMod_ApplyOverwatchDamageForPlayer(int player) {
+    int i;
+    i = 0;
+    while (i < c_cycleBaneEffectCount) {
+        CycleMod_ScaleEffectField(CycleMod_BaneEffect(i), "Amount", player);
+        CycleMod_ScaleEffectField(CycleMod_BaneEffect(i), "AttributeBonus[Light]", player);
+        i = i + 1;
+    }
+}
+
+void CycleMod_ApplyOverwatchDamageTeam(playergroup team) {
+    int n;
+    int i;
+    int p;
+
+    n = PlayerGroupCount(team);
+    i = 1;
+    while (i <= n) {
+        p = PlayerGroupPlayer(team, i);
+        CycleMod_ApplyOverwatchDamageForPlayer(p);
+        i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 // Arcane Surge: 2x energy regeneration on everything you own, units and
 // structures alike.
 //
@@ -1547,6 +1655,10 @@ void CycleMod_ActivateDelayedMods() {
     if (CycleMod_P2HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P2Team()); }
     if (CycleMod_P1HasModIdx(7)) { CycleMod_ApplyArcaneSurgeTeam(CycleMod_P1Team()); }
     if (CycleMod_P2HasModIdx(7)) { CycleMod_ApplyArcaneSurgeTeam(CycleMod_P2Team()); }
+    // Overwatch is per-unit state in the scan, except for the Baneling, whose
+    // share is a catalog change and so belongs here.
+    if (CycleMod_P1HasModIdx(8)) { CycleMod_ApplyOverwatchDamageTeam(CycleMod_P1Team()); }
+    if (CycleMod_P2HasModIdx(8)) { CycleMod_ApplyOverwatchDamageTeam(CycleMod_P2Team()); }
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
         "<c val=\"FFD54A\">Battlefield modifiers are now ACTIVE.</c>"
         + "  <c val=\"AAAAAA\">Opening vision ends - only a side that drafted Eyes Everywhere keeps it.</c>"));
@@ -1873,11 +1985,14 @@ void CycleMod_UpdateAutoRefinery(unit u) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Shared Damage: a hit on one of your units is half kept, half shared. X = what
-// the hit would have done after armor; N = the friendly units carrying the
-// behavior within c_cycleShareRadius, not counting the victim. The victim
-// takes X * c_cycleShareKeptFraction (0.5) and each of the N takes the rest / N.
-// With no partners in range the victim takes all of X.
+// Shared Damage: a hit on one of your units is half kept, half handed out. X =
+// what the hit would have done after armor, rounded to a whole number; N = the
+// friendly units carrying the behavior within c_cycleShareRadius, not counting
+// the victim. The victim takes ceil(X / 2) and the remaining floor(X / 2) is
+// dealt out in whole points to as many of the N as it stretches to, at least
+// c_cycleShareMinShare each - so a small hit reaches a couple of partners
+// rather than every unit in the blob. With nobody in range, or nothing left to
+// hand out, the victim takes all of X.
 //
 // Absorb-and-redeal rather than heal-back: the unit-damaged event fires AFTER
 // the damage has landed, so a hit that was lethal on its own would already have
@@ -1895,11 +2010,17 @@ void CycleMod_UpdateAutoRefinery(unit u) {
 // pre-armor. Take the victim's armor off here, scaled by the effect's own
 // ArmorReduction so that armor-piercing spells (Storm, 0) stay whole, and the
 // redealt hits then skip armor - X is the "after modifiers" number.
-fixed CycleMod_SharedHitAmount(unit victim, fixed absorbed, string effect, int sourcePlayer) {
+//
+// Rounded to a whole number here, once, so the split below is exact integer
+// arithmetic and the pieces add back up to X. Rounding is half-up, with
+// c_cycleShareMinTotal as the floor so a hit that armor has already ground down
+// to nothing still registers.
+int CycleMod_SharedHitAmount(unit victim, fixed absorbed, string effect, int sourcePlayer) {
     fixed  armor;
     fixed  reduction;
     string reductionText;
     fixed  amount;
+    int    total;
     int    catalogPlayer;
 
     if (UnitGetPropertyFixed(victim, c_unitPropShields, c_unitPropCurrent) > 0.0) {
@@ -1917,8 +2038,9 @@ fixed CycleMod_SharedHitAmount(unit victim, fixed absorbed, string effect, int s
     }
 
     amount = absorbed - armor * reduction;
-    if (amount < c_cycleMinDamage) { amount = c_cycleMinDamage; }
-    return amount;
+    total  = FixedToInt(amount + 0.5);
+    if (total < c_cycleShareMinTotal) { total = c_cycleShareMinTotal; }
+    return total;
 }
 
 // The victim's partners: other units within range that carry the behavior
@@ -1956,9 +2078,13 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
     unit      partner;
     unitgroup partners;
     fixed     absorbed;
-    fixed     total;
-    fixed     kept;
-    fixed     share;
+    int       total;
+    int       kept;
+    int       rest;
+    int       taking;
+    int       baseShare;
+    int       extras;
+    int       share;
     int       count;
     int       i;
 
@@ -1975,24 +2101,37 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
     total    = CycleMod_SharedHitAmount(victim, absorbed, EventUnitDamageEffect(),
         EventUnitDamageSourcePlayer());
 
-    // The victim keeps c_cycleShareKeptFraction of the hit outright; only the
-    // rest is split, and only among the partners. Alone, it takes it all.
-    if (count > 0) {
-        kept  = total * c_cycleShareKeptFraction;
-        share = (total - kept) / IntToFixed(count);
+    // The victim keeps ceil(X / 2) outright. What is left is handed out in
+    // whole points, at least c_cycleShareMinShare per partner, which caps how
+    // many partners a hit can reach: a 4-damage hit has 2 to give and so
+    // touches two units however many are standing there. The leftover after an
+    // uneven division goes one extra point each to the first "extras" of them,
+    // so kept + every share adds back up to exactly X.
+    kept   = (total + 1) / 2;
+    rest   = total - kept;
+    taking = rest / c_cycleShareMinShare;
+    if (taking > count) { taking = count; }
+
+    if (taking > 0) {
+        baseShare = rest / taking;
+        extras    = rest - baseShare * taking;
     } else {
-        kept  = total;
-        share = 0.0;
+        // Nobody in range, or too little damage to hand out a single chunk.
+        kept      = total;
+        baseShare = 0;
+        extras    = 0;
     }
 
     // Debug mode only (solo tests): the exact split for every absorbed hit, so
     // an odd-looking result can be checked against the numbers rather than
     // eyeballed. "absorbed" is what the response caught, "total" is after the
-    // victim's armor, then what the victim keeps and what each partner gets.
+    // victim's armor and rounding, then what the victim keeps and how many of
+    // the partners in range actually get a piece.
     Debug_Log("Shared Damage: " + UnitGetType(victim) + " hit by "
         + EventUnitDamageEffect() + " absorbed " + FixedToString(absorbed, 2)
-        + " total " + FixedToString(total, 2) + " -> kept " + FixedToString(kept, 2)
-        + ", " + IntToString(count) + " partner(s) x " + FixedToString(share, 2));
+        + " total " + IntToString(total) + " -> kept " + IntToString(kept)
+        + ", " + IntToString(taking) + " of " + IntToString(count)
+        + " partner(s) x " + IntToString(baseShare) + " (+1 to " + IntToString(extras) + ")");
 
     // Redealt in the attacker's name, so kill credit, Veteran Forces and
     // Predator Protocol all see the attacker's damage. If it is already gone
@@ -2004,15 +2143,19 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
     // Partners first and back to front: a share can kill, and a dead unit may
     // drop out of the group mid-loop, which would shift the ones not yet hit.
     // The victim goes last so it is still alive to author any shares it has to.
-    i = count;
+    // Only the first "taking" of the group get a piece - the rest are in range
+    // but the pot ran out before it reached them.
+    i = taking;
     while (i >= 1) {
         partner = UnitGroupUnit(partners, i);
-        if (partner != null && UnitIsAlive(partner)) {
-            UnitDamage(attacker, c_cycleShareEffect, partner, share);
+        share   = baseShare;
+        if (i <= extras) { share = share + 1; }
+        if (partner != null && UnitIsAlive(partner) && share > 0) {
+            UnitDamage(attacker, c_cycleShareEffect, partner, IntToFixed(share));
         }
         i = i - 1;
     }
-    UnitDamage(attacker, c_cycleShareEffect, victim, kept);
+    UnitDamage(attacker, c_cycleShareEffect, victim, IntToFixed(kept));
     return true;
 }
 
@@ -2107,6 +2250,7 @@ void CycleMod_SyncVeteranStacks(unit child) {
 bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     unit  target;
     unit  source;
+    unit  overwatchOwner;
     fixed currentLife;
     fixed maxLife;
     fixed currentShields;
@@ -2165,14 +2309,50 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     // replaced by a two-loop Firing marker, so the remaining damage events of
     // the same volley (each splash target, a Colossus' second beam) are still
     // boosted while a genuinely separate later attack is not.
-    overwatchArmed = UnitBehaviorCount(source, "TardigradeMod_OverwatchReady") > 0;
-    if (overwatchArmed || UnitBehaviorCount(source, "TardigradeMod_OverwatchFiring") > 0) {
+    //
+    // The state belongs to the SPAWNER, not to the unit that physically dealt
+    // the damage. A Carrier's damage all comes from Interceptors, a Swarm
+    // Host's from Locusts, a Brood Lord's from Broodlings, a Raven's from its
+    // Auto-Turret - and every one of those is created moments before it fires,
+    // so it can never have been idle for 10 seconds and never armed. Drafting
+    // Overwatch on a Carrier bought literally nothing. CycleMod_VeteranRoot is
+    // the same child->spawner link Veteran Forces uses, and it falls back to
+    // the child when the spawner is already dead.
+    //
+    // Note that a unit which DIES dealing its shot can never be boosted here:
+    // it is already dead by the time this runs, so its markers are gone and it
+    // cannot author the bonus either. The Baneling is the one case that
+    // matters, and its +50% is baked into its damage numbers instead - see
+    // CycleMod_ApplyOverwatchDamageTeam. The Disruptor's nova and the Reaper's
+    // KD8 Charge are in the same boat and are deliberately left unboosted;
+    // both are rare enough not to be worth a second mechanism.
+    overwatchOwner = CycleMod_VeteranRoot(source);
+    if (overwatchOwner != source) {
+        // The spawner counts as having attacked when its children land a hit,
+        // or a Carrier - which never deals damage itself - would sit
+        // permanently "idle" and re-arm between every volley.
+        UnitSetCustomValue(overwatchOwner, c_cycleStateLastAttack, GameGetMissionTime());
+    }
+
+    overwatchArmed = UnitBehaviorCount(overwatchOwner, "TardigradeMod_OverwatchReady") > 0;
+    if (overwatchArmed
+        || UnitBehaviorCount(overwatchOwner, "TardigradeMod_OverwatchFiring") > 0) {
         if (overwatchArmed) {
-            libNtve_gf_SetBehaviorCount(source, "TardigradeMod_OverwatchReady", source, 0);
-            UnitBehaviorAdd(source, "TardigradeMod_OverwatchFiring", source, 1);
+            libNtve_gf_SetBehaviorCount(overwatchOwner, "TardigradeMod_OverwatchReady",
+                overwatchOwner, 0);
+            UnitBehaviorAdd(overwatchOwner, "TardigradeMod_OverwatchFiring", overwatchOwner, 1);
         }
+        // A Baneling's +50% is already in its damage numbers. It should be dead
+        // here and so never reach this at all, but if the engine ever does
+        // report its blast while it still counts as alive, the trigger must not
+        // stack a second bonus on top of the catalog one.
         if (EventUnitDamageAmount() > 0.0 && UnitIsAlive(target)
+            && !CycleMod_OverwatchIsFlatBoosted(source)
             && CycleMod_IsHostileTarget(source, target)) {
+            Debug_Log("Overwatch: " + UnitGetType(overwatchOwner) + " +"
+                + FixedToString(EventUnitDamageAmount() * c_cycleOverwatchBonus, 2)
+                + " on " + UnitGetType(target)
+                + " (base " + FixedToString(EventUnitDamageAmount(), 2) + ")");
             UnitDamage(source, c_cycleOverwatchEffect, target,
                 EventUnitDamageAmount() * c_cycleOverwatchBonus);
         }
@@ -2345,15 +2525,23 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
     }
 
     // Overwatch's +50% is meant for exactly one shot: only grant it on the
-    // idle->ready edge (guarded by UnitBehaviorCount below) so it isn't
-    // endlessly re-applied - and re-armed - every 0.5s scan tick while the
-    // unit sits idle waiting for a target. CycleMod_OnUnitDamaged consumes it
-    // the instant that one shot lands. Note this arms structures too, which is
-    // why the damage handler must track them (see CycleMod_OnUnitDamaged).
+    // idle->ready edge (guarded by the armed flag below) so it isn't endlessly
+    // re-applied - and re-armed - every 0.5s scan tick while the unit sits idle
+    // waiting for a target. CycleMod_OnUnitDamaged consumes it the instant that
+    // one shot lands. Note this arms structures too, which is why the damage
+    // handler must track them (see CycleMod_OnUnitDamaged).
+    //
+    // Nothing special is needed to stop a caster holding a permanent charge:
+    // CycleMod_OnUnitDamaged stamps c_cycleStateLastAttack for ANY damage a
+    // unit deals, spell included, so a Storm's first tick counts as attacking
+    // and the High Templar is no longer idle for the rest of it.
     if (CycleMod_UnitModActive(u, "TardigradeMod_Overwatch")
         && FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)) >= c_cycleOverwatchDelay
         && UnitBehaviorCount(u, "TardigradeMod_OverwatchReady") == 0) {
         CycleMod_AddHelperBehavior(u, 4);
+        Debug_Log("Overwatch: " + UnitGetType(u) + " armed after "
+            + IntToString(FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)))
+            + "s idle");
     }
 }
 

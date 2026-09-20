@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(sed -n '/^void CycleMod_AutoRefineryTick/,/^}/p' CycleMod.galaxy)",
-      "Bash(sed -n '/^bool CycleMod_OnUnitDied/,/^}/p' CycleMod.galaxy)"
+      "Bash(sed -n '/^bool CycleMod_OnUnitDied/,/^}/p' CycleMod.galaxy)",
+      "Bash(python -c ' *)",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/kinds.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/lotv.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/bane.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/check.py\")",
+      "Bash(python \"C:/Users/peter/AppData/Local/Temp/claude/c--Sc2Mods-Tardigrade-Tardigrade/7137b856-9bf1-49de-8993-dcf6c6864d4d/scratchpad/doc.py\")"
     ]
   }
 }

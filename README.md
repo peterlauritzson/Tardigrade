@@ -68,13 +68,13 @@ The 14 modifiers:
 | 5 | Eyes Everywhere | The battlefield and hidden units are revealed, for you only (excludes neutrals — minerals, Xel'Naga towers, critters) |
 | 6 | Entrenchment | Your stationary units gain +2 armor and +1 range after 6 seconds |
 | 7 | Arcane Surge | Double energy regeneration on all your units and structures |
-| 8 | Overwatch | Your first attack after 10 seconds idle deals +50% damage — for that one shot only |
+| 8 | Overwatch | Your first attack after 10 seconds idle deals +50% damage — for that one shot only. Spells count as attacking, so a caster gets it once and is then "active". Banelings always get it (they only ever attack once) |
 | 9 | Battle Blink | Clickable ability: short-range teleport (8 range) any unit, 12s cooldown |
 | 10 | Veteran Forces | Each kill grants a permanent +3% to movement speed, attack speed, ability cooldowns/charges, and life/shield/energy regeneration, stacking to 15 (shown on the unit as "Veteran"). Kills by Interceptors, Locusts, Broodlings and Auto-Turrets count for the unit that spawned them |
 | 11 | Auto Refineries | Your finished gas buildings mine by themselves at the three-worker rate (rich geysers double). Workers physically can't harvest them — the building stops being a resource at all, and its worker counter disappears |
 | 12 | No Bans | Your opponent gets no bans against your pool in the unit draft; their ban turns are skipped |
 | 13 | Salvage | Every structure gets a Salvage button: 5 seconds, then it is removed for 75% of its cost. Taking damage cancels it, as on the Bunker |
-| 14 | Shared Damage | Every hit on one of your units (after armor): it takes half, and the other half is split evenly between your other units within 3 range. Alone, it takes the full hit |
+| 14 | Shared Damage | Every hit on one of your units (after armor): it keeps half, rounded up, and the other half is dealt out in whole points — at least 1 each — to as many of your other units within 3 range as it stretches to. Alone, or with nothing left over, it takes the full hit |
 
 Medivac Boost, Battle Blink and Salvage are the modifiers that grant a
 **clickable ability** (with its own command-card button) instead of a passive
