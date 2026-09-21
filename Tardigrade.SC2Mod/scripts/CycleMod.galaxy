@@ -44,19 +44,24 @@ const fixed c_cycleActivationDelay = 180.0;  // buffs go live 3 minutes into the
 
 // Idle/still thresholds for the two "hold position and be rewarded" modifiers.
 // GameGetMissionTime() counts game seconds, and ladder games run on Faster, so
-// game seconds tick by noticeably quicker than wall clock. The design doc's
-// numbers (3s Entrenchment, 5s Overwatch) are in normal-speed seconds, so they
-// are doubled here to land near the intended wall-clock feel.
+// game seconds tick by 1.4x quicker than wall clock: a value here is REAL
+// seconds x 1.4. Entrenchment is 10.5 (7.5 real), Overwatch 14 (10 real) - long
+// enough that neither reward is something a unit collects in passing.
+// Entrenchment is the shorter of the two because it asks more: not attacking is
+// a unit's default state between fights, but not MOVING for the full wait is a
+// standing decision to give up position while the wait runs.
 // Arcane Surge: multiply, don't add. It used to be a flat +2 energy/s buff,
 // which is roughly 3.5x the 0.5625/s every standard caster regenerates - so it
 // dwarfed the stat it was modifying and read the same on a Nexus as on a Ghost.
 const fixed c_cycleArcaneRegenMult = 2.0;  // 2x each unit's own energy regen
 
-const int c_cycleEntrenchDelay  = 6;   // doc: 3s still before Entrenched
+// fixed, not int: 7.5 real seconds is 10.5 game seconds, which an int cannot
+// hold. The 0.5s scan tick makes half-second granularity meaningful here.
+const fixed c_cycleEntrenchDelay = 10.5;  // 7.5 real seconds still before Entrenched
 
 // How far a unit may drift from where it settled and still count as holding
 // position. It used to be 0.01 map units - effectively pixel-perfect - and any
-// drift at all reset the whole 6s clock, so a unit bumped by an ally walking
+// drift at all reset the whole clock, so a unit bumped by an ally walking
 // past, shuffled by collision separation, or nudged while acquiring a target
 // lost everything and started over. That is not "moving" to a player, and
 // chasing it made the modifier miserable to use.
@@ -68,11 +73,20 @@ const int c_cycleEntrenchDelay  = 6;   // doc: 3s still before Entrenched
 // TOTAL displacement instead - drift far enough in any direction, however
 // slowly, and it trips - so there is nothing to creep past.
 const fixed c_cycleEntrenchRadius = 1.5;
-const int c_cycleOverwatchDelay = 10;  // doc: 5s idle before Overwatch arms
+const int c_cycleOverwatchDelay = 14;  // 10 real seconds idle before Overwatch arms
 
 // Overwatch's payload. Applied as a second damage event in CycleMod_OnUnitDamaged
 // (see the comment there) rather than as a behavior Modification, so it lands on
 // splash, suicide and spell damage too.
+//
+// The bonus is a WINDOW, not a single shot: everything the unit deals for
+// TardigradeMod_OverwatchFiring's Duration - 1.4 game seconds, 1 real second on
+// Faster - after breaking idle is boosted. A one-shot rule punished slow-firing
+// and multi-hit units for things they do not control (which of a Colossus'
+// beams the engine reports first, whether a projectile lands before the next
+// one leaves), and made the modifier feel like it had misfired. A window is
+// what a player can actually aim: open on a full army and every unit that
+// fires inside that second connects with the bonus.
 const fixed  c_cycleOverwatchBonus  = 0.5;   // +50% of the damage that landed
 const string c_cycleOverwatchEffect = "TardigradeMod_OverwatchBonus";
 
@@ -83,7 +97,8 @@ const string c_cycleOverwatchEffect = "TardigradeMod_OverwatchBonus";
 // VolatileBurst -> effect set [..., VolatileBurstU, Suicide]; a Disruptor's
 // nova and a Reaper's KD8 Charge are both separate units that die detonating.
 //
-// For all three, "first attack after 10s idle" and "every attack" are the same
+// For all three, "attacks in the second after breaking idle" and "every attack"
+// are the same
 // sentence: they get exactly one attack in their life and have to travel to
 // use it. So the bonus is baked into their damage numbers per-player instead of
 // being tracked as state (CycleMod_ApplyOverwatchDamageTeam) - no trigger, no
@@ -255,6 +270,18 @@ string[32]   g_cycle_splashFilter;
 int          g_cycle_splashCount  = 0;
 bool         g_cycle_splashCached = false;
 
+// The THIRD place SC2 locks a plane, after weapon TargetFilters and effect
+// SearchFilters: a CValidatorUnitFilters in the Validator catalog, hung off a
+// damage effect's ValidatorArray. The effect runs, asks the validator whether
+// the target is Ground, and does nothing when the answer is no - so a weapon
+// Open Skies has opened swings, connects, and deals zero. Same array shape and
+// same string surgery as the splash list above.
+const int    c_cycleGateValidatorCount = 1;
+string[16]   g_cycle_gateEntry;
+string[16]   g_cycle_gateFilter;
+int          g_cycle_gateCount  = 0;
+bool         g_cycle_gateCached = false;
+
 // Weapons Open Skies must not touch because their owner already reaches both
 // planes - derived from the Unit catalog by CycleMod_EnsureOpenSkiesSkipList.
 // c_cycleUnitWeaponProbe is how many WeaponArray slots are examined per unit;
@@ -342,13 +369,13 @@ string CycleMod_Name(int idx) {
 
 string CycleMod_Desc(int idx) {
     if (idx == 1)  { return "weapons hit ground and air; half damage to the new one"; }
-    if (idx == 2)  { return "+30% move speed, lost on damage dealt or taken, back 14s later"; }
+    if (idx == 2)  { return "+40% move speed, lost on damage dealt or taken, back 14s later"; }
     if (idx == 3)  { return "your workers no longer cost supply"; }
     if (idx == 4)  { return "attacks restore 30% of damage dealt"; }
     if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
-    if (idx == 6)  { return "stationary units gain +2 armor and +1 range"; }
+    if (idx == 6)  { return "hold position 10.5s for +2 armor and +1 range"; }
     if (idx == 7)  { return "double energy regeneration, units and structures"; }
-    if (idx == 8)  { return "first attack after 10s idle deals +50% damage"; }
+    if (idx == 8)  { return "after 14s idle, +50% damage for one second of attacking"; }
     if (idx == 9)  { return "units at 30% health blink away from their attacker"; }
     if (idx == 10) { return "kills: permanent +3% to all speeds and regen, stacks to 15"; }
     if (idx == 11) { return "gas buildings mine by themselves at full rate, no workers"; }
@@ -1392,7 +1419,8 @@ void CycleMod_EnsureWeaponCache() {
 //
 // Deliberately absent: Liberator AG (design call - stays ground-only, and its
 // zone gate is a ValidatorArray that filter rewriting cannot fix anyway) and
-// Broodlord (spawning broodlings on the ground is intended). Phoenix
+// Broodlord, which has no splash search - its plane lock is a validator on the
+// damage effect instead, handled by CycleMod_GateValidator. Phoenix
 // (IonCannonsULeft/URight), Battlecruiser (BattlecruiserAntiAirSearch) and
 // Disruptor (PurificationNova*) are plane-locked too but were left out as
 // unverified - confirm the melee weapon actually reaches them before adding.
@@ -1449,6 +1477,72 @@ void CycleMod_EnsureSplashCache() {
     g_cycle_splashCached = true;
 }
 
+// Plane-locked validators that gate a damage effect Open Skies has opened the
+// weapon for. Curated like CycleMod_SplashEffect, and for the same reason: 14
+// CValidatorUnitFilters in the Blizzard data carry plane tokens, and all but
+// this one belong to campaign units or to abilities that use the plane
+// deliberately (void's AirUnitFilter / GroundUnitFilter), which Open Skies has
+// no business rewriting.
+//
+// BroodlingEscortFilters is the one that matters, and the Brood Lord is
+// uniquely exposed to it: BroodlingStrike is <Effect value=""/>, a pure
+// targeting shell, so every point of the unit's damage goes through the single
+// validated effect BroodlingEscortDamageUnit (20). Opening the weapon alone let
+// a Brood Lord attack a Battlecruiser and deal literally nothing - it acquired,
+// launched, impacted, and the validator threw the damage away.
+//
+// The broodlings that BroodlingEscortImpactA spawns are NOT gated and keep
+// landing on the ground under an air target, where they flail and expire. That
+// is left as it is: against air the Brood Lord is the 20 and nothing else.
+string CycleMod_GateValidator(int idx) {
+    if (idx == 1) { return "BroodlingEscortFilters"; }   // Brood Lord damage effect
+    return "";
+}
+
+// Cache the shipped validator Filters, exactly as CycleMod_EnsureSplashCache
+// does for searches - including skipping ids that no longer resolve, since
+// CatalogFieldValueSet on a bad id is a silent no-op.
+void CycleMod_EnsureGateCache() {
+    int i;
+    string validator;
+    string filters;
+
+    if (g_cycle_gateCached) { return; }
+    i = 1;
+    while (i <= c_cycleGateValidatorCount) {
+        validator = CycleMod_GateValidator(i);
+        if (validator != "" && CatalogEntryIsValid(c_gameCatalogValidator, validator)) {
+            filters = CatalogFieldValueGet(c_gameCatalogValidator, validator, "Filters", 1);
+            if (filters != "") {
+                g_cycle_gateEntry[g_cycle_gateCount]  = validator;
+                g_cycle_gateFilter[g_cycle_gateCount] = filters;
+                g_cycle_gateCount = g_cycle_gateCount + 1;
+            }
+        }
+        i = i + 1;
+    }
+    g_cycle_gateCached = true;
+}
+
+// Apply (or restore) the gate validators for one player.
+void CycleMod_GateFiltersForPlayer(int player, bool enabled) {
+    int i;
+    string filters;
+
+    CycleMod_EnsureGateCache();
+    i = 0;
+    while (i < g_cycle_gateCount) {
+        if (enabled) {
+            filters = CycleMod_OpenSkiesFilters(g_cycle_gateFilter[i]);
+        } else {
+            filters = g_cycle_gateFilter[i];
+        }
+        CatalogFieldValueSet(c_gameCatalogValidator, g_cycle_gateEntry[i],
+            "Filters", player, filters);
+        i = i + 1;
+    }
+}
+
 // Apply (or restore) the splash searches for one player. Same string surgery as
 // the weapon pass: split on ';', drop Ground/Air from both halves.
 void CycleMod_SplashFiltersForPlayer(int player, bool enabled) {
@@ -1498,6 +1592,7 @@ void CycleMod_SetOpenSkies(bool enabled) {
     player = 1;
     while (player <= 16) {
         CycleMod_SplashFiltersForPlayer(player, enabled);
+        CycleMod_GateFiltersForPlayer(player, enabled);
         player = player + 1;
     }
     g_cycle_openSkiesEnabled = enabled;
@@ -1518,8 +1613,10 @@ void CycleMod_OpenSkiesForPlayer(int player) {
         i = i + 1;
     }
     // Targeting the other plane is only half of it - splash and beam damage is
-    // spread by effect searches with their own plane locks.
+    // spread by effect searches with their own plane locks, and a few damage
+    // effects are gated by a plane-locked validator on top of that.
     CycleMod_SplashFiltersForPlayer(player, true);
+    CycleMod_GateFiltersForPlayer(player, true);
 }
 
 void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
@@ -2499,16 +2596,18 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     // damage that actually landed on this target, whatever produced it, so
     // scaling off it covers every case uniformly.
     //
-    // The armed marker is consumed on the first damage event of the shot and
-    // replaced by a two-loop Firing marker, so the remaining damage events of
-    // the same volley (each splash target, a Colossus' second beam) are still
-    // boosted while a genuinely separate later attack is not.
+    // The armed marker is consumed on the first damage event and replaced by
+    // the Firing marker, whose Duration IS the bonus window - 1.4 game seconds,
+    // 1 real second on Faster. Every damage event that lands while it is up
+    // gets the bonus, so the whole of a volley is covered (each splash target,
+    // a Colossus' second beam, a projectile still in the air) and so is
+    // anything else the unit manages to fire inside that second.
     //
     // The state belongs to the SPAWNER, not to the unit that physically dealt
     // the damage. A Carrier's damage all comes from Interceptors, a Swarm
     // Host's from Locusts, a Brood Lord's from Broodlings, a Raven's from its
     // Auto-Turret - and every one of those is created moments before it fires,
-    // so it can never have been idle for 10 seconds and never armed. Drafting
+    // so it can never have been idle long enough to arm. Drafting
     // Overwatch on a Carrier bought literally nothing. CycleMod_VeteranRoot is
     // the same child->spawner link Veteran Forces uses, and it falls back to
     // the child when the spawner is already dead.
@@ -2753,7 +2852,7 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
             UnitSetCustomValue(u, c_cycleStateLastX, x);
             UnitSetCustomValue(u, c_cycleStateLastY, y);
             UnitSetCustomValue(u, c_cycleStateStillTime, now);
-        } else if (FixedToInt(now - UnitGetCustomValue(u, c_cycleStateStillTime)) >= c_cycleEntrenchDelay) {
+        } else if ((now - UnitGetCustomValue(u, c_cycleStateStillTime)) >= c_cycleEntrenchDelay) {
             CycleMod_AddHelperBehavior(u, 3);
         }
     } else {
@@ -2766,12 +2865,12 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
         UnitSetCustomValue(u, c_cycleStateStillTime, now);
     }
 
-    // Overwatch's +50% is meant for exactly one shot: only grant it on the
-    // idle->ready edge (guarded by the armed flag below) so it isn't endlessly
-    // re-applied - and re-armed - every 0.5s scan tick while the unit sits idle
-    // waiting for a target. CycleMod_OnUnitDamaged consumes it the instant that
-    // one shot lands. Note this arms structures too, which is why the damage
-    // handler must track them (see CycleMod_OnUnitDamaged).
+    // Only grant the armed marker on the idle->ready edge (guarded by the armed
+    // flag below) so it isn't endlessly re-applied - and re-armed - every 0.5s
+    // scan tick while the unit sits idle waiting for a target.
+    // CycleMod_OnUnitDamaged consumes it the instant the unit breaks idle and
+    // opens the one-second bonus window in its place. Note this arms structures
+    // too, which is why the damage handler must track them.
     //
     // Nothing special is needed to stop a caster holding a permanent charge:
     // CycleMod_OnUnitDamaged stamps c_cycleStateLastAttack for ANY damage a

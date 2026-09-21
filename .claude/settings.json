@@ -20,7 +20,15 @@
       "Bash(awk '/<CAbilTrain id=\"GatewayTrain\">/,/<\\\\/CAbilTrain>/' liberty.sc2mod/base.sc2data/GameData/AbilData.xml)",
       "Bash(awk '/id=\"GatewayTrain\"/,/<\\\\/CAbil/' void.sc2mod/base.sc2data/GameData/AbilData.xml)",
       "Bash(awk '/<CAbilWarpTrain id=\"WarpGateTrain\">/,/<\\\\/CAbilWarpTrain>/' liberty.sc2mod/base.sc2data/GameData/AbilData.xml)",
-      "PowerShell([xml]$x = Get-Content 'C:\\\\Sc2Mods\\\\Tardigrade\\\\Tardigrade\\\\Tardigrade.SC2Mod\\\\Base.SC2Data\\\\GameData\\\\UnitData.xml' -Raw; $x.Catalog.CUnit | ForEach-Object { $_.id })"
+      "PowerShell([xml]$x = Get-Content 'C:\\\\Sc2Mods\\\\Tardigrade\\\\Tardigrade\\\\Tardigrade.SC2Mod\\\\Base.SC2Data\\\\GameData\\\\UnitData.xml' -Raw; $x.Catalog.CUnit | ForEach-Object { $_.id })",
+      "PowerShell([xml]$x = Get-Content 'C:\\\\Sc2Mods\\\\Tardigrade\\\\Tardigrade\\\\Tardigrade.SC2Mod\\\\Base.SC2Data\\\\GameData\\\\BehaviorData.xml' -Raw; \"BehaviorData parses OK, $\\($x.Catalog.ChildNodes.Count\\) nodes\")",
+      "Bash(awk '/id=\"BroodlingStrike\"/,/<\\\\/CWeaponLegacy>|<\\\\/CWeapon>/' liberty.sc2mod/base.sc2data/GameData/WeaponData.xml)",
+      "Bash(awk '/id=\"BroodLordHangar\"/,/<\\\\/CAbil/' liberty.sc2mod/base.sc2data/GameData/AbilData.xml)",
+      "Bash(awk '/<CUnit id=\"BroodlingEscort\">/,/<\\\\/CUnit>/' liberty.sc2mod/base.sc2data/GameData/UnitData.xml)",
+      "Bash(awk '/<CUnit id=\"BroodlingEscort\"/,/<\\\\/CUnit>/' liberty.sc2mod/base.sc2data/GameData/UnitData.xml)",
+      "Bash(awk '/id=\"BroodlingEscort\"/,/<\\\\/CWeapon/' liberty.sc2mod/base.sc2data/GameData/WeaponData.xml)",
+      "Bash(awk '/id=\"BroodlingEscort\"/,/<\\\\/CWeapon/' voidmulti.sc2mod/base.sc2data/GameData/WeaponData.xml)",
+      "Bash(awk '/<CUnit id=\"Broodling\">/,/<\\\\/CUnit>/' liberty.sc2mod/base.sc2data/GameData/UnitData.xml)"
     ]
   }
 }

@@ -177,15 +177,15 @@
          TardigradeMod_MarchBroken is up. Duration 8 is the usual
          "never lapse between scan ticks" figure, not a real lifetime.
 
-         1.3, down from the button's 1.7: the old value was a burst with ~53%
-         uptime and this is on whenever the unit is out of contact - neither
-         taking damage nor dealing it - which is most of the game. -->
+         1.4: enough to close ground or break away decisively, and affordable
+         because it is never on in a fight - the unit is out of contact,
+         neither taking damage nor dealing it, whenever it applies. -->
     <CBehaviorBuff id="TardigradeMod_ForcedMarch">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
         <Duration value="8"/>
         <MaxStackCount value="1"/>
-        <Modification MoveSpeedMultiplier="1.3"/>
+        <Modification MoveSpeedMultiplier="1.4"/>
     </CBehaviorBuff>
 
     <!-- The recovery window. CycleMod_BreakMarch re-adds this on every contact
@@ -276,12 +276,12 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
-    <!-- Damage only, no WeaponRange/WeaponScanBonus. Granting reach for exactly
-         one shot does not compose with a sustained engagement: the unit would
-         acquire and fire at the extended range, then have the range stripped on
-         the first damage event and be left holding a target it could no longer
-         reach - visibly starting attack cycles that abort before the weapon
-         fires. Duration is long because the script owns removal (consumed in
+    <!-- Damage only, no WeaponRange/WeaponScanBonus. Granting reach for a
+         one-second window does not compose with a sustained engagement: the
+         unit would acquire and fire at the extended range, then have the range
+         stripped when the window closed and be left holding a target it could
+         no longer reach - visibly starting attack cycles that abort before the
+         weapon fires. Duration is long because the script owns removal (consumed in
          CycleMod_OnUnitDamaged); a short duration made the buff expire and
          instantly re-arm on the next scan tick.
 
@@ -298,17 +298,25 @@
         <Duration value="300"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
-    <!-- One attack can produce many damage events (splash hitting N units, a
-         Colossus' twin beams, a Baneling's blast). Consuming OverwatchReady on
-         the first of them would boost one target and leave the rest of the same
-         blast unbuffed, so the consume swaps in this marker instead and every
-         damage event that lands while it is up still gets the bonus. Duration
-         is two game loops - long enough to span one volley, far shorter than
-         any weapon period, so it can never carry into a second attack. -->
+    <!-- The bonus WINDOW. Breaking idle consumes OverwatchReady and swaps in
+         this marker; every damage event that lands while it is up gets the
+         +50%, so the window - not a single shot - is what the modifier grants.
+
+         Duration 1.4 game seconds = 1 real second on Faster. It was two game
+         loops (0.125), just wide enough to hold one volley together, because
+         one attack can produce many damage events (splash across N units, a
+         Colossus' twin beams) and consuming on the first of them would have
+         boosted one target and left the rest of the same blast unbuffed. That
+         made the modifier read as a misfire on anything whose damage does not
+         arrive in one instant: slow projectiles, multi-hit weapons, a volley
+         whose second half lands a few loops late. A one-second window covers
+         all of it and is something a player can aim - open on a full army and
+         every unit that fires inside that second connects with the bonus.
+         Still far shorter than the 14s idle it takes to re-arm. -->
     <CBehaviorBuff id="TardigradeMod_OverwatchFiring">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
-        <Duration value="0.125"/>
+        <Duration value="1.4"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
 
@@ -394,8 +402,8 @@
     <!-- Battle Blink's cooldown. CycleMod_TryBattleBlink adds this the moment
          it teleports a unit and refuses to fire again while it is up, so the
          engine expiring the buff IS the cooldown - there is no timer to keep
-         per unit. Duration is in game seconds, so 17 is the old clickable
-         ability's 12 scaled the same way c_cycleOverwatchDelay is. -->
+         per unit. Duration is in game seconds, so 17 is about 12 real seconds
+         on Faster. -->
     <CBehaviorBuff id="TardigradeMod_BlinkCooldown">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Neutral"/>
