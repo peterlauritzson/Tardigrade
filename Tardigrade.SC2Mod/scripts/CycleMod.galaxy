@@ -367,15 +367,29 @@ string CycleMod_Name(int idx) {
     return "";
 }
 
+// The one-line blurb under each modifier. This is the ONLY description a player
+// ever reads - it feeds the draft buttons (CycleMod_DraftButtonText), the
+// "Picked:" line, and the cycle plan in chat - so everything a player is told
+// about the mod passes through here.
+//
+// EVERY TIME BELOW IS IN REAL SECONDS, the way a player experiences it on
+// Faster. The data files and the script thresholds are in GAME seconds, which
+// tick 1.4x quicker, so a number copied straight out of BehaviorData.xml or off
+// a c_cycle* constant will read ~40% too long here. Divide by 1.4 first:
+//   Forced March recovery   14   game -> 10   real
+//   Entrenchment hold       10.5 game ->  7.5 real
+//   Overwatch idle          14   game -> 10   real
+//   Overwatch window         1.4 game ->  1   real
+// CycleMod_ActivationClockText does the same conversion for the activation time.
 string CycleMod_Desc(int idx) {
     if (idx == 1)  { return "weapons hit ground and air; half damage to the new one"; }
-    if (idx == 2)  { return "+40% move speed, lost on damage dealt or taken, back 14s later"; }
+    if (idx == 2)  { return "+40% move speed, lost on damage dealt or taken, back 10s later"; }
     if (idx == 3)  { return "your workers no longer cost supply"; }
     if (idx == 4)  { return "attacks restore 30% of damage dealt"; }
     if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
-    if (idx == 6)  { return "hold position 10.5s for +2 armor and +1 range"; }
+    if (idx == 6)  { return "hold position 7.5s for +2 armor and +1 range"; }
     if (idx == 7)  { return "double energy regeneration, units and structures"; }
-    if (idx == 8)  { return "after 14s idle, +50% damage for one second of attacking"; }
+    if (idx == 8)  { return "after 10s idle, +50% damage for 1s of attacking"; }
     if (idx == 9)  { return "units at 30% health blink away from their attacker"; }
     if (idx == 10) { return "kills: permanent +3% to all speeds and regen, stacks to 15"; }
     if (idx == 11) { return "gas buildings mine by themselves at full rate, no workers"; }
@@ -447,11 +461,19 @@ bool CycleMod_UnitHasBehavior(unit u, string beh) {
 
 // The MULE counts: it is a worker for every purpose here (it takes no supply,
 // so Free Labor is a no-op on it, and it can't harvest gas anyway).
+//
+// DroneBurrowed is a SEPARATE unit type, not a state on Drone - UnitGetType
+// returns "DroneBurrowed" for a burrowed Drone, and it carries its own
+// CostResource of 50. Leaving it off this list let a burrowed Drone through
+// every worker exclusion at once: Refund paid 12.5 for one an enemy dug out,
+// and because it never moves it also sat permanently Entrenched. It is the
+// only alt-form worker in the melee data - SCV, Probe and MULE have no second
+// type, and DroneBurrowed is the sole unit whose LeaderAlias is a worker.
 bool CycleMod_IsWorker(unit candidate) {
     string unitType;
     unitType = UnitGetType(candidate);
     return unitType == "SCV" || unitType == "Probe" || unitType == "Drone"
-        || unitType == "MULE";
+        || unitType == "DroneBurrowed" || unitType == "MULE";
 }
 
 // Modifiers never apply to workers - no Blink, Boost, Shared Damage,
@@ -1064,6 +1086,27 @@ bool CycleMod_OverwatchIsFlatBoosted(unit candidate) {
     string unitType;
     unitType = UnitGetType(candidate);
     return unitType == "Baneling" || unitType == "BanelingBurrowed";
+}
+
+// Damage events Overwatch must not scale. Riding EventUnitDamageAmount() is what
+// lets the bonus cover splash, suicide and spell damage uniformly, but it also
+// means anything the engine reports as damage gets amplified - including effects
+// that are a debuff wearing damage's clothes.
+//
+// EMP is the case that matters. Since HotS its shield strip is a real damage
+// effect: EMPDamage is Amount=0 with ShieldBonus=100, so it burns shields and
+// nothing else, while EMPModifyUnit was cut back to draining energy only. The
+// trigger saw a 100-damage event and paid 50 through TardigradeMod_OverwatchBonus
+// - a PLAIN damage effect with no ShieldBonus - so an Overwatch EMP took 100
+// shields and then put 50 real damage into the target's health. EMP is not
+// supposed to deal health damage at all.
+//
+// Only EMPDamage qualifies. The other ShieldBonus effects in the melee data
+// (Purification Nova 100+100, Widow Mine splash +25, Disruption Beam +4) all
+// carry a real Amount as well - they are attacks with an anti-shield bonus, not
+// debuffs, and Overwatch is meant to scale them.
+bool CycleMod_OverwatchSkipsEffect(string effect) {
+    return effect == "EMPDamage";
 }
 
 bool CycleMod_IsRichGasBuilding(unit candidate) {
@@ -2337,6 +2380,12 @@ const string c_cycleKeyLastAttacker = "TgLA_";   // who last damaged this unit
 // unit whose caster is the spawner (BehaviorData.xml TardigradeMod_VeteranLink).
 const string c_cycleVeteranLink = "TardigradeMod_VeteranLink";
 
+// The stack a SPAWNED unit carries. Same +3% per stack as the spawner's
+// TardigradeMod_VeteranStack, spelled out stat by stat so it carries no
+// TimeScale - which would otherwise run the child's timed life down with
+// everything else. See CycleMod_SyncVeteranStacks and BehaviorData.xml.
+const string c_cycleVeteranStackChild = "TardigradeMod_VeteranStackChild";
+
 string CycleMod_UnitKey(string prefix, unit u) {
     return prefix + IntToString(UnitGetTag(u));
 }
@@ -2389,18 +2438,23 @@ unit CycleMod_VeteranRoot(unit u) {
 // Copy the spawner's veteran stacks onto a spawned unit. Called when it spawns
 // and from the scan, so stacks the spawner earns later reach units it already
 // spawned. Only ever raises the count - the stacks are permanent.
+//
+// The COUNT is read off the spawner's stack and written to the child's OWN buff,
+// c_cycleVeteranStackChild - the same +3% without TimeScale. The spawner's
+// version speeds its whole clock up, and a spawned unit's clock is what runs its
+// timed life: Locusts, Broodlings, Auto-Turrets, Infested Terrans and the
+// Disruptor's nova would all have died ~36% early at full stacks. See
+// BehaviorData.xml for why children lose nothing else by taking that version.
 void CycleMod_SyncVeteranStacks(unit child) {
     unit   root;
     int    count;
-    string stack;
 
     root = CycleMod_VeteranRoot(child);
     if (root == null || root == child || !UnitIsAlive(root)) { return; }
 
-    stack = CycleMod_HelperBehavior(6);
-    count = UnitBehaviorCount(root, stack);
-    if (count > UnitBehaviorCount(child, stack)) {
-        libNtve_gf_SetBehaviorCount(child, stack, child, count);
+    count = UnitBehaviorCount(root, CycleMod_HelperBehavior(6));
+    if (count > UnitBehaviorCount(child, c_cycleVeteranStackChild)) {
+        libNtve_gf_SetBehaviorCount(child, c_cycleVeteranStackChild, child, count);
     }
 }
 
@@ -2651,6 +2705,7 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
         // stack a second bonus on top of the catalog one.
         if (EventUnitDamageAmount() > 0.0 && UnitIsAlive(target)
             && !CycleMod_OverwatchIsFlatBoosted(source)
+            && !CycleMod_OverwatchSkipsEffect(EventUnitDamageEffect())
             && CycleMod_IsHostileTarget(source, target)) {
             Debug_Log("Overwatch: " + UnitGetType(overwatchOwner) + " +"
                 + FixedToString(EventUnitDamageAmount() * c_cycleOverwatchBonus, 2)

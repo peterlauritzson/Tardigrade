@@ -247,6 +247,10 @@
     <CBehaviorBuff id="TardigradeMod_Entrenched">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
+        <!-- Global for the same reason as TardigradeMod_OverwatchFiring: this
+             Duration is the grace period you keep the bonus for, so Veteran
+             Forces' TimeScale must not shorten it. -->
+        <TimeScaleSource Value="Global"/>
         <Duration value="3"/>
         <MaxStackCount value="1"/>
         <Modification WeaponRange="1" WeaponScanBonus="1" ShieldArmorBonus="2">
@@ -316,6 +320,12 @@
     <CBehaviorBuff id="TardigradeMod_OverwatchFiring">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
+        <!-- Global clock, not the unit's: this Duration is a bonus WINDOW, and
+             Veteran Forces' TimeScale would otherwise shorten it - a veteran
+             unit getting LESS Overwatch than a fresh one, which is backwards.
+             Cooldowns and penalty timers stay on the unit's clock, where running
+             down faster is the point; a window you benefit from is not. -->
+        <TimeScaleSource Value="Global"/>
         <Duration value="1.4"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
@@ -348,22 +358,85 @@
         <InfoIcon value="Assets\Textures\btn-upgrade-zerg-frenzy.dds"/>
         <Alignment value="Positive"/>
         <MaxStackCount value="15"/>
-        <!-- "Everything a little faster", spelled out stat by stat instead of
-             TimeScale. TimeScale sped up movement reliably but the Battlecruiser's
-             attack only some of the time (playtest: same BC, movement boosted
-             throughout, attack boost intermittent) - the BC's attack ability
-             (CAbilAttack BattlecruiserAttack, Min/MaxAttackSpeedMultiplier) is
-             built around the attack-speed stat. So each piece gets its own
-             explicit multiplier:
-               - MoveSpeedMultiplier / AttackSpeedMultiplier: move and attack.
-               - RateMultiplierArray: ability cooldowns, charges, morphs
-                 (siege/assault modes), progress/queue (a Carrier building
-                 Interceptors), spawns (Swarm Host Locusts). This is exactly the
-                 set Blizzard's own current Chrono Boost (voidmulti) uses at
-                 1.5 - it too moved off TimeScale onto these. Creep is left out.
-               - VitalRegenMultiplier: energy regen. Not indexed by vital, so it
-                 scales life and shield regen too - which is what TimeScale did,
-                 so nothing is lost. -->
+        <!-- "Everything a little faster" is meant literally, so it is TimeScale:
+             one field that turns the unit's whole internal clock up. Movement,
+             weapon periods, ability and weapon cooldowns, charges, morphs,
+             build/queue progress, spawn rates, regen - all of it, including
+             timers no individual Modification field reaches.
+
+             DO NOT re-diagnose this from the unit panel. This was briefly spelled
+             out stat by stat (MoveSpeedMultiplier / AttackSpeedMultiplier /
+             RateMultiplierArray) because a playtest read Battlecruiser attack
+             speed as scaling "sometimes, and less than movement". That was
+             rounding, not behaviour. The panel prints weapon period in REAL
+             seconds at two decimals, and a Battlecruiser's 0.225 game seconds
+             shows as 0.16 - where one 3% stack moves the true value by 0.005,
+             i.e. half of the last displayed digit:
+
+               stacks  0     1     2     3     4     5     6
+               true    .1607 .1560 .1515 .1471 .1428 .1386 .1346
+               panel   0.16  0.16  0.15  0.15  0.14  0.14  0.13
+
+             So a 1-stack Battlecruiser shows exactly the same number as a fresh
+             one, and the digit only ticks over every second or third stack.
+             Movement does not do this: the same unit's speed displays near 1.97,
+             where a 3% step is 0.059 - twelve times the last digit, so every
+             stack visibly moves it. The two stats were rounded differently, not
+             applied differently. Verify by COUNTING SHOTS over ~15 seconds
+             (15 stacks should be roughly 93 shots against a fresh one's 60),
+             never by reading the panel.
+
+             Two Battlecruiser dead ends, recorded so nobody re-walks them:
+             CAbilAttack BattlecruiserAttack's Min/MaxAttackSpeedMultiplier are
+             0.25/128 and never bind; and ATS/ATALaserBattery, which do carry a
+             shared 0.225 Cost/Cooldown that no Modification field can reach, are
+             NOT what the unit fires - in LotV they are EquipmentArray (display)
+             entries and the CUnit's WeaponArray holds exactly one weapon, the
+             Hidden BattlecruiserWeaponSwitch, Period 0.225 with no Cost at all.
+
+             The one real cost of TimeScale is that it speeds up the unit's own
+             buff DURATIONS, and a timed life is a buff. Handled by keeping this
+             version off spawned units entirely - see
+             TardigradeMod_VeteranStackChild - and by pinning the two of our own
+             buffs whose Duration is a bonus window (TardigradeMod_OverwatchFiring,
+             TardigradeMod_Entrenched) to the global clock. Cooldowns and penalty
+             timers are deliberately left on the unit's clock, where running down
+             faster is the whole point.
+
+             Note that Entrenchment's hold clock and Overwatch's idle clock are
+             script timestamps off GameGetMissionTime, not buffs, so a veteran
+             does NOT entrench or re-arm faster. That is a limit of where those
+             mechanics live, not a decision. -->
+        <Modification TimeScale="1.03"/>
+    </CBehaviorBuff>
+
+    <!-- The spawned-unit version, applied by CycleMod_SyncVeteranStacks instead
+         of the one above. Same +3% per stack, spelled out stat by stat so that
+         it carries no TimeScale:
+           - MoveSpeedMultiplier / AttackSpeedMultiplier: move and attack.
+           - RateMultiplierArray: ability cooldowns, charges, morphs, build and
+             queue progress, spawns. Exactly the set Blizzard's own Chrono Boost
+             (voidmulti) uses at 1.5. Creep is left out.
+           - VitalRegenMultiplier: energy regen. Not indexed by vital, so it
+             scales life and shield regen too, which is intended.
+
+         Locusts, Broodlings, Auto-Turrets, Infested Terrans and the Disruptor's
+         nova all live on a timed-life buff, and the spawner's TimeScale version
+         would run that buff down with everything else - cutting a full-stack
+         veteran's children to ~64% of their lifespan. A Swarm Host would have
+         earned its Locusts an early death and a Disruptor's nova would expire
+         short of where it was aimed. A modifier that reads "your units get
+         better" must never do that.
+
+         Children lose nothing real by taking this version: TimeScale's unique
+         reach is timers no Modification field covers, and nothing a spawned unit
+         does depends on one. Interceptors have no timed life and would have been
+         safe either way, but they take this version too - one rule for spawned
+         units beats one saved edge case. -->
+    <CBehaviorBuff id="TardigradeMod_VeteranStackChild">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-frenzy.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="15"/>
         <Modification MoveSpeedMultiplier="1.03" AttackSpeedMultiplier="1.03" VitalRegenMultiplier="1.03">
             <RateMultiplierArray index="Cooldown" value="1.03"/>
             <RateMultiplierArray index="Charge" value="1.03"/>

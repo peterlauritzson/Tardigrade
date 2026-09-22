@@ -28,7 +28,19 @@
       "Bash(awk '/<CUnit id=\"BroodlingEscort\"/,/<\\\\/CUnit>/' liberty.sc2mod/base.sc2data/GameData/UnitData.xml)",
       "Bash(awk '/id=\"BroodlingEscort\"/,/<\\\\/CWeapon/' liberty.sc2mod/base.sc2data/GameData/WeaponData.xml)",
       "Bash(awk '/id=\"BroodlingEscort\"/,/<\\\\/CWeapon/' voidmulti.sc2mod/base.sc2data/GameData/WeaponData.xml)",
-      "Bash(awk '/<CUnit id=\"Broodling\">/,/<\\\\/CUnit>/' liberty.sc2mod/base.sc2data/GameData/UnitData.xml)"
+      "Bash(awk '/<CUnit id=\"Broodling\">/,/<\\\\/CUnit>/' liberty.sc2mod/base.sc2data/GameData/UnitData.xml)",
+      "Bash(awk '/<CUnit id=\"DroneBurrowed\"/,/<\\\\/CUnit>/' liberty.sc2mod/base.sc2data/GameData/UnitData.xml)",
+      "Bash(awk '/<CUnit id=\"Battlecruiser\">/,/<\\\\/CUnit>/' liberty.sc2mod/base.sc2data/GameData/UnitData.xml)",
+      "Bash(awk '/id=\"ATSLaserBattery\"/,/<\\\\/CWeapon/' liberty.sc2mod/base.sc2data/GameData/WeaponData.xml)",
+      "Bash(awk '/id=\"ATSLaserBattery\"/,/<\\\\/CWeapon/' voidmulti.sc2mod/base.sc2data/GameData/WeaponData.xml)",
+      "Bash(awk '/id=\"ATALaserBattery\"/,/<\\\\/CWeapon/' voidmulti.sc2mod/base.sc2data/GameData/WeaponData.xml)",
+      "Bash(awk '/<CBehaviorBuff id=\"LocustMPTimedLife\"/,/<\\\\/CBehaviorBuff>/' swarmmulti.sc2mod/base.sc2data/GameData/BehaviorData.xml)",
+      "Bash(awk '/<CBehaviorBuff id=\"AutoTurretTimedLife\"/,/<\\\\/CBehaviorBuff>/' voidmulti.sc2mod/base.sc2data/GameData/BehaviorData.xml)",
+      "Bash(awk '/id=\"EMPDamage\"/,/<\\\\/CEffect/' voidmulti.sc2mod/base.sc2data/GameData/EffectData.xml)",
+      "Bash(awk '/id=\"ATALaserBattery\"/,/<\\\\/CWeapon/' liberty.sc2mod/base.sc2data/GameData/WeaponData.xml)",
+      "PowerShell([xml]$x = Get-Content 'C:\\\\Sc2Mods\\\\Tardigrade\\\\Tardigrade\\\\Tardigrade.SC2Mod\\\\Base.SC2Data\\\\GameData\\\\BehaviorData.xml' -Raw; \"XML OK\"; $x.Catalog.CBehaviorBuff | Where-Object { $_.id -eq 'TardigradeMod_VeteranStack' } | ForEach-Object { \"VeteranStack: AttackSpeed=$\\($_.Modification.AttackSpeedMultiplier\\) Move=$\\($_.Modification.MoveSpeedMultiplier\\) TimeScale='$\\($_.Modification.TimeScale\\)'\" })",
+      "Bash(grep -vE '^\\\\s*[0-9]+:\\\\s*//')",
+      "Bash(grep -v '^\\\\S*:[0-9]*:\\\\s*//')"
     ]
   }
 }

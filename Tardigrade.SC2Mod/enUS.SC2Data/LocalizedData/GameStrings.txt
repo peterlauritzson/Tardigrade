@@ -2,4 +2,6 @@
 DocInfo/DescShort=1-8
 DocInfo/Name=Tardigrade
 Behavior/Name/TardigradeMod_VeteranStack=Veteran
-Behavior/Tooltip/TardigradeMod_VeteranStack=Veteran Forces: each kill gave this unit +3% movement speed, attack speed, cooldown and charge recovery, and life, shield and energy regeneration. Stacks up to 15.
+Behavior/Tooltip/TardigradeMod_VeteranStack=Veteran Forces: each kill made this unit 3% faster at everything - movement, attack speed, cooldowns, build and morph rates, and life, shield and energy regeneration. Stacks up to 15.
+Behavior/Name/TardigradeMod_VeteranStackChild=Veteran
+Behavior/Tooltip/TardigradeMod_VeteranStackChild=Veteran Forces: this unit inherits its parent's stacks. Each gives +3% movement speed, attack speed, cooldown and charge recovery, and life, shield and energy regeneration. Stacks up to 15.

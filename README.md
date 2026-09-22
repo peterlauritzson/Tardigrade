@@ -57,19 +57,21 @@ on the unit draft that immediately follows.
 Modifiers **never affect workers** (SCV, Probe, Drone, MULE), except Free
 Labor and Auto Refineries, which are about workers to begin with.
 
-The 14 modifiers:
+The 14 modifiers. **Every duration below is in real seconds**, the way you
+experience it on Faster — the same numbers the in-game descriptions use. The
+data files store game seconds, which tick 1.4× quicker.
 
 | # | Modifier | Effect (applies to your units only) |
 |---|---|---|
 | 1 | Open Skies | All your weapons can target ground and air. Against the plane a unit couldn't hit before, it deals half damage (Zealot vs air, Phoenix vs ground); units that already hit both are unchanged |
-| 2 | Forced March | +40% move speed on all your units. Being in combat switches it off — taking damage or dealing it, either one. It comes back 10 real seconds (14 game seconds) after the last time the unit was hit or attacked |
+| 2 | Forced March | +40% move speed on all your units. Being in combat switches it off — taking damage or dealing it, either one. It comes back 10s after the last time the unit was hit or attacked |
 | 3 | Free Labor | Your workers no longer cost supply |
 | 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full |
 | 5 | Eyes Everywhere | The battlefield and hidden units are revealed, for you only (excludes neutrals — minerals, Xel'Naga towers, critters) |
-| 6 | Entrenchment | Your units gain +2 armor and +1 range after holding position for 10.5 game seconds (7.5 real). “Holding” is lenient — drifting up to 1.5 from where you settled still counts, so being bumped by an ally or shuffling to acquire a target doesn't reset it. Once earned it lingers ~3s after you move off, but re-earning it takes the full 10.5 |
+| 6 | Entrenchment | Your units gain +2 armor and +1 range after holding position for 7.5s. “Holding” is lenient — drifting up to 1.5 from where you settled still counts, so being bumped by an ally or shuffling to acquire a target doesn't reset it. Once earned it lingers ~2s after you move off, but re-earning it takes the full 7.5s |
 | 7 | Arcane Surge | Double energy regeneration on all your units and structures |
-| 8 | Overwatch | After 14 game seconds (10 real) without attacking, a unit deals +50% damage for the next 1.4 game seconds (1 real) of attacking — everything it lands inside that window, not just the first shot. Spells count as attacking, so a caster opens the window and is then "active". Banelings always get it (they only ever attack once) |
-| 9 | Battle Blink | Automatic: a unit that drops to 30% health teleports 8 range straight back from whatever last hit it. Once per 17s per unit — no button, no hotkey |
+| 8 | Overwatch | After 10s without attacking, a unit deals +50% damage for its next 1s of attacking — everything it lands inside that window, not just the first shot. Spells count as attacking, so a caster opens the window and is then "active". Banelings always get it (they only ever attack once) |
+| 9 | Battle Blink | Automatic: a unit that drops to 30% health teleports 8 range straight back from whatever last hit it. Once per 12s per unit — no button, no hotkey |
 | 10 | Veteran Forces | Each kill grants a permanent +3% to movement speed, attack speed, ability cooldowns/charges, and life/shield/energy regeneration, stacking to 15 (shown on the unit as "Veteran"). Kills by Interceptors, Locusts, Broodlings and Auto-Turrets count for the unit that spawned them |
 | 11 | Auto Refineries | Your finished gas buildings mine by themselves at the three-worker rate (rich geysers double). Workers physically can't harvest them — the building stops being a resource at all, and its worker counter disappears |
 | 12 | No Bans | Your opponent gets no bans against your pool in the unit draft; their ban turns are skipped |
