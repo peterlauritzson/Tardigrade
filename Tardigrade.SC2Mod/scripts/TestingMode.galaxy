@@ -1,0 +1,404 @@
+//--------------------------------------------------------------------------------------------------
+// Testing Mode  (GameMode.galaxy: c_gameModeTesting)
+//
+// A sandbox with no draft at all:
+//   - everyone keeps the lobby race's town hall (and the Zerg Overlord) from
+//     the melee start, and gets one SCV, one Probe and one Drone - so all
+//     three races' structures can be built, by anyone;
+//   - c_testingBank minerals and gas;
+//   - no roster enforcement: every unit is allowed;
+//   - build, train, research and morph times are instant
+//     (TestingMode_BuildLoop);
+//   - a per-player panel switches any modifier on or off for that player's
+//     side (TestingMode_Toggle). There is no activation delay in this mode
+//     (CycleMod_ModsLive), so a switch takes effect on the next scan tick.
+//
+// The panel is a dialog, not a command-card button: a command card needs an
+// ability per modifier in the data, placed in a free card cell on every unit
+// that should carry it, which is exactly the class of work the mod dropped
+// when Blink / Boost / Salvage stopped being buttons (see CURRENT_STATE.md).
+//
+// Requires: RaceDraft, CycleMod (included before this file).
+//--------------------------------------------------------------------------------------------------
+
+const int c_testingBank = 100000;
+
+// Per-player panel. Keyed by player slot, like the other per-player dialogs:
+// DialogSetSize takes no playergroup, so a shared dialog cannot be folded for
+// one viewer only.
+bool[16]     g_test_built;
+bool[16]     g_test_expanded;
+int[16]      g_test_dialog;
+int[16]      g_test_toggle;
+int[16][20]  g_test_btn;              // [player][1..c_cycleModCount]
+trigger      g_test_panelTrig = null;
+
+//--------------------------------------------------------------------------------------------------
+// Instant build.
+//
+// UnitSetProgressComplete finishes whatever is in progress in a queue slot:
+// a structure under construction, a unit training, an egg or cocoon, a
+// research, a morph. The scan tops up every in-progress slot of every
+// participant's units; the progress-start events below do the same the moment
+// something starts, so most things finish before the scan even gets there.
+// Slots run 1..N; a unit with an empty queue (a structure under construction,
+// an egg) is still probed at slot 1.
+//--------------------------------------------------------------------------------------------------
+void TestingMode_Rush(unit u) {
+    int   slots;
+    int   s;
+    fixed pct;
+
+    if (u == null || !UnitIsAlive(u)) { return; }
+    slots = UnitQueueGetProperty(u, c_unitQueuePropertyUsed);
+    if (slots < 1) { slots = 1; }
+    s = 1;
+    while (s <= slots) {
+        pct = UnitGetProgressComplete(u, s);
+        if (pct > 0.0 && pct < 100.0) { UnitSetProgressComplete(u, s, 100); }
+        s = s + 1;
+    }
+}
+
+bool TestingMode_OnProgressStarted(bool testConds, bool runActions) {
+    unit u;
+    unit made;
+
+    u    = EventUnit();
+    made = EventUnitProgressUnit();
+    if (!CycleMod_IsParticipantUnit(u)) { return true; }
+    // One game loop, so the item has actually entered its slot.
+    Wait(0.0625, c_timeGame);
+    TestingMode_Rush(u);
+    if (made != null) { TestingMode_Rush(made); }
+    return true;
+}
+
+bool TestingMode_BuildLoop(bool testConds, bool runActions) {
+    unitgroup ug;
+    unit      u;
+    int       count;
+    int       i;
+
+    while (true) {
+        ug = UnitGroup(null, c_playerAny, RegionEntireMap(),
+            UnitFilter(0, 0, (1 << c_targetFilterMissile), (1 << (c_targetFilterDead - 32))), 0);
+        count = UnitGroupCount(ug, c_unitCountAll);
+        i = 1;
+        while (i <= count) {
+            u = UnitGroupUnit(ug, i);
+            if (CycleMod_IsParticipantUnit(u)) { TestingMode_Rush(u); }
+            i = i + 1;
+        }
+        Wait(0.25, c_timeGame);
+    }
+    return true;
+}
+
+void TestingMode_StartInstantBuild() {
+    trigger t;
+
+    t = TriggerCreate("TestingMode_OnProgressStarted");
+    TriggerAddEventUnitConstructProgress(t, null, c_unitProgressStageStart);
+    TriggerAddEventUnitTrainProgress(t, null, c_unitProgressStageStart);
+    TriggerAddEventUnitResearchProgress(t, null, c_unitProgressStageStart);
+    TriggerAddEventUnitArmMagazineProgress(t, null, c_unitProgressStageStart);
+    TriggerAddEventUnitSpecializeProgress(t, null, c_unitProgressStageStart);
+
+    TriggerExecute(TriggerCreate("TestingMode_BuildLoop"), false, false);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Switching one modifier on or off for one side.
+//--------------------------------------------------------------------------------------------------
+
+// The resource behavior a gas building carries as shipped - the same six
+// CycleMod_GasResourceBehavior lists, by building type.
+string TestingMode_GasResourceBehavior(string unitType) {
+    if (unitType == "Refinery")        { return CycleMod_GasResourceBehavior(1); }
+    if (unitType == "Assimilator")     { return CycleMod_GasResourceBehavior(2); }
+    if (unitType == "Extractor")       { return CycleMod_GasResourceBehavior(3); }
+    if (unitType == "RefineryRich")    { return CycleMod_GasResourceBehavior(4); }
+    if (unitType == "AssimilatorRich") { return CycleMod_GasResourceBehavior(5); }
+    if (unitType == "ExtractorRich")   { return CycleMod_GasResourceBehavior(6); }
+    return "";
+}
+
+// Auto Refineries switched off: give a building it had taken over its resource
+// behavior back, with the gas it still held, and forget its auto state so
+// switching the modifier on again takes it over afresh. Unverified in-editor,
+// like the removal it undoes (CycleMod_MakeUnharvestable).
+void TestingMode_RestoreRefinery(unit building) {
+    string beh;
+
+    if (UnitGetCustomValue(building, c_cycleStateAutoGas) <= 0.0) { return; }
+    beh = TestingMode_GasResourceBehavior(UnitGetType(building));
+    if (beh != "" && UnitBehaviorCount(building, beh) == 0) {
+        UnitBehaviorAdd(building, beh, building, 1);
+    }
+    UnitSetPropertyInt(building, c_unitPropResources,
+        FixedToInt(UnitGetCustomValue(building, c_cycleStateAutoGasLeft)));
+    UnitSetCustomValue(building, c_cycleStateAutoGas, 0.0);
+}
+
+// A modifier just went off: take whatever it left on the side's units away.
+// The scan only ever touches modifiers a side HAS, so nothing else would -
+// CycleMod_ApplyPickedBehavior strips a modifier's buffs from a unit whose
+// side no longer has it. Conditional helpers (Entrenched, Overwatch markers,
+// veteran stacks) are left to expire on their own short durations.
+void TestingMode_ClearMod(playergroup team, int idx) {
+    unitgroup ug;
+    unit      u;
+    int       count;
+    int       i;
+
+    ug = UnitGroup(null, c_playerAny, RegionEntireMap(),
+        UnitFilter(0, 0, (1 << c_targetFilterMissile), (1 << (c_targetFilterDead - 32))), 0);
+    count = UnitGroupCount(ug, c_unitCountAll);
+    i = 1;
+    while (i <= count) {
+        u = UnitGroupUnit(ug, i);
+        if (PlayerGroupHasPlayer(team, UnitGetOwner(u))) {
+            CycleMod_ApplyPickedBehavior(u, idx);
+            if (idx == c_cycleModAutoRefinery && CycleMod_IsGasBuilding(u)) {
+                TestingMode_RestoreRefinery(u);
+            }
+        }
+        i = i + 1;
+    }
+}
+
+void TestingMode_RefreshPanels();
+
+void TestingMode_Toggle(int player, int idx) {
+    bool        isP1;
+    bool        on;
+    playergroup team;
+    string      side;
+
+    if (idx <= 0 || idx > c_cycleModCount || CycleMod_ModIsDraftOnly(idx)) { return; }
+    if (CycleMod_OwnerIsP1(player))      { isP1 = true;  team = CycleMod_P1Team(); side = "P1"; }
+    else if (CycleMod_OwnerIsP2(player)) { isP1 = false; team = CycleMod_P2Team(); side = "P2"; }
+    else { return; }
+
+    on = !CycleMod_SideHasModIdx(isP1, idx);
+    CycleMod_SetSideMod(isP1, idx, on);
+    CycleMod_CatalogModForTeam(team, idx, on);
+    if (!on) { TestingMode_ClearMod(team, idx); }
+
+    if (on) {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            side + " <c val=\"4ADB92\">ON:</c> " + CycleMod_Name(idx)
+            + "  <c val=\"AAAAAA\">- " + CycleMod_Desc(idx) + "</c>"));
+    } else {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            side + " <c val=\"B07878\">OFF:</c> " + CycleMod_Name(idx)));
+    }
+    TestingMode_RefreshPanels();
+}
+
+//--------------------------------------------------------------------------------------------------
+// The panel: top-right, one button per modifier, foldable.
+//--------------------------------------------------------------------------------------------------
+const int c_testingPanelWidth = 330;
+const int c_testingRowPitch   = 28;
+
+int TestingMode_PanelHeight(bool expanded) {
+    if (!expanded) { return 40; }
+    return 48 + c_cycleModCount * c_testingRowPitch;
+}
+
+string TestingMode_ButtonText(int player, int idx) {
+    bool on;
+    if (CycleMod_ModIsDraftOnly(idx)) {
+        return "<c val=\"666666\">" + CycleMod_Name(idx) + "  (draft only)</c>";
+    }
+    if (CycleMod_OwnerIsP1(player)) { on = CycleMod_SideHasModIdx(true, idx); }
+    else                            { on = CycleMod_SideHasModIdx(false, idx); }
+    if (on) { return "<c val=\"4ADB92\">[ON]</c>   <c val=\"FFFFFF\">" + CycleMod_Name(idx) + "</c>"; }
+    return "<c val=\"888888\">[off]   " + CycleMod_Name(idx) + "</c>";
+}
+
+void TestingMode_RefreshPanel(int player) {
+    playergroup viewer;
+    int         idx;
+
+    if (!g_test_built[player]) { return; }
+    viewer = PlayerGroupSingle(player);
+    idx = 1;
+    while (idx <= c_cycleModCount) {
+        DialogControlSetPropertyAsText(g_test_btn[player][idx], c_triggerControlPropertyText,
+            viewer, StringToText(TestingMode_ButtonText(player, idx)));
+        idx = idx + 1;
+    }
+}
+
+void TestingMode_RefreshPanels() {
+    int p;
+    p = 1;
+    while (p <= 15) {
+        TestingMode_RefreshPanel(p);
+        p = p + 1;
+    }
+}
+
+void TestingMode_SetExpanded(int player, bool expanded) {
+    playergroup viewer;
+    int         idx;
+
+    viewer = PlayerGroupSingle(player);
+    DialogSetSize(g_test_dialog[player], c_testingPanelWidth, TestingMode_PanelHeight(expanded));
+    idx = 1;
+    while (idx <= c_cycleModCount) {
+        DialogControlSetVisible(g_test_btn[player][idx], viewer, expanded);
+        idx = idx + 1;
+    }
+    if (expanded) {
+        DialogControlSetPropertyAsText(g_test_toggle[player], c_triggerControlPropertyText,
+            viewer, StringToText("Test Modifiers  [-]"));
+    } else {
+        DialogControlSetPropertyAsText(g_test_toggle[player], c_triggerControlPropertyText,
+            viewer, StringToText("Test Modifiers  [+]"));
+    }
+    g_test_expanded[player] = expanded;
+}
+
+bool TestingMode_OnPanelClicked(bool testConds, bool runActions) {
+    int player;
+    int control;
+    int idx;
+
+    player  = EventPlayer();
+    control = EventDialogControl();
+    if (player < 1 || player > 15 || !g_test_built[player]) { return true; }
+
+    if (control == g_test_toggle[player]) {
+        TestingMode_SetExpanded(player, !g_test_expanded[player]);
+        return true;
+    }
+    idx = 1;
+    while (idx <= c_cycleModCount) {
+        if (control == g_test_btn[player][idx]) {
+            TestingMode_Toggle(player, idx);
+            return true;
+        }
+        idx = idx + 1;
+    }
+    return true;
+}
+
+void TestingMode_InitPanel(int player) {
+    playergroup viewer;
+    int         idx;
+
+    if (g_test_panelTrig == null) {
+        g_test_panelTrig = TriggerCreate("TestingMode_OnPanelClicked");
+    }
+    viewer = PlayerGroupSingle(player);
+
+    g_test_dialog[player] = DialogCreate(c_testingPanelWidth, TestingMode_PanelHeight(true),
+        c_anchorTopRight, 10, 60, false);
+    Tardigrade_ObservableDialog(g_test_dialog[player]);
+    DialogSetVisible(g_test_dialog[player], viewer, true);
+    DialogSetImageVisible(g_test_dialog[player], true);
+
+    g_test_toggle[player] = DialogControlCreate(g_test_dialog[player], c_triggerControlTypeButton);
+    DialogControlSetSize(g_test_toggle[player], viewer, 220, 28);
+    DialogControlSetPosition(g_test_toggle[player], viewer, c_anchorTop, 0, 6);
+    TriggerAddEventDialogControl(g_test_panelTrig, player, g_test_toggle[player],
+        c_triggerControlEventTypeClick);
+
+    idx = 1;
+    while (idx <= c_cycleModCount) {
+        g_test_btn[player][idx] = DialogControlCreate(g_test_dialog[player], c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_test_btn[player][idx], viewer);
+        DialogControlSetSize(g_test_btn[player][idx], viewer, c_testingPanelWidth - 30, c_testingRowPitch - 2);
+        DialogControlSetPosition(g_test_btn[player][idx], viewer, c_anchorTop, 0,
+            40 + (idx - 1) * c_testingRowPitch);
+        DialogControlSetPropertyAsText(g_test_btn[player][idx], c_triggerControlPropertyTooltip,
+            viewer, StringToText(CycleMod_Desc(idx)));
+        DialogControlSetEnabled(g_test_btn[player][idx], viewer, !CycleMod_ModIsDraftOnly(idx));
+        TriggerAddEventDialogControl(g_test_panelTrig, player, g_test_btn[player][idx],
+            c_triggerControlEventTypeClick);
+        idx = idx + 1;
+    }
+
+    g_test_built[player] = true;
+    TestingMode_SetExpanded(player, true);
+    TestingMode_RefreshPanel(player);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Start.
+//--------------------------------------------------------------------------------------------------
+int TestingMode_LobbyRace(int player) {
+    string race;
+    race = PlayerRace(player);
+    if (race == "Prot") { return c_tardigrade_raceProtoss; }
+    if (race == "Zerg") { return c_tardigrade_raceZerg; }
+    return c_tardigrade_raceTerran;
+}
+
+// One SCV, one Probe, one Drone at the player's start, each sent to mine.
+void TestingMode_SpawnWorkers(int player) {
+    point loc;
+
+    loc = PlayerStartLocation(player);
+    libNtve_gf_CreateUnitsWithDefaultFacing(1, "SCV", 0, player, loc);
+    Tardigrade_OrderMine(c_tardigrade_raceTerran, loc, UnitLastCreatedGroup());
+    libNtve_gf_CreateUnitsWithDefaultFacing(1, "Probe", 0, player, loc);
+    Tardigrade_OrderMine(c_tardigrade_raceProtoss, loc, UnitLastCreatedGroup());
+    libNtve_gf_CreateUnitsWithDefaultFacing(1, "Drone", 0, player, loc);
+    Tardigrade_OrderMine(c_tardigrade_raceZerg, loc, UnitLastCreatedGroup());
+}
+
+void TestingMode_SetupTeam(playergroup team) {
+    int n;
+    int i;
+    int p;
+
+    n = PlayerGroupCount(team);
+    i = 1;
+    while (i <= n) {
+        p = PlayerGroupPlayer(team, i);
+        PlayerModifyPropertyInt(p, c_playerPropMinerals, c_playerPropOperSetTo, c_testingBank);
+        PlayerModifyPropertyInt(p, c_playerPropVespene, c_playerPropOperSetTo, c_testingBank);
+        TestingMode_SpawnWorkers(p);
+        if (PlayerType(p) == c_playerTypeUser && p >= 1 && p <= 15) {
+            TestingMode_InitPanel(p);
+        }
+        i = i + 1;
+    }
+}
+
+// Public: called instead of the race draft once Testing mode is chosen. The
+// setup half of the race draft (teams, deciders, pause, draft lock, melee
+// workers removed) has already run - see RaceDraft_Setup.
+void TestingMode_Start() {
+    // Races only name the sides in chat and panels here; nobody's race changes.
+    g_draft_p1Race  = TestingMode_LobbyRace(g_draft_p1);
+    g_draft_p2Race  = TestingMode_LobbyRace(g_draft_p2);
+    g_roster_p1     = g_draft_p1;
+    g_roster_p2     = g_draft_p2;
+    g_roster_p1Race = g_draft_p1Race;
+    g_roster_p2Race = g_draft_p2Race;
+    g_cycle_p1      = g_draft_p1;
+    g_cycle_p2      = g_draft_p2;
+    g_cycle_p1Count = 0;
+    g_cycle_p2Count = 0;
+
+    TestingMode_SetupTeam(g_draft_team1);
+    TestingMode_SetupTeam(g_draft_team2);
+
+    // No roster enforcement: every unit is allowed.
+    CycleMod_StartCycle();
+    TestingMode_StartInstantBuild();
+
+    GameSetMissionTimePaused(false);
+    Tardigrade_DraftLock_Stop();
+
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"FFD54A\">TESTING MODE</c>  <c val=\"AAAAAA\">- "
+        + IntToString(c_testingBank) + " minerals and gas, instant builds, every unit allowed."
+        + " Switch modifiers for your side from the panel (top right).</c>"));
+}

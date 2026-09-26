@@ -1,27 +1,35 @@
 //--------------------------------------------------------------------------------------------------
 // Tardigrade Logic  (main orchestration)
 //
-// Pre-game draft chain, run on map init:
+// Pre-game chain, run on map init:
 //
+//   0. Game Mode     - Casual / Tournament / Testing, picked by team 1's human
+//                      (GameMode.galaxy). Testing skips everything below and
+//                      starts a sandbox (TestingMode.galaxy).
 //   1. Race Draft    - P1 bans a race, P2 picks, P1 gets the remainder.
 //                      Each team is set to a single race.
-//   2. Modifier Draft - each player bans 2 of 14 global modifiers, then picks
-//                      3 (four go unpicked). Each pick is ALWAYS active in-game,
+//   2. Modifier Draft - each player bans 2 of 17 global modifiers, then picks
+//                      3 (seven go unpicked). Each pick is ALWAYS active in-game,
 //                      but only for the drafting player's own units (no
-//                      rotation, no phases). No Bans acts on step 3.
-//   3. Unit Draft    - ban phase + snake pick; each side ends with 6 units.
-//                      The chosen cycle phases are shown here. Enforced in-game.
+//                      rotation, no phases). No Bans and YOLO act on step 3.
+//   3. Unit Draft    - opening picks, bans, final picks; each side ends with 6
+//                      units (7 for YOLO). Enforced in-game.
+//
+// In Tournament mode every draft step above has a time limit, after which a
+// random legal choice is made.
 //
 // Then a 3-2-1 countdown runs, workers spawn and start mining, and the game
-// begins with rosters enforced and the cycle running.
+// begins with rosters enforced and the modifiers running.
 //--------------------------------------------------------------------------------------------------
 
 include "scripts/Debug"
 include "scripts/DraftStyle"
+include "scripts/GameMode"
 include "scripts/RaceDraft"
 include "scripts/CycleMod"
 include "scripts/RosterDraft"
 include "scripts/RosterEnforce"
+include "scripts/TestingMode"
 
 //--------------------------------------------------------------------------------------------------
 // 3-2-1 countdown shown between the draft and the game (real time, still paused).
@@ -70,41 +78,36 @@ void Tardigrade_AnnounceDraftSummary() {
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
         "<c val=\"FFD54A\">========  DRAFT SUMMARY  ========</c>"));
 
-    line = "";
-    i = 1;
-    while (i <= c_cyclePicksEach) {
-        if (i > 1) { line = line + ", "; }
-        line = line + CycleMod_Name(CycleMod_Team1Mod(i));
-        i = i + 1;
-    }
+    // Labelled P1/P2 as in every other message, so the modifier lists come from
+    // the P1/P2 sides (the Team1/Team2 accessors would swap them whenever P1
+    // is on team 2).
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"7FD0FF\">P1 " + RaceName(g_roster_p1Race) + " modifiers:</c> " + line));
+        "<c val=\"7FD0FF\">P1 " + RaceName(g_roster_p1Race) + " modifiers:</c> "
+        + CycleMod_ModNamesJoined(true)));
 
     line = "";
     i = 1;
-    while (i <= c_rosterRosterSize) {
-        if (i > 1) { line = line + ", "; }
-        line = line + RosterUnitDisplayName(g_roster_p1Units[i]);
+    while (i <= c_rosterYoloSize) {
+        if (g_roster_p1Units[i] != "") {
+            if (line != "") { line = line + ", "; }
+            line = line + RosterUnitDisplayName(g_roster_p1Units[i]);
+        }
         i = i + 1;
     }
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
         "<c val=\"7FD0FF\">P1 units:</c> " + line));
 
-    line = "";
-    i = 1;
-    while (i <= c_cyclePicksEach) {
-        if (i > 1) { line = line + ", "; }
-        line = line + CycleMod_Name(CycleMod_Team2Mod(i));
-        i = i + 1;
-    }
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"FF9F7F\">P2 " + RaceName(g_roster_p2Race) + " modifiers:</c> " + line));
+        "<c val=\"FF9F7F\">P2 " + RaceName(g_roster_p2Race) + " modifiers:</c> "
+        + CycleMod_ModNamesJoined(false)));
 
     line = "";
     i = 1;
-    while (i <= c_rosterRosterSize) {
-        if (i > 1) { line = line + ", "; }
-        line = line + RosterUnitDisplayName(g_roster_p2Units[i]);
+    while (i <= c_rosterYoloSize) {
+        if (g_roster_p2Units[i] != "") {
+            if (line != "") { line = line + ", "; }
+            line = line + RosterUnitDisplayName(g_roster_p2Units[i]);
+        }
         i = i + 1;
     }
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
@@ -115,6 +118,9 @@ void Tardigrade_AnnounceDraftSummary() {
 // Core game-start logic - shared by the normal draft chain and the debug auto-run.
 //--------------------------------------------------------------------------------------------------
 void Tardigrade_StartGame() {
+    // The draft is over: no Tournament clock past this point.
+    DraftTimer_Shutdown();
+
     // Catch any observer membership changes before constructing in-game HUDs.
     Tardigrade_RefreshViewerGroups();
 
@@ -205,54 +211,83 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
     g_roster_p1Race = g_draft_p1Race;
     g_roster_p2Race = g_draft_p2Race;
 
-    // Random roster for P1: 6 random pool picks (no protected core units).
-    poolCount = GetRosterPoolCount(g_roster_p1Race);
-    usedMask  = 0;
-    pickCount = 1;
-    while (pickCount <= c_rosterRosterSize) {
-        pick = RandomInt(1, poolCount);
-        if ((usedMask & (1 << (pick - 1))) == 0) {
-            usedMask = usedMask | (1 << (pick - 1));
-            g_roster_p1Units[pickCount] = GetRosterPoolUnit(g_roster_p1Race, pick);
-            pickCount = pickCount + 1;
-        }
-    }
-
-    // Random roster for P2.
-    poolCount = GetRosterPoolCount(g_roster_p2Race);
-    usedMask  = 0;
-    pickCount = 1;
-    while (pickCount <= c_rosterRosterSize) {
-        pick = RandomInt(1, poolCount);
-        if ((usedMask & (1 << (pick - 1))) == 0) {
-            usedMask = usedMask | (1 << (pick - 1));
-            g_roster_p2Units[pickCount] = GetRosterPoolUnit(g_roster_p2Race, pick);
-            pickCount = pickCount + 1;
-        }
-    }
-
-    // Random modifiers: 6 distinct picks - 3 per player (picker-only in draft mode).
+    // Random modifiers first - YOLO changes how the rosters below are dealt.
+    // 6 distinct picks - 3 per player (picker-only in draft mode).
     g_cycle_p1      = g_draft_p1;
     g_cycle_p2      = g_draft_p2;
-    g_cycle_p1Count = c_cyclePicksEach;
-    g_cycle_p2Count = c_cyclePicksEach;
-    usedMask  = 0;
+    g_cycle_p1Count = 0;
+    g_cycle_p2Count = 0;
+    g_cycle_p1Yolo  = false;
+    g_cycle_p2Yolo  = false;
+    // YOLO is a meta pick, not a modifier (CycleMod_TakeYolo) - never rolled here.
+    usedMask  = 1 << (c_cycleModYolo - 1);
     pickCount = 1;
     while (pickCount <= c_cyclePickTotal) {
         pick = RandomInt(1, c_cycleModCount);
         if ((usedMask & (1 << (pick - 1))) == 0) {
             usedMask = usedMask | (1 << (pick - 1));
             if (pickCount <= c_cyclePicksEach) {
-                g_cycle_p1Mods[pickCount] = pick;
+                CycleMod_SetSideMod(true, pick, true);
                 g_cycle_chosen[pickCount] = pick;   // keep legacy phase array populated too
             } else {
-                g_cycle_p2Mods[pickCount - c_cyclePicksEach] = pick;
+                CycleMod_SetSideMod(false, pick, true);
             }
             pickCount = pickCount + 1;
         }
     }
 
+    // Random rosters: 6 random pool picks each (no protected core units), or
+    // a YOLO deal. RosterDraft_FillYolo works off the picked flags, so reset
+    // them the way RosterDraft_Start would.
+    pick = 1;
+    while (pick <= c_rosterPoolMax) {
+        g_roster_p1Picked[pick] = false;  g_roster_p2Picked[pick] = false;
+        g_roster_p1Banned[pick] = false;  g_roster_p2Banned[pick] = false;
+        pick = pick + 1;
+    }
+    pick = 1;
+    while (pick <= c_rosterYoloSize) {
+        g_roster_p1Units[pick] = "";
+        g_roster_p2Units[pick] = "";
+        pick = pick + 1;
+    }
+    g_roster_p1PickCount = 0;
+    g_roster_p2PickCount = 0;
+
+    if (RosterDraft_IsYolo(true)) {
+        RosterDraft_FillYolo(true, g_roster_p1Race);
+    } else {
+        poolCount = GetRosterPoolCount(g_roster_p1Race);
+        usedMask  = 0;
+        pickCount = 1;
+        while (pickCount <= c_rosterRosterSize) {
+            pick = RandomInt(1, poolCount);
+            if ((usedMask & (1 << (pick - 1))) == 0) {
+                usedMask = usedMask | (1 << (pick - 1));
+                g_roster_p1Units[pickCount] = GetRosterPoolUnit(g_roster_p1Race, pick);
+                pickCount = pickCount + 1;
+            }
+        }
+    }
+
+    if (RosterDraft_IsYolo(false)) {
+        RosterDraft_FillYolo(false, g_roster_p2Race);
+    } else {
+        poolCount = GetRosterPoolCount(g_roster_p2Race);
+        usedMask  = 0;
+        pickCount = 1;
+        while (pickCount <= c_rosterRosterSize) {
+            pick = RandomInt(1, poolCount);
+            if ((usedMask & (1 << (pick - 1))) == 0) {
+                usedMask = usedMask | (1 << (pick - 1));
+                g_roster_p2Units[pickCount] = GetRosterPoolUnit(g_roster_p2Race, pick);
+                pickCount = pickCount + 1;
+            }
+        }
+    }
+
     // Tear down the race draft UI and trigger.
+    DraftTimer_Disarm();
     if (g_draft_trigger != null) { TriggerDestroy(g_draft_trigger); g_draft_trigger = null; }
     if (g_draft_dialog != c_invalidDialogId) { DialogDestroy(g_draft_dialog); g_draft_dialog = c_invalidDialogId; }
 
@@ -296,17 +331,32 @@ bool Tardigrade_OnDraftFinished(bool testConds, bool runActions) {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Callback: game mode chosen -> the race draft, or straight into Testing mode.
+//--------------------------------------------------------------------------------------------------
+bool Tardigrade_OnModeChosen(bool testConds, bool runActions) {
+    if (GameMode_IsTesting()) {
+        TestingMode_Start();
+        return true;
+    }
+    RaceDraft_ShowDraft(TriggerCreate("Tardigrade_OnDraftFinished"));
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
 // Entry point - called from the map-init boot trigger.
 //--------------------------------------------------------------------------------------------------
 void Tardigrade_Init() {
-    trigger t;
     Debug_Init();
     if (g_debugLevel > c_debug_None) {
         Debug_SetAutoRunTrigger(TriggerCreate("Tardigrade_DebugAutoRun"));
     }
     UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText("Tardigrade Loaded."));
 
-    // Start the draft chain: Race -> Cycle -> Unit -> Game
-    t = TriggerCreate("Tardigrade_OnDraftFinished");
-    RaceDraft_Start(t);
+    // Setup (teams, pause, draft lock), then Mode -> Race -> Cycle -> Unit -> Game.
+    if (!RaceDraft_Setup()) {
+        // No human to draft: skip to the next step, as the draft always has.
+        TriggerExecute(TriggerCreate("Tardigrade_OnDraftFinished"), false, false);
+        return;
+    }
+    GameMode_Select(g_draft_modeChooser, TriggerCreate("Tardigrade_OnModeChosen"));
 }

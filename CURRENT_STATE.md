@@ -32,17 +32,74 @@ Runs on map init while the game is paused. Wired in `TardigradeLogic.galaxy`
 via a callback chain:
 
 ```
-Race Draft → Modifier Draft → Unit (Roster) Draft → 3-2-1 countdown → Game
+Mode Select → Race Draft → Modifier Draft → Unit (Roster) Draft → 3-2-1 countdown → Game
+            ↘ (Testing) TestingMode_Start → Game
 ```
 
-- `Tardigrade_Init` → `RaceDraft_Start`
+- `Tardigrade_Init` → `RaceDraft_Setup` (teams, deciders, P1/P2 roles, pause,
+  draft lock, melee workers removed, viewer groups; `false` = no human, skip
+  straight to `Tardigrade_OnDraftFinished` as before) → `GameMode_Select`
+- `Tardigrade_OnModeChosen` → `TestingMode_Start` (Testing) or
+  `RaceDraft_ShowDraft` (Casual / Tournament)
 - `Tardigrade_OnDraftFinished` → `CycleMod_StartDraft`
 - `Tardigrade_OnCycleFinished` → `RosterDraft_Start`
 - `Tardigrade_OnRosterFinished` → `Tardigrade_StartGame`
 
-`Tardigrade_StartGame` applies roster enforcement, runs the countdown, starts
-the modifier scan loop, and unpauses (`GameSetMissionTimePaused(false)` +
-`Tardigrade_DraftLock_Stop()`).
+`Tardigrade_StartGame` shuts the Tournament timer down, applies roster
+enforcement, runs the countdown, starts the modifier scan loop, and unpauses
+(`GameSetMissionTimePaused(false)` + `Tardigrade_DraftLock_Stop()`).
+
+### 0. Game modes (`GameMode.galaxy`, `TestingMode.galaxy`)
+- `g_game_mode` = `c_gameModeCasual` / `Tournament` / `Testing`, read through
+  `GameMode_IsTournament()` / `GameMode_IsTesting()`. Picked on a modal screen
+  (`GameMode_Select`) by `g_draft_modeChooser` = team 1's human decider (the
+  only human in a PvAI game); everyone else sees the three cards disabled.
+  `GameMode.galaxy` is included right after `DraftStyle`, **before**
+  `RaceDraft`, so it only uses natives + DraftStyle and addresses
+  `PlayerGroupAll()` directly (which is what `Tardigrade_Viewers()` returns).
+- **Casual** — the draft as before.
+- **Tournament** — `c_tournamentStepSeconds` = 10 **real** seconds per draft
+  step. One persistent thread (`DraftTimer_Run`, 0.25s `c_timeReal` ticks —
+  the draft runs with mission time paused) plus a small top-center dialog. Each
+  screen calls `DraftTimer_Arm(autoTrig)` at the end of its per-step UI update
+  (`RaceDraft_UpdateUI`, `CycleMod_UpdateDraftUI`, `RosterDraft_BeginStep`);
+  at zero the thread disarms and runs the screen's auto-pick
+  (`RaceDraft_AutoAct` / `CycleMod_DraftAutoAct` / `RosterDraft_AutoAct`,
+  `waitUntilDone`), which takes a random legal option through the **same
+  choose path a click uses** (`RaceDraft_Choose` / `CycleMod_DraftChoose` /
+  `RosterDraft_Choose`) — and that path re-arms for the next step. The click
+  handlers now only check "is it this player's turn" and call the choose
+  function. `DraftTimer_Arm` is a no-op outside Tournament, so the screens
+  call it unconditionally. The debug auto-run disarms it;
+  `Tardigrade_StartGame` shuts it down. The mode screen itself is not timed.
+- **Testing** — `TestingMode_Start` replaces the whole draft chain (the race
+  draft UI is never shown). Everyone keeps the lobby race's town hall (and
+  Overlord) from the melee start — `RaceDraft_Setup` removed only the workers —
+  gets one SCV + one Probe + one Drone sent to mine (`Tardigrade_OrderMine`),
+  `c_testingBank` = 100000 minerals and gas, no roster enforcement, and
+  instant builds. `g_draft_p1Race/p2Race` are set from `PlayerRace` for
+  display only. `CycleMod_StartCycle` skips the draft panel and the opening
+  vision and sets `g_cycle_delayedApplied`; `CycleMod_ModsLive()` is always
+  true, so there is no activation delay.
+  - **Instant build:** `TestingMode_Rush(u)` calls `UnitSetProgressComplete(u,
+    slot, 100)` on every in-progress queue slot (1..`UnitQueueGetProperty(u,
+    c_unitQueuePropertyUsed)`, min 1 so a structure under construction or an
+    egg is probed at slot 1). Run from progress-start events (construct /
+    train / research / arm magazine / specialize, one game loop after the
+    event) and a 0.25s scan of all participant units. **Unverified** — that
+    construction and Zerg morph progress live in slot 1.
+  - **Modifier panel** (top right, one foldable dialog per human player):
+    one button per modifier, `[ON]` / `[off]`, description as tooltip; No
+    Bans / YOLO are greyed (`CycleMod_ModIsDraftOnly`). A click runs
+    `TestingMode_Toggle`: `CycleMod_SetSideMod` on the clicking player's
+    **side** (the whole team), `CycleMod_CatalogModForTeam` for catalog
+    modifiers, and on OFF `TestingMode_ClearMod`, which runs
+    `CycleMod_ApplyPickedBehavior` over the side's units to strip what the
+    modifier left (the scan only touches modifiers a side has) and gives
+    auto-refined buildings their resource behavior + remaining gas back
+    (`TestingMode_RestoreRefinery`, unverified). It is a dialog, not a
+    command card: a card needs an ability per modifier in a free cell on every
+    unit — the approach the mod dropped (see Notes below).
 
 ### 1. Race Draft (`RaceDraft.galaxy`)
 - P1 (the "banner") bans one race, P2 picks from the remaining two, P1 gets the
@@ -111,24 +168,67 @@ the modifier scan loop, and unpauses (`GameSetMissionTimePaused(false)` +
 
 ### 2. Modifier Draft (`CycleMod.galaxy`)
 The former "cycle" draft. **Per-player draft, no rotation.**
-- Pool of **14 modifiers** (`c_cycleModCount`). Each player **bans 2**
-  (14 → 10), then **picks 3** (10 → 4) — **four go unpicked** every game.
-  The draft dialog lays them out as two columns of `c_cycleModRows` = 7
-  (640×540); both the per-player and legacy draft share that layout.
+- **First, the YOLO? screen** (`CycleMod_YoloChoiceStart`, from
+  `CycleMod_StartDraftPerPlayer` after the state reset): each side chooses
+  Draft normally / Go YOLO, simultaneously and hidden (`g_cycle_yoloDone*` /
+  `g_cycle_yoloWant*`; each player's own view shows `LOCKED IN` + "waiting").
+  With one human deciding for both sides it is sequential, P1 then P2.
+  Tournament arms the timer once for the simultaneous step (re-armed per
+  decision only in the sequential case); timeout = draft normally
+  (`CycleMod_YoloAutoAct`). `CycleMod_YoloResolve` reveals, calls
+  `CycleMod_TakeYolo` for each YOLO side, then `CycleMod_OpenDraftBoard` — or
+  goes straight to `CycleMod_FinishDraftPerPlayer` if both went YOLO.
+- Pool of **17 modifiers** (`c_cycleModCount`), **16 on the board**: YOLO (16)
+  keeps its index and button but is never shown (`CycleMod_OnBoard`, every
+  card-render loop skips it; `CycleMod_DraftChoose` refuses it). Each player
+  **bans 2** (16 → 12), then **picks 3** (12 → 6). The board is two columns of
+  `c_cycleModRows` = 8 (640×600, 56px buttons on a 60px pitch, legend at 566),
+  placed by `CycleMod_PlaceBoardButton` / `CycleMod_BoardSlot` (index with
+  YOLO's gap closed); both the per-player and legacy draft use it. Every array
+  indexed by modifier is sized with the literal 20 — keep `c_cycleModCount` < 20.
 - Ban order: `P1, P2, P1, P2`. Snake pick order: `P1, P2, P2, P1, P1, P2`.
 - Each pick is **always active in-game, but only for the picking side's own
   units** (never the opponent's).
-- Results stored in `g_cycle_p1Mods[1..3]` / `g_cycle_p2Mods[1..3]`.
+- Results stored in each side's **active list** `g_cycle_p1Mods[1..g_cycle_p1Count]`
+  / `g_cycle_p2Mods[1..g_cycle_p2Count]` (sized 20). The draft always fills 3
+  each; Testing mode adds and removes live, so the lists are variable-length
+  and **every reader goes by the count**, not `c_cyclePicksEach`. Edit them
+  only through `CycleMod_SetSideMod(isP1, idx, on)` (keeps `[1..count]`
+  dense). `CycleMod_P1Mod(i)` / `P2Mod(i)` return 0 past the count, which is
+  what the in-game panel's empty rows use.
 - See the dedicated section below for in-game behavior.
 
 ### 3. Unit (Roster) Draft (`RosterDraft.galaxy`)
-- Each player ends with **6 drafted unit types** (no protected "core" — the
-  header comment in the file saying "2 core + 4 drafted" is **stale**; see
-  `c_rosterRosterSize = 6` and the "no protected core" notes in code).
+- Each player ends with **6 drafted unit types** (no protected "core";
+  `c_rosterRosterSize = 6`), or **7** for a YOLO side (`c_rosterYoloSize`).
+  Roster arrays are `[8]`; unused slots are `""`, and every loop over a roster
+  runs to `c_rosterYoloSize` skipping `""` or to `RosterDraft_Rows()` (7 when
+  either side is YOLO, else 6 — so both columns of every list line up).
+  `RosterUnitDisplayName("")` is `-`.
+- **The schedule is built per game** (`RosterDraft_Start`) through
+  `RosterDraft_ScheduleBan` / `RosterDraft_SchedulePick`, which drop steps:
+  counts live in `g_roster_banCount`, `g_roster_pickCount` and
+  `g_roster_openCount` (opening picks), and the UI and phase changes read
+  those, not the `c_roster*Total` constants. **Steps:** `RosterDraft_Choose`
+  applies one ban/pick for whoever is up (click, Tournament auto-pick and
+  YOLO auto-ban all go through it) → `RosterDraft_Advance` closes finished
+  phases (and finishes the draft) → `RosterDraft_BeginStep` renders and then
+  either auto-bans for a YOLO side or arms the Tournament timer.
+  `RosterDraft_SkipStep` exists only for a pool with nothing open.
+- **YOLO (modifier 16):** `RosterDraft_FillYolo` deals the side's roster at
+  draft start — 7 random open slots, nothing guaranteed (there used to be a
+  fixed Marine / Zealot / Zergling; removed), marked picked so the board shows them — and posts it
+  to chat. Its pick steps are not scheduled; bans *against* it are not
+  scheduled (nothing to protect); its own ban turns are taken at random on the
+  spot by `RosterDraft_BeginStep`. The debug auto-run never rolls YOLO, but
+  still honours the flag if it is set (modifiers are rolled before rosters).
+- The draft-screen roster panel uses 36px rows for 6, 30px for 7; the in-game
+  HUD and spectator panel grow by 30px for a 7th row.
 - Structure: opening picks → cross-bans (each bans from the opponent's pool) →
-  final snake picks. Constants: `c_rosterPickTotal = 12` (6 each),
-  `c_rosterPreBanPicks = 4` (2 each), `c_rosterBanTotal = 4` (2 each),
-  `c_rosterPoolMax = 18` (UI grid: 2 columns of 9).
+  final snake picks. Constants (the full schedule, before No Bans / YOLO
+  skips): `c_rosterPickTotal = 12` (6 each), `c_rosterPreBanPicks = 4` (2
+  each), `c_rosterBanTotal = 4` (2 each), `c_rosterPoolMax = 18` (UI grid: 2
+  columns of 9).
 - Ban order: `P1, P2, P1, P2` (each bans from the *opponent's* pool).
   **No Bans** (modifier 12) removes the opponent's steps from that order rather
   than passing them: `RosterDraft_Start` builds it through
@@ -137,15 +237,14 @@ The former "cycle" draft. **Per-player draft, no rotation.**
   "Ban N of M" and the end-of-bans check both read it, not
   `c_rosterBanTotal`). With P1 protected the order is just `P1, P1`.
   `RosterDraft_AnnounceNoBans` posts it to chat so the unprotected side knows
-  why its turns vanished. A ban count of 0 skips straight to final picks.
+  why its turns vanished. A ban count of 0 skips straight to final picks (now
+  reachable: YOLO on one side + No Bans on the other leaves no bans at all).
   Pick order (steps 1–12, first 4 are the pre-ban openers):
-  `P1 P2 P2 P1 | P2 P1 P1 P2 P2 P1 P1 P2`.
+  `P1 P2 P2 P1 | P2 P1 P1 P2 P2 P1 P1 P2`, minus a YOLO side's steps.
 - Draft pools are data-driven (`TardigradeRosterConfig` in `GameData.xml`) and
   independent per race: **Terran 16, Protoss 17, Zerg 14** (Hellbat and Archon
   are Terran Pool16 / Protoss Pool17).
-  The `RosterDraft.galaxy` header comment ("4 drafted, 2 core auto-assigned",
-  snake order `P2 P1 P1 P2 …`, "12-unit pool") is **stale on all three counts**
-  — trust the constants and `RosterDraft_Start`.
+  The `RosterDraft.galaxy` header comment was rewritten and is current.
 - Dual live roster panel (YOUR + OPPONENT) so players can counter-draft, plus a
   modifier reference strip at the bottom.
 - Detection floor: Observer (Protoss) and Overseer (Zerg) are **always
@@ -226,7 +325,27 @@ The former "cycle" draft. **Per-player draft, no rotation.**
 - The gate lives in one place: `CycleMod_UnitModActive(unit, behavior)` returns
   `false` before 3:00 (draft mode). Because every buff application, conditional
   behavior, and event handler routes through this helper, they all respect the
-  delay automatically.
+  delay automatically. "Past the delay" is `CycleMod_ModsLive()` (always true
+  in Testing mode), and **`CycleMod_ModActiveFromStart(idx)` exempts Auto
+  Refineries (11) and Minerals Only (15)** — economy, live from 0:00 — plus the
+  draft-time No Bans (12) and YOLO (16). The exemption check maps the behavior
+  back to its index with a string walk (`CycleMod_BehaviorIdx`), nested under
+  the `ModsLive` test so it only costs anything in the opening minutes.
+- **Catalog modifiers go through one switch**, `CycleMod_CatalogModForPlayer(
+  player, idx, on)`: Open Skies (1), Arcane Surge (7), Overwatch's Baneling
+  numbers (8), Auto Refineries' costs + gas block (11), Minerals Only (15),
+  Long Reach (17); everything else is a no-op there. `CycleMod_ApplyCatalogMods(
+  fromStart)` switches on both sides' catalog modifiers of one kind — `true`
+  from `CycleMod_StartCycle` at game start, `false` from
+  `CycleMod_ActivateDelayedMods` at the delay. Every one can also be switched
+  **off** (Testing mode): writes go through `CycleMod_CatalogSet`, which first
+  records the field's **shipped** value in the global data table
+  (`CycleMod_CatalogBase`, key `TgBase_<catalog>_<entry>_<field>`, captured the
+  first time *any* player's copy is written — at that moment no copy has been
+  touched), and `CycleMod_CatalogRestore` writes it back. Overwatch's Baneling
+  scaling now multiplies the shipped value instead of the current one, so it
+  can't compound. Open Skies and Arcane Surge revert from their existing caches
+  (`CycleMod_RevertOpenSkiesForPlayer`, `CycleMod_RevertArcaneSurgeForPlayer`).
 - **Ban phases are red everywhere.** The roster draft's ban step was the only one
   that read clearly, because it colours three things at once: a red `BAN PHASE`
   heading, a red subtitle, and red buttons carrying a `BAN ·` marker. The
@@ -360,16 +479,20 @@ The former "cycle" draft. **Per-player draft, no rotation.**
   observers and are effectively dead. They are harmless and left in place.
   All of them disable their buttons for the audience, and the draft click
   handlers additionally reject any player who isn't the current picker.
-- Open Skies and Arcane Surge are catalog changes (not per-unit), so they are
-  applied once at 3:00 via `CycleMod_ActivateDelayedMods()` (fired from the scan
-  loop, guarded by `g_cycle_delayedApplied`), which also posts a chat
-  announcement.
+- Open Skies, Arcane Surge, Overwatch's Baneling half and Long Reach are
+  catalog changes (not per-unit), so they are applied once at 3:00 via
+  `CycleMod_ActivateDelayedMods()` (fired from the scan loop, guarded by
+  `g_cycle_delayedApplied`), which also posts a chat announcement. Auto
+  Refineries' and Minerals Only's catalog halves are applied at game start
+  instead (see the catalog switch above). `CycleMod_ActivateDelayedMods` now
+  lives after the Auto Refineries section, since the switch it calls needs it.
 
 ### Workers are never affected
 Modifiers never apply to workers (SCV, Probe, Drone, **and MULE** —
-`CycleMod_IsWorker`). The only exceptions are the two that are *about*
+`CycleMod_IsWorker`). The only exceptions are the ones that are *about*
 workers: **Free Labor** and **Auto Refineries**, whose eviction has to act on
-them (`CycleMod_ModReachesWorkers`). Enforced in one place, the top of
+them (`CycleMod_ModReachesWorkers`), and **Long Reach**, which is a catalog
+change to the worker abilities and never asks about a unit. Enforced in one place, the top of
 `CycleMod_UnitModActive`, which every per-unit path goes through: scan buffs,
 Blink/Boost buttons, Entrenchment/Overwatch arming, Predator's source,
 Veteran's killer. Shared Damage follows automatically, since partners must
@@ -413,7 +536,7 @@ catalog is far smaller than 2048).
   **YOURS / OPPONENT** (spectators see PLAYER 1 / PLAYER 2), lists both sides'
   3 modifiers; title notes "(active at 3:00)".
 
-### The 14 modifiers
+### The 17 modifiers
 | # | Name | Effect | Implementation |
 |---|---|---|---|
 | 1 | Open Skies | All your weapons can hit ground and air, splash included — at **half damage against the plane the unit couldn't originally hit** | **Cross-plane penalty:** `CycleMod_ApplyOpenSkiesPenalty` gives each unit of the Open Skies side `TardigradeMod_OpenSkiesVsAir` (weapons originally ground-only) or `…VsGround` (air-only), by `CycleMod_UnitOriginalPlanes` — the OR of its `WeaponArray` weapons' *shipped* coverage, memoised per type in the global data table (`TgOSU_<type>`). Shipped filters come from `CycleMod_EnsureWeaponCache`, which saves each weapon it will patch under `TgOSW_<weapon>` before any patch; unpatched weapons are read live. The behaviors carry `DamageResponse Location="Attacker" ModifyFraction=0.5` with `TargetFilters` naming the victim's plane, so the cut happens before the hit lands (exact on killing blows, and Predator/Shared Damage see the reduced hit). Spell kind and the Overwatch bonus are exempt. Units covering both planes, or unarmed, get no penalty. **Unverified:** that an attacker-side response's `TargetFilters` reads the victim (inferred from Blizzard's `FlyerShield`). **Opening the weapons:** per-player weapon `TargetFilters` via `CatalogFieldValueSet(..., player, ...)`; strips `Ground`/`Air` from required+excluded. **Splash needs a second pass**: `TargetFilters` only decides what a unit may *target* — splash/beam damage is spread by effect `SearchFilters` in `c_gameCatalogEffect`, which stay plane-locked otherwise. `CycleMod_SplashEffect` lists the 12 traced effects (Siege Tank, Ultralisk, Colossus, Lurker, Hellion, Hellbat, Baneling, Liberator AA) and `CycleMod_SplashFiltersForPlayer` runs the same string surgery on them. Curated, not a catalog sweep — 97 effects carry plane tokens and most are campaign/co-op, destructible rubble, or deliberate (ForceField placement, Blinding Cloud). **Third lock: plane-gated validators.** A damage effect can carry a `ValidatorArray` pointing at a `CValidatorUnitFilters` whose `Filters` require a plane — the effect runs, asks, and silently does nothing when the answer is no. This bit the **Brood Lord**, which is uniquely exposed because `BroodlingStrike` is `<Effect value=""/>`, a pure targeting shell: every point of its damage goes through the single validated effect `BroodlingEscortDamageUnit` (20), gated by `BroodlingEscortFilters` = `Ground,Visible;…`. Opening the weapon alone let a Brood Lord attack a Battlecruiser and deal **literally zero** — it acquired, launched, impacted, and the validator threw the damage away. `CycleMod_GateValidator` / `CycleMod_EnsureGateCache` / `CycleMod_GateFiltersForPlayer` now run the same string surgery on `c_gameCatalogValidator`, cached and restored exactly like the splash list. Curated for the same reason: 14 `CValidatorUnitFilters` in the data carry plane tokens and every other one is campaign or a deliberate plane use (void’s `AirUnitFilter` / `GroundUnitFilter`). The broodlings `BroodlingEscortImpactA` spawns are **not** gated and still land on the ground under an air target, where they expire — accepted: against air the Brood Lord is the 20 and nothing else. **`CycleMod_OpenSkiesSkipsWeapon` holds back the weapons of units that already cover both planes.** SC2 fires the *first* weapon in a unit's `WeaponArray` whose `TargetFilters` accept the target — there is no damage-based selection — so opening both weapons of a per-plane pair makes the index-0 weapon win against everything. A Thor answered Roaches with Javelin Missiles (index 0, range 10, 6×4 vs *Light air*) instead of Thor's Hammer; a Tempest answered ground armies with its 13-range anti-air gun. **Derived, not hand-listed** — `CycleMod_EnsureOpenSkiesSkipList` walks `c_gameCatalogUnit`, reads `WeaponArray[0..3].Link`, ORs each weapon's plane coverage (`CycleMod_WeaponPlanes`, which checks *both* halves of the filter string — a weapon is locked out of a plane either by requiring the other or by excluding that one), and skips every weapon of any unit that has >1 weapon and already covers both planes. A hand-list was tried first and was wrong: it missed the Tempest. Against the LotV data the rule yields Thor, ThorAP, Tempest, Queen, Hydralisk, Mothership, InfestorTerran, ScoutMP (16 weapons), and leaves every single-plane unit — Roach, Siege Tank, Corruptor, Viking, Liberator, static defence — open as intended. `CycleMod_IsVestigialMeleeWeapon` covers the one case the rule *can't* see: `RoachMelee`/`HydraliskMelee`/`LocustMPMelee` are hidden 0.5-range stubs at index 0 on ground-only units, which the derived rule correctly leaves open. The Thor AA splash searches came out of `CycleMod_SplashEffect` with them (14 → 12) |
@@ -426,10 +549,13 @@ catalog is far smaller than 2048).
 | 8 | Overwatch | After 14s idle (10 real): +50% damage for a 1.4s window (1 real) of attacking | Marker → `TardigradeMod_OverwatchReady` helper, added on the idle→ready edge (guarded by `UnitBehaviorCount`), consumed the instant the unit breaks idle in `CycleMod_OnUnitDamaged`, which opens the bonus window in its place. **The state belongs to the spawner, not the unit that dealt the damage.** `CycleMod_VeteranRoot` (the same child→spawner link Veteran Forces uses, falling back to the child when the spawner is dead) redirects the armed/firing lookup, because a Carrier's damage all comes from Interceptors, a Swarm Host's from Locusts, a Brood Lord's from Broodlings and a Raven's from its Auto-Turret — each created moments before it fires, so none could ever have idled long enough to arm. Drafting Overwatch on a Carrier bought literally nothing. The spawner's `c_cycleStateLastAttack` is stamped whenever a child lands a hit, or a Carrier (which never deals damage itself) would read as permanently idle and re-arm between every volley. **A unit that dies dealing its shot can't be boosted here at all** — it is dead by the time the damage event reaches triggers, so its markers are gone and it cannot author the bonus `UnitDamage` either. A Baneling's blast is weapon `VolatileBurst` → effect set `[BanelingDontExplode, SuicideTargetFriendlySwitch, VolatileBurstU2, VolatileBurstU, Suicide]`, so a Baneling always did its plain 35. The Baneling's +50% is therefore **baked into its damage numbers** instead (`CycleMod_ApplyOverwatchDamageTeam`, below); the Disruptor's nova ball and the Reaper's KD8 Charge are in the same boat and are deliberately left unboosted rather than growing a second mechanism. **Casters need no special handling:** the handler stamps `c_cycleStateLastAttack` for *any* damage a unit deals, spell included, so a Storm's first tick boosts and then marks the High Templar non-idle for the rest of it. A Yamato or Snipe from a unit that has not attacked in 14s does get the +50%, which is accepted. **The +50% is dealt by the trigger, not by the buff.** It used to be a `DamageDealtFraction` on the marker, which only reaches damage the engine routes through the source's weapon-damage modifiers — splash, Baneling blasts and spell damage were left at face value, and the index list only covered `Melee`/`Ranged`/`Splash`, never the fourth kind `Spell`. `CycleMod_OnUnitDamaged` now deals `EventUnitDamageAmount() * 0.5` back through `UnitDamage(...,"TardigradeMod_OverwatchBonus",...)`, which lands on every damage event whatever produced it. That effect is `Amount=0` / `ArmorReduction=0` (the trigger already works from post-armor damage) and re-enters the handler, so the handler bails on its own effect id first — otherwise it would recurse and double-feed Predator Protocol. One attack = many damage events (splash on N targets, twin beams), so the consume swaps `OverwatchReady` for `TardigradeMod_OverwatchFiring` and keeps boosting while that is up — and **that marker’s `Duration` IS the bonus window**, now 1.4 game seconds (1 real). It was 0.125 (two game loops), just wide enough to hold one volley together, which made the modifier read as a misfire on anything whose damage does not arrive in one instant: slow projectiles, multi-hit weapons, a volley landing a few loops late. A one-second window covers all of that and is something a player can aim — open on a full army and every unit that fires inside that second connects. Still far under the 14s idle needed to re-arm, so it cannot chain. `CycleMod_IsHostileTarget` gates the bonus to enemies — riding every damage event means it would otherwise amplify your own Widow Mine / Baneling friendly fire. **`CycleMod_OverwatchSkipsEffect` excludes `EMPDamage`.** Riding every damage event also amplified effects that are a debuff wearing damage’s clothes: since HotS, EMP’s shield strip is a real damage effect (`EMPDamage` = `Amount` 0 with `ShieldBonus` 100, while `EMPModifyUnit` was cut back to draining energy only), so the trigger saw a 100-damage event and paid 50 through `TardigradeMod_OverwatchBonus` — a **plain** damage effect with no `ShieldBonus` — which lands on shields and then spills into health. An Overwatch EMP stripped 100 shields and then put 50 real damage into the target, which EMP is not supposed to do at all. Narrow by design: the other `ShieldBonus` effects in the melee data (Purification Nova 100+100, Widow Mine splash +25, Disruption Beam +4) all carry a real `Amount` too — they are attacks with an anti-shield bonus, not debuffs, and Overwatch is meant to scale them. EMP still counts as attacking (it opens the window and marks the Ghost non-idle); it just is not amplified. Threshold `c_cycleOverwatchDelay` = 14 game seconds = 10 real on Faster, same units as Entrenchment. **Baneling flat bonus:** `CycleMod_ApplyOverwatchDamageTeam` runs from `CycleMod_ActivateDelayedMods` at 3:00 and multiplies `Amount` and `AttributeBonus[Light]` by `c_cycleOverwatchFlatMult` = 1.5 on `VolatileBurstU`, `VolatileBurstU2` and the two `VolatileBurstDirectFallbackEnemyNeutral*` payloads, per-player via `CatalogFieldValueSet`. Both fields, because 16 + 19 vs Light is where the 35 against a Marine comes from — scaling `Amount` alone would give 43, not 52.5. The two `VolatileBurstFriendly*` payloads are left alone, or the modifier would make your own Banelings hurt your own army 50% more. Values are read back and multiplied rather than hardcoded, so a balance patch carries through; the one gap is that Zerg melee upgrades are applied by the engine on top of `Amount` rather than into it, so a +3 Baneling does 52.5 + 3 rather than (35 + 3) × 1.5. `CycleMod_OverwatchIsFlatBoosted` keeps the trigger bonus off Banelings so the two can never stack. **No range bonus** — it used to grant +3 `WeaponRange`/`WeaponScanBonus`, which was removed when the window closed and stranded the unit holding a target it could no longer reach. Idle is tracked by `CycleMod_OnUnitStartedAttack` *and* the damage handler; the damage handler does its Overwatch bookkeeping above the structure filter, or static defence would arm and never consume |
 | 9 | Battle Blink | A unit at 30% health blinks 8 range back from whatever last hit it, once per 17s | **No ability, no button.** `CycleMod_TryBattleBlink`, called from `CycleMod_OnUnitDamaged` for the victim of any hostile hit. Fires when life + shields drops to `c_cycleBlinkThreshold` (0.30) of their combined maximum — shields count, so a Protoss unit blinks on its real health bar rather than the instant its shields break. Destination is `PointWithOffsetPolar` at `c_cycleBlinkRange` (8) along `AngleBetweenPoints(attacker, victim)`, i.e. straight back along the line of fire; the `TardigradeAbil_Blink` `CEffectTeleport` still does the move (`UnitCreateEffectPoint`) and still does its own placement validation, so an escape into a cliff lands short rather than failing. Cooldown is the `TardigradeMod_BlinkCooldown` behavior's 17s `Duration` rather than a custom value — the engine expiring the buff **is** the cooldown, so there is no per-unit timer to keep and no custom-value slot to spend. Driven from the damage event rather than the 0.5s scan because a unit that crosses 30% is usually dead well inside half a second. **Was a clickable ability**, granted to 49 combat units with an explicit Row 1 Col 2 card slot each; that collided with abilities units already owned (a Stalker had two Blinks, and the drafted one may not have been usable at all) |
 | 10 | Veteran Forces | Each kill = permanent **+3% to movement, attack, cooldowns/charges, regen**, stacking to 15 | `TardigradeMod_VeteranStack`: `MoveSpeedMultiplier` + `AttackSpeedMultiplier` + `VitalRegenMultiplier` 1.03, and `RateMultiplierArray` Cooldown/Charge/Morph/Progress/Queueable/Spawn 1.03 — the same stat set Blizzard's current Chrono Boost (voidmulti) uses instead of `TimeScale`. `MaxStackCount=15`, added on kill. **Unverified:** `VitalRegenMultiplier` as a plain attribute (the editor lists the field; the Arcane Surge investigation says it isn't per-vital) — check a veteran caster's energy regen. **`TimeScale=1.03`, one field.** “Everything a little faster” is meant literally, and TimeScale is the only lever that reaches every timer — movement, weapon periods, ability *and* weapon cooldowns, charges, morphs, build/queue progress, spawn rates, regen. **Do not re-diagnose this from the unit panel.** It was briefly spelled out stat by stat (`MoveSpeedMultiplier`/`AttackSpeedMultiplier`/`RateMultiplierArray`) because a playtest read BC attack speed as scaling “sometimes, and less than movement”. That was **rounding**. The panel prints weapon period in real seconds at 2 dp, and the BC's 0.225 game seconds shows as `0.16`, where one 3% stack moves the true value by 0.005 — half the last displayed digit: true `.1607 .1560 .1515 .1471 .1428 .1386 .1346` → panel `0.16 0.16 0.15 0.15 0.14 0.14 0.13`. A 1-stack BC shows the *same number* as a fresh one and the digit ticks every 2nd–3rd stack, while the same unit's move speed (~1.97) shifts by 0.059 per stack, 12× the last digit, so it moves every time. Different rounding, not different behaviour. **Verify by counting shots** over ~15s (15 stacks ≈ 93 vs a fresh 60), never by reading the panel. Two BC dead ends recorded so nobody re-walks them: `CAbilAttack BattlecruiserAttack`'s `Min/MaxAttackSpeedMultiplier` are 0.25/128 and never bind; and `ATS/ATALaserBattery`, which carry a shared 0.225 `Cost/Cooldown` no Modification field can reach, are **not what the unit fires** — in LotV they are `EquipmentArray` (display) entries, and the CUnit's `WeaponArray` holds exactly one weapon, the `Hidden` `BattlecruiserWeaponSwitch`, `Period` 0.225 with no `Cost` at all. A catalog patch against that second dead end was written and reverted unused. **TimeScale's one real cost is buff durations**, and a timed life is a buff. Two mitigations: spawned units get `TardigradeMod_VeteranStackChild` (identical +3%, stat-by-stat, no TimeScale) via `CycleMod_SyncVeteranStacks`, or a full-stack veteran's Locusts/Broodlings/Auto-Turrets/Infested Terrans/novas would live ~64% as long; and the two of our own buffs whose `Duration` is a *bonus window* — `TardigradeMod_OverwatchFiring` and `TardigradeMod_Entrenched` — carry `TimeScaleSource=Global` so a veteran doesn't get a shorter window than a fresh unit. Cooldowns and penalty timers (`BlinkCooldown`, `MarchBroken`) stay on the unit's clock, where running down faster is the point. Note Entrenchment's hold clock and Overwatch's idle clock are script timestamps off `GameGetMissionTime`, not buffs, so a veteran does **not** entrench or re-arm faster — a limit of where those mechanics live, not a decision. **Unverified.** **Visible** in the buff bar (frenzy icon, stack count; name/tooltip in `GameStrings.txt`): stacks are per unit and uneven, and while hidden it was impossible to tell whether two compared units had equal counts (prompted by "Battlecruiser attack speed sometimes changes"). `TimeScale` does speed an ordinary weapon's `Period` — Blizzard's Chrono Boost pairs `TimeScale 1.15` with `AttackSpeedMultiplier 0.85` just to cancel it — but the BC's batteries are **not** ordinary; see the cooldown note above. The unit stat tooltip does not reflect `TimeScale`. **Spawned units credit their spawner** (`CycleMod_IsSpawnedChildType`: Interceptor, Locust, Broodling, Auto-Turret, Infested Terran, Disruptor nova): `CycleMod_OnUnitSpawned` (`TriggerAddEventUnitCreated`) applies `TardigradeMod_VeteranLink` to the spawn **with the spawner's root as the caster** — the buff *is* the record, read back by `CycleMod_VeteranRoot` via `UnitBehaviorEffectUnit(.., c_effectLocationCasterUnit, ..)`, so it needs no side table and is cleaned up with the unit. `CycleMod_VeteranRoot` redirects the kill in `CycleMod_OnUnitDied`, and `CycleMod_SyncVeteranStacks` (at spawn and from the scan) mirrors the root's stacks onto everything it spawns — so a Carrier's whole flight carries the Carrier's veterancy, and stacks no longer die with the disposable unit. The damage handler now records spawned **structures** (Auto-Turret) as last attacker too, which it previously skipped. `CycleMod_VeteranRoot` also falls back to `UnitGetMagazine` (the engine's own Interceptor→Carrier link) when no spawn was recorded. Which unit the created-event calls "the unit" vs "the created unit" isn't documented, so the handler picks the child **by type** and works either way. Ordinary production is untouched (a Barracks never owns its Marines' kills). Caster damage (Psi Storm) already credits the caster, since the damage event names it as the source. **Unverified.** |
-| 11 | Auto Refineries | Your gas buildings mine themselves at the 3-worker rate; workers can't go in | Script only (`TardigradeMod_AutoRefinery` is a key/marker, never applied). `CycleMod_UpdateAutoRefinery`, called per unit from the draft-mode scan. **Payout** (`CycleMod_AutoRefineryTick`): each finished Refinery/Assimilator/Extractor (and `*Rich`) stores the mission time it is paid up to in custom-value slot `c_cycleStateAutoGas` (8) and catches up in whole trips of 4 gas (8 rich) every `c_cycleAutoGasInterval` = 2.1 game seconds — ~160 gas per real minute on Faster, a saturated LotV geyser. Gas is drawn from the building's own `c_unitPropResources`, so geysers deplete on schedule and a dry one stops paying. Each trip also adds to `c_playerPropVespeneCollected`, the engine's "gas collected" total, which only real harvests update on their own; without it auto gas was missing from the income stats. **Unverified:** whether the observer Income tab's *rate* (`VespeneCollectionRate` score value, engine-computed) follows that total or counts only worker deliveries. The clock starts on first sight (after 3:00 or on completion), no back-pay. **Round 4, the physical block (current):** on first sight after activation `CycleMod_AutoRefineryTick` snapshots the building's remaining gas into custom value `c_cycleStateAutoGasLeft` (9), then `CycleMod_MakeUnharvestable` **removes its resource behavior** (`Harvestable[Rich]VespeneGeyserGas[Protoss|Zerg]`, one per type). With no resource behavior the building isn't a resource: no worker can gather from it (as a MULE can't gather gas) and the "x/3" counter, which that behavior draws, disappears. Payouts come from the snapshot; the behavior is re-removed every tick in case anything restores it; failure to remove is debug-logged. On death, `CycleMod_RestoreGeyserGas` sets the reappearing geyser's resources to the snapshot. **Unverified:** that the engine allows removing a resource behavior, and how workers already inside at that moment are ejected. The order redirect and `ResourceAllowed` writes below remain as inert fallbacks. **Previously — the intended block was data, not orders.** `ResourceAllowed[Vespene] = 0` on the side's `SCVHarvest`/`ProbeHarvest`/`DroneHarvest` (`CycleMod_BlockGasHarvest`, per-player `CatalogFieldValueSet` at 3:00) is the field that means exactly "this worker may not take gas" — it is how `MULEGather` is minerals-only. **Bug found in the first attempt:** it wrote the `[Vespene]` name form and only tried the `[1]` index form if the value read back wrong, which can't happen — a per-player override reads back whatever was written, valid path or not — so the fallback never ran. Both forms are now written unconditionally and both are logged. Alternatives considered and rejected: no unit state/modify flag means "unharvestable" (checked the whole flag vocabulary), and `CBehaviorResource.RequiredAlliance` only ever appears as `Control` in Blizzard's data, so there's no known value that refuses the owner. The script redirect is now a **fallback behind `c_cycleAutoGasRedirect`** (set false to rely on data alone). **Blocking workers, round 3:** playtest round 2 showed workers still going in for one trip (the scan only caught them on the way out), so the catalog block below evidently isn't taking effect. The entry block is now `CycleMod_OnWorkerGatherOrder`: `TriggerAddEventUnitOrder` on `SCVHarvest`/`ProbeHarvest`/`DroneHarvest` command 0 (Gather) fires the moment a worker *receives* a gather order. If the target is an auto refinery, the worker is re-sent to minerals via `CycleMod_SendWorkerToMinerals` after one game loop (0.0625s), so the re-order isn't overwritten by the order being applied. Unverified. **Earlier rounds:** the order-intercept alone **failed in playtest** (workers still went in and mined), so the primary block is now data: at 3:00 `CycleMod_BlockGasHarvestTeam` sets `ResourceAllowed[Vespene] = 0` on the drafting side's `SCVHarvest`/`ProbeHarvest`/`DroneHarvest` via per-player `CatalogFieldValueSet` — the same field that makes Blizzard's `MULEGather` minerals-only. It tries the named index, reads back, and falls back to `[1]` (unsure which a field path accepts); the resulting value is written to the debug log. Called from the scan loop's activation block, not `CycleMod_ActivateDelayedMods` (defined above it). **Clean-up** (`CycleMod_KeepWorkerOutOfGas`): any worker with a harvest order on an auto refinery *or* `UnitIsHarvesting(…, c_resourceTypeVespene)` is sent to the nearest mineral patch within 12 (neutral-owned `HarvestableResource`), returning carried gas first; `stop` if there is none |
+| 11 | Auto Refineries | **Live from 0:00.** Your gas buildings mine themselves at the 3-worker rate; workers can't go in; your gas buildings cost 200 minerals | **Live from 0:00** (`CycleMod_ModActiveFromStart`) — it shapes the opening, so the side that drafted it has it while building the opening. **Price:** `CycleMod_AutoRefineryForPlayer` sets `CostResource[Minerals]` = `c_cycleAutoRefineryCost` (200) on Refinery / Assimilator / Extractor and the three `*Rich` types for the side's players, at game start, together with the `ResourceAllowed` gas block below (which used to wait for 3:00). Script only otherwise (`TardigradeMod_AutoRefinery` is a key/marker, never applied). `CycleMod_UpdateAutoRefinery`, called per unit from the draft-mode scan. **Payout** (`CycleMod_AutoRefineryTick`): each finished Refinery/Assimilator/Extractor (and `*Rich`) stores the mission time it is paid up to in custom-value slot `c_cycleStateAutoGas` (8) and catches up in whole trips of 4 gas (8 rich) every `c_cycleAutoGasInterval` = 2.1 game seconds — ~160 gas per real minute on Faster, a saturated LotV geyser. Gas is drawn from the building's own `c_unitPropResources`, so geysers deplete on schedule and a dry one stops paying. Each trip also adds to `c_playerPropVespeneCollected`, the engine's "gas collected" total, which only real harvests update on their own; without it auto gas was missing from the income stats. **Unverified:** whether the observer Income tab's *rate* (`VespeneCollectionRate` score value, engine-computed) follows that total or counts only worker deliveries. The clock starts on first sight (after 3:00 or on completion), no back-pay. **Round 4, the physical block (current):** on first sight after activation `CycleMod_AutoRefineryTick` snapshots the building's remaining gas into custom value `c_cycleStateAutoGasLeft` (9), then `CycleMod_MakeUnharvestable` **removes its resource behavior** (`Harvestable[Rich]VespeneGeyserGas[Protoss|Zerg]`, one per type). With no resource behavior the building isn't a resource: no worker can gather from it (as a MULE can't gather gas) and the "x/3" counter, which that behavior draws, disappears. Payouts come from the snapshot; the behavior is re-removed every tick in case anything restores it; failure to remove is debug-logged. On death, `CycleMod_RestoreGeyserGas` sets the reappearing geyser's resources to the snapshot. **Unverified:** that the engine allows removing a resource behavior, and how workers already inside at that moment are ejected. The order redirect and `ResourceAllowed` writes below remain as inert fallbacks. **Previously — the intended block was data, not orders.** `ResourceAllowed[Vespene] = 0` on the side's `SCVHarvest`/`ProbeHarvest`/`DroneHarvest` (`CycleMod_BlockGasHarvest`, per-player `CatalogFieldValueSet` at 3:00) is the field that means exactly "this worker may not take gas" — it is how `MULEGather` is minerals-only. **Bug found in the first attempt:** it wrote the `[Vespene]` name form and only tried the `[1]` index form if the value read back wrong, which can't happen — a per-player override reads back whatever was written, valid path or not — so the fallback never ran. Both forms are now written unconditionally and both are logged. Alternatives considered and rejected: no unit state/modify flag means "unharvestable" (checked the whole flag vocabulary), and `CBehaviorResource.RequiredAlliance` only ever appears as `Control` in Blizzard's data, so there's no known value that refuses the owner. The script redirect is now a **fallback behind `c_cycleAutoGasRedirect`** (set false to rely on data alone). **Blocking workers, round 3:** playtest round 2 showed workers still going in for one trip (the scan only caught them on the way out), so the catalog block below evidently isn't taking effect. The entry block is now `CycleMod_OnWorkerGatherOrder`: `TriggerAddEventUnitOrder` on `SCVHarvest`/`ProbeHarvest`/`DroneHarvest` command 0 (Gather) fires the moment a worker *receives* a gather order. If the target is an auto refinery, the worker is re-sent to minerals via `CycleMod_SendWorkerToMinerals` after one game loop (0.0625s), so the re-order isn't overwritten by the order being applied. Unverified. **Earlier rounds:** the order-intercept alone **failed in playtest** (workers still went in and mined), so the primary block is now data: at 3:00 `CycleMod_BlockGasHarvestTeam` sets `ResourceAllowed[Vespene] = 0` on the drafting side's `SCVHarvest`/`ProbeHarvest`/`DroneHarvest` via per-player `CatalogFieldValueSet` — the same field that makes Blizzard's `MULEGather` minerals-only. It tries the named index, reads back, and falls back to `[1]` (unsure which a field path accepts); the resulting value is written to the debug log. Called from the scan loop's activation block, not `CycleMod_ActivateDelayedMods` (defined above it). **Clean-up** (`CycleMod_KeepWorkerOutOfGas`): any worker with a harvest order on an auto refinery *or* `UnitIsHarvesting(…, c_resourceTypeVespene)` is sent to the nearest mineral patch within 12 (neutral-owned `HarvestableResource`), returning carried gas first; `stop` if there is none |
 | 12 | No Bans | Your opponent gets no unit-draft bans against your pool | Acts in `RosterDraft.galaxy` — see Unit Draft above. The one modifier not gated by the 3:00 delay (the roster draft runs before the game). `TardigradeMod_NoBans` is a key/marker only |
 | 13 | Refund | Anything of yours that dies pays back 25% of its cost | **No ability, no button.** `CycleMod_PayRefund`, called from `CycleMod_OnUnitDied` with the raw `EventUnitDamageSourceUnit()` — deliberately *before* the last-attacker fallback Veteran Forces uses, since a stale attacker would turn a morph into a paying death. Reads `CostResource[Minerals]` / `[Vespene]` off `c_gameCatalogUnit` for the dead unit's type and pays `c_cycleRefundFraction` (0.25) of each back with `PlayerModifyPropertyFixed`. Paid as **fixed, not rounded** — a Marine is 50/4 = 12.5, and flooring every payout would quietly lose an eighth of the modifier over an army's worth of deaths. Morph costs are cumulative in the data (Lair 475 = Hatchery 325 + 150; Zerg costs include the Drone), so the catalog number is already the right base. **Any real death pays, friendly fire included** (killing your own unit for a quarter back still costs you three quarters). What's gated out is the unit-died event firing for non-deaths: `MorphZerglingToBaneling` is a `CAbilTrain` whose `BanelingCocoon` (CostResource 50/25) is killed by `KillOnFinish`; Templar are used up by the Archon merge; cancelled buildings, Eggs and cocoons die with no source. `CycleMod_RefundCanVanish` lists the types that can go that way (under construction, High/Dark Templar, Egg, the six cocoons); for those only, a null or self damage source pays nothing. Every other type pays on any death. **The Baneling is deliberately not on the list** — its blast ends in core `Suicide` (SourceUnit, Kill, NoKillCredit), which reads as a self-kill exactly like a morph, but detonating is a real loss. Timeouts (MULE, Broodling, Locust, Auto-Turret, shade) are covered by the worker exclusion or a zero catalog cost. **Hallucinations are excluded** for the mirror-image reason: they carry the real unit's type, so `CostResource` would read the real price and a Sentry could print minerals by feeding copies to the enemy. Workers pay nothing, like every other modifier bar Free Labor and Auto Refineries — the blanket rule is worth more than the edge case, and it keeps Refund out of worker trades and harassment. **Was Salvage**, a `CAbilBehavior` toggle granted to 64 structures with computed card slots, a 5s channel and a 75% refund; all of that data is gone |
 | 14 | Shared Damage | Each hit on your unit (after armor): it takes half, the other half is split evenly across your nearby units; alone it takes all | **Absorb and redeal.** `TardigradeMod_SharedDamage` carries `DamageResponse ModifyFraction=0 ModifyMinimumDamage=1` (Blizzard's `DamageTakenNone`), so the hit never lands; `TriggerAddEventUnitDamageAbsorbed` fires `CycleMod_OnSharedDamageAbsorbed`, which computes X (`CycleMod_SharedHitAmount`: absorbed − victim armor × the effect's `ArmorReduction`, rounded half-up to a whole number, floor `c_cycleShareMinTotal` = 1 — responses run before armor, so the absorbed amount is pre-armor; shield armor if shields are up), finds partners (`CycleMod_SharePartners`: allied units within `c_cycleShareRadius` = 3 that carry the behavior, not dead/hidden/stasis/invulnerable) and splits X **in whole points**: the victim takes `ceil(X / 2)` and the remaining `floor(X / 2)` is handed out in chunks of at least `c_cycleShareMinShare` = 1, which caps the number of recipients at `rest / minShare` — so a 4-damage bite reaches exactly two partners for 1 each however many are standing there, instead of giving ten units 0.2 apiece. An uneven division gives one extra point to the first `rest mod taking` of them, so the pieces sum to exactly X. With no partners in range, or nothing left to hand out, the victim takes all of X. Dealt through `TardigradeMod_SharedDamageHit` (Amount 0, ArmorReduction 0, Kind Spell) in the **original attacker's** name. Heal-back after the fact was rejected: the damaged event fires after damage lands, so the lethal hits the mod exists to spread would already have killed. The share effect is in the response's `ExcludeEffectArray` — the only thing stopping infinite re-splitting. Also excluded: the Overwatch bonus (already dealt per share) and ~20 **Kill-flag effects** (Baneling `Suicide`, `KillHallucination`, `MULEFate`, shade end, Bile vs Force Field, …), which would otherwise leave their target alive. `CycleMod_CanShareDamage` keeps structures, hallucinations and `CycleMod_IsShareExemptType` units (larva/eggs/cocoons, MULE, shade, interceptors, locusts, broodlings, changelings, Force Field, Parasitic Bomb dummy, Disruptor ball) from ever carrying it. If the attacker is gone, the victim authors its own shares and `CycleMod_OnUnitDamaged` ignores friendly-authored shares so they can't feed Predator/Overwatch |
+| 15 | Minerals Only | **Live from 0:00.** Every gas cost is added to the mineral cost at 1.5x and set to 0; gas income is paid as minerals 1:1 | Per-player catalog, `CycleMod_MineralsOnlyForPlayer`. Costs live in three places in melee data and all are converted: **`CUnit CostResource`** (trains, builds, warp-ins, morphs — Zerg morph costs are cumulative there, so converting both ends keeps the charged difference converted: Hatchery→Lair is 150/100 → 300/0), **`CAbilResearch InfoArray[ResearchN].Resource`** (curated list `CycleMod_ResearchAbil`, 28 ids = every research ability with a gas cost on any slot in liberty..voidmulti, plus Hatchery/Nexus research for safety) and **`CAbilMorph Cost`** (only `MorphToTransportOverlord`, 25/25). `CycleMod_EnsureGasCostCache` sweeps the unit catalog and the 28×30 research slots once, keeping only entries with gas > 0. New minerals = `round(minerals + 1.5 × gas)`. **Field-path spelling is probed, not assumed** (`CycleMod_ResolveCostPaths`): enum-named `[Vespene]` vs numeric `[1]` against a Marauder's known cost, and `InfoArray[Research1]` vs `InfoArray[0]` against Stimpack; the chosen forms are debug-logged. Income: `CycleMod_ConvertGasIncome`, from the scan every 0.5s, moves the side's whole gas bank into minerals (mined gas, Auto Refineries payouts and Refund gas alike); the engine's "vespene collected" stat is left alone. Refund reads the converted costs automatically (it reads `CostResource` per player). **Unverified:** that per-player `CostResource` / `InfoArray` Resource writes change what the engine actually charges (they are what the tooltips read; this is how arcade maps change prices per player) |
+| 16 | YOLO | Not a board card: chosen on the YOLO? screen before the bans. Hidden, simultaneous; both may take it. A YOLO side gets 3 random modifiers, random modifier bans, no picks, and 7 dealt random units | **Not a modifier in the list.** A per-side flag, `g_cycle_p1Yolo` / `g_cycle_p2Yolo` (`CycleMod_SideIsYolo`), set by `CycleMod_YoloResolve` via `CycleMod_TakeYolo`, which rolls `c_cyclePicksEach` = 3 distinct modifiers from the whole pool into the side's list (before any ban exists; draft-only entries - No Bans, YOLO - excluded) and announces them. On the board a YOLO side's **ban** turns are taken at random on the spot (`CycleMod_UpdateDraftUI`), and its **pick** turns are skipped by `CycleMod_AdvancePick` (the ban->pick transition goes through it too, so even the first pick is skipped). If both go YOLO the board is never opened. See the Modifier Draft section for the screen itself. The debug auto-run never rolls YOLO. `CycleMod_ModNamesJoined` prefixes a YOLO side's list with `YOLO ->`. **Unit draft:** acts in `RosterDraft.galaxy` (`RosterDraft_IsYolo` reads the flag; see Unit Draft above). `TardigradeMod_Yolo` is a key/marker only |
+| 17 | Long Reach | Workers build from range 30 and harvest from range 10 | Per-player catalog, `CycleMod_LongReachForPlayer`: `Range` on `TerranBuild` / `ProtossBuild` / `ZergBuild` = 30 and on `SCVHarvest` / `ProbeHarvest` / `DroneHarvest` = 10 (shipped: unset, i.e. 0; `MULEGather` 0.5 and `RavenBuild` 5 are the precedent for the field on those classes). Applied at the 3:00 delay like the other catalog modifiers. **Unverified:** whether an SCV (whose build is `PeonMaintained`) really constructs from 30 away rather than walking in, and what harvest range does to return trips. `TardigradeMod_LongReach` is a key/marker only |
 
 Notes:
 - **War Economy was removed** (it made no sense without phases) and replaced by
@@ -512,7 +638,7 @@ Notes:
   Nydus Network (Row 2 Col 3). Cancel (Off) sits on Row 2 Col 4 like the
   Bunker's. Conditional buttons (research shown only with tech) count as
   occupying their cell, so the choice is conservative.
-- **Modifiers 11–13 have no buff.** `CycleMod_Behavior` still returns an id for
+- **Modifiers 11–13 and 15–17 have no buff.** `CycleMod_Behavior` still returns an id for
   each (they're the keys `CycleMod_UnitModActive` matches on) and
   `BehaviorData.xml` defines them as empty markers, but
   `CycleMod_ApplyPickedBehavior` returns early for them. Legacy phase mode
@@ -555,10 +681,11 @@ Notes:
 - The enforce lists match the draft pools (Hellbat and Archon are pool picks
   now). `Observer` and `Overseer` appear in **neither** — that absence is
   exactly what keeps detection always buildable.
-- Header comment "2 core + 4 drafted" is **stale** — rosters are 6 fully-drafted
-  units with no protected core.
+- Header comment updated: rosters are 6 fully-drafted units with no protected
+  core (7 for YOLO); `RosterEnforce_InRoster` scans all 7 slots.
 - In a solo/PvAI game where one human "decides" for both sides, only the human
   team's roster is enforced.
+- **Not applied in Testing mode** (every unit allowed).
 
 ---
 
@@ -566,8 +693,11 @@ Notes:
 - Single-player launch auto-enables debug mode.
 - Race draft shows a `[DEBUG: Random All]` (and per-race) button that skips all
   drafts and randomizes races, rosters, and modifiers.
+- The debug buttons live on the race draft screen, so they appear after the
+  game mode is picked (Casual or Tournament; Testing has no race draft).
 - `Tardigrade_DebugAutoRun` assigns **6 distinct random modifiers**, 3 per player
-  (`g_cycle_p1Mods` / `g_cycle_p2Mods`).
+  (through `CycleMod_SetSideMod`; YOLO is never rolled, it is a meta pick),
+  **then** the rosters (a YOLO flag, if ever set, deals via `RosterDraft_FillYolo`).
 - `Debug_Log(...)` writes to the debug log; viewer-group counts are logged on
   refresh.
 
@@ -576,7 +706,7 @@ Notes:
 ## Data files
 | File | Contents |
 |---|---|
-| `BehaviorData.xml` | `TardigradeMod_*` modifier buffs + helper behaviors (`Entrenched`, `OverwatchReady`, `OverwatchFiring`, `VeteranStack`, `Salvaging`, etc.), the absorbing `TardigradeMod_SharedDamage`, and empty markers for modifiers 11–13. |
+| `BehaviorData.xml` | `TardigradeMod_*` modifier buffs + helper behaviors (`Entrenched`, `OverwatchReady`, `OverwatchFiring`, `VeteranStack`, `Salvaging`, etc.), the absorbing `TardigradeMod_SharedDamage`, and empty markers for modifiers 11–13 and 15–17. |
 | `EffectData.xml` | `TardigradeAbil_Blink` (`CEffectTeleport`) — created directly by `CycleMod_TryBattleBlink`, no ability wraps it — `TardigradeMod_OverwatchBonus` (`CEffectDamage`), the payload `CycleMod_OnUnitDamaged` fires for Overwatch, and `TardigradeMod_SharedDamageHit` (one Shared Damage share). |
 | `AbilData.xml` | `LarvaTrain` / `GatewayTrain` / `WarpGateTrain` fallback InfoArray entries only. **No modifier abilities left** — Blink, Salvage and Medivac Boost were all removed in favour of conditions. |
 | `UnitData.xml` | `Larva` command-card layout for the larva-build fallbacks, and nothing else. The ~150 lines of `AbilArray` grants and `CardLayouts` cells (Blink + Medivac Boost on 49 combat units, Salvage on 64 structures) are all gone — no modifier puts a button on any command card. |
@@ -589,7 +719,10 @@ Notes:
 | File | Role |
 |---|---|
 | `TardigradeLogic.galaxy` | Entry point + draft-chain orchestration + game start. |
-| `RaceDraft.galaxy` | Race ban/pick; team/viewer globals + helpers. |
+| `GameMode.galaxy` | Mode select (Casual / Tournament / Testing) + the Tournament draft timer. Included before `RaceDraft`. |
+| `TestingMode.galaxy` | Testing mode start, instant builds, the modifier on/off panel. Included last before `TardigradeLogic`. |
+| `DraftStyle.galaxy` | Shared draft-card styling. |
+| `RaceDraft.galaxy` | Race ban/pick (`RaceDraft_Setup` + `RaceDraft_ShowDraft`); team/viewer globals + helpers. |
 | `RosterDraft.galaxy` | Unit draft UI (opening picks → bans → final picks) + in-game roster HUD. |
 | `RosterEnforce.galaxy` | Disables non-drafted units; grants coupled units. |
 | `RequirementData.xml` | Un-gates the upgrade buttons Blizzard hid behind `CRequirementAllowUnit` (Protoss air weapons/armor, Stimpack) — see Roster enforcement. |
@@ -627,11 +760,13 @@ Notes:
 |---|---|
 | Modifier balance | Forced March `MoveSpeedMultiplier=1.4` / 14s recovery, Battle Blink 30% trigger / 17s cooldown, Refund 25%, Veteran `1.03 all speeds/rates/regen ×15`, Shared Damage radius 3 with no cap on Y, Auto Refineries' 2.1s trip interval, Entrenchment's 1.5 anchor radius — all first-pass. Three values moved together in this pass and none has been played: Forced March 1.3 → **1.4**, Entrenchment's hold 6 → **10.5**, Overwatch's idle 10 → **14** with a new **1.4s bonus window** where it used to be one shot. Both waits are far longer than before, so each reward should be rarer and worth more; Overwatch's window is what pays for its wait, and Forced March's 1.4 for the fact that dealing damage now breaks it. Entrenchment sits below Overwatch because holding position costs more than holding fire. Watch the pair together: static defence clears both bars for free (a cannon never moves, so it is permanently entrenched, and it idles far past 14s between harass waves), and the longer the waits get the more these read as turtle buffs rather than army buffs. If that is what playtesting shows, `CycleMod_IsCombatUnit` is already a Structure-attribute test and the worker exclusion in `CycleMod_UnitModActive` is the pattern to copy. |
 | **Modifiers 11–14, unverified in-editor** | Nothing below has been compiled or played. In order of risk: **(1) Shared Damage** — test first: hit one of the drafting side's units after 3:00. If it takes **no damage at all**, `TriggerAddEventUnitDamageAbsorbed` isn't firing for a `ModifyFraction=0` response (the handler already falls back to attempted − landed if the absorbed amount reads 0, but can't help if the event never fires). Also check the split is post-armor as intended — the handler assumes the absorbed amount is pre-armor. And confirm a Baneling on that side still dies when it detonates and an Adept shade still expires (Kill-flag exclusions). **(2) Salvage** — confirm the button renders in the computed cell, the 5s timer shows, the refund is 75% (Lair should return 356/75), and damage cancels it. **(3) Auto Refineries** — confirm gas lands at ~160/real min, that `c_unitPropResources` on the refinery is the geyser's remaining gas (if it reads 0 the building will never pay), and that evicted workers go to minerals. **(4) No Bans** — pure draft logic, lowest risk. |
+| **This batch, unverified in-editor** (game modes, modifiers 15–17, Auto Refineries changes) | Nothing here has been compiled or played. Check, in order: **(1) compile** — five files changed plus two new ones. **(2) Minerals Only** — the debug log line "Cost paths: …" says which field-path spelling the probe picked, and "Minerals Only: N unit types, M ability cost slots" should be non-zero (dozens / ~80). In game: a Stalker should read and cost 200/0, Stimpack 250/0, Lair 300/0 from a Hatchery; mined gas should appear as minerals within half a second. **(3) Auto Refineries** — a Refinery costs 200 from 0:00 and self-mines from 0:00. **(4) Tournament** — the countdown shows during each step and a random pick lands at 0, including a YOLO side's auto-bans not waiting on the clock. **(5) YOLO** — the YOLO? screen appears before the bans, hides each choice until both lock in, a YOLO side's modifier bans happen by themselves and its picks are skipped, both YOLO skips the board, 7 random units dealt, the other side drafts 6 with no bans against YOLO, the 7th row renders on the draft panel and HUD. **(6) Testing** — `UnitSetProgressComplete` really finishes construction/training/research/morphs (slot numbering is the unknown), the panel toggles, and switching a catalog modifier off restores prices/ranges. **(7) Long Reach** — whether an SCV really builds from 30 away. |
+| Economy modifier balance | Auto Refineries' 200-mineral gas buildings and Minerals Only's 1.5× are first-pass. Long Reach waits for 3:00 like every other in-game modifier (only Auto Refineries and Minerals Only were asked to be live from 0:00) — add it to `CycleMod_ModActiveFromStart` if it should be too. |
 | Activation delay | 3:00 is a starting value (`c_cycleActivationDelay`). |
 | Battle Blink has no visual/audio feedback | `TardigradeAbil_Blink` teleports silently — the Stalker's Blink flash/sound actors are keyed to effect id `Blink`, not reusable under our separate id without duplicating those actor entries too. Not attempted blind (unverifiable without the SC2 Editor); functional but silent. |
 | ~~Command-card placement~~ | **Resolved by deletion.** No modifier grants a button any more, so there are no cells to place, no Row 3 rendering problem, and no collisions with vanilla buttons. Kept here as history: the grants went through Row 3 (didn't render), Row 1 Col 0/1 (collided on Ghost, Infestor, …) and finally Row 1 Col 2/3 before the whole approach was dropped. |
 | In-game modifier panel | Static top-center, 214px tall — reposition/shrink if intrusive. |
-| Stale comments | `RosterDraft.galaxy` + `RosterEnforce.galaxy` headers still say "2 core + 4 drafted" (behavior is 6 drafted, no core); `RosterDraft.galaxy` also lists the wrong snake order and a "12-unit pool". `TardigradeLogic.galaxy` still calls the modifier step "the cycle" / "day/dusk/night". |
+| Stale comments | The `RosterDraft.galaxy`, `RosterEnforce.galaxy` and `TardigradeLogic.galaxy` headers were rewritten in the game-modes batch. Some inline comments in `TardigradeLogic.galaxy` still call the modifier step "the cycle". |
 | Dead War Economy code | `c_cycleStateEconomicEgg`, `CycleMod_IsEconomicEgg`, `CycleMod_OnEconomicEggStarted` and helper indices 1–2 are inert but still compiled/registered. |
 | Dead Adrenal Response code | `c_cycleStateAdrenalReady`/`c_cycleStateWasLow` (custom-value slots 4/5) and `CycleMod_HelperBehavior(5)` are now the same kind of harmless-but-inert leftover, since Battle Blink replaced that mechanic. |
 | Draft-time opponent roster panel, unverified in-editor | Don't confuse with the in-game HUD above (already fixed). `RosterDraft_UpdateRosterPanel`'s dual panel *during the draft itself* (YOUR + OPPONENT, live, shown while picking) already existed in code before this session and looked complete on read-through — if it's not showing up in an actual playtest, that's a rendering/timing bug to hunt for in the editor, not a missing feature to build from scratch. |

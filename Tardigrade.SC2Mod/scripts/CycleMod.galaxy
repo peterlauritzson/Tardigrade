@@ -1,11 +1,15 @@
 //--------------------------------------------------------------------------------------------------
 // Cycle Modifier System
 //
-// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 14
-//   global battlefield modifiers. Each player bans 2 (14 -> 10), then picks 3,
-//   so four modifiers go unpicked every game. Every pick is ALWAYS active
+// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 17
+//   global battlefield modifiers. Each player bans 2 (17 -> 13), then picks 3,
+//   so seven modifiers go unpicked every game. Every pick is ALWAYS active
 //   in-game, but only for the drafting player's own units. A shared reference
 //   panel lists both sides' picks.
+//
+// Testing mode (GameMode.galaxy) skips the draft: each side's list starts empty
+//   and is edited live from the testing panel (TestingMode.galaxy) through
+//   CycleMod_SetSideMod, which is why the per-side lists are variable-length.
 //
 // Legacy (c_cyclePhaseMode == true, kept intact behind the gate): the 3 drafted
 //   modifiers rotate as Day/Dusk/Night phases, each applied to EVERY unit on the
@@ -19,8 +23,10 @@ include "scripts/Debug"
 
 // Number of modifiers in the pool and how many are drafted (= number of phases).
 // The draft dialog lays the pool out in two columns of c_cycleModRows buttons.
-const int c_cycleModCount   = 14;
-const int c_cycleModRows    = 7;
+// Every array indexed by modifier is sized with the literal 20 - Galaxy array
+// sizes must be literals - so keep c_cycleModCount below 20 when adding more.
+const int c_cycleModCount   = 17;
+const int c_cycleModRows    = 8;   // board columns; YOLO is not on the board
 const int c_cyclePhaseCount = 3;
 
 // Indices of the modifiers other files need to name. The older ten are still
@@ -29,6 +35,22 @@ const int c_cycleModAutoRefinery = 11;
 const int c_cycleModNoBans       = 12;
 const int c_cycleModRefund       = 13;
 const int c_cycleModSharedDamage = 14;
+const int c_cycleModMineralsOnly = 15;
+const int c_cycleModYolo         = 16;
+const int c_cycleModLongReach    = 17;
+
+// Minerals Only: every gas cost becomes minerals at this rate, and gas income is
+// paid out as minerals 1:1 (CycleMod_ConvertGasIncome).
+const fixed c_cycleMineralsPerGas = 1.5;
+
+// Auto Refineries: what the drafting side pays for a gas building. A refinery
+// that mines itself at the three-worker rate is worth three workers of income
+// without the workers, so it costs like it.
+const int   c_cycleAutoRefineryCost = 200;
+
+// Long Reach: worker build and harvest ranges (CAbilBuild / CAbilHarvest Range).
+const string c_cycleLongReachBuild   = "30";
+const string c_cycleLongReachHarvest = "10";
 
 // Master toggle for the legacy rotating-phase system (in-game Day/Dusk/Night
 // rotation, its HUD legend, and per-phase lighting). Set false: the game now
@@ -189,7 +211,7 @@ trigger g_cycle_callback = null;
 int     g_cycle_p1;                 // Player A (picks first)
 int     g_cycle_p2;                 // Player B (picks second)
 int     g_cycle_pickIndex = 0;      // 0 = A picking, 1 = B picking
-bool[15] g_cycle_taken;             // [1..14] which mods are already claimed (keep > c_cycleModCount)
+bool[20] g_cycle_taken;             // [1..17] which mods are already claimed (keep > c_cycleModCount)
 
 // WHY a claimed modifier is claimed. g_cycle_taken only says a modifier is off
 // the table, which was enough while a claimed modifier disappeared. The board
@@ -200,14 +222,21 @@ const int c_cycleSlotBanned = 1;
 const int c_cycleSlotP1     = 2;
 const int c_cycleSlotP2     = 3;
 const int c_cycleSlotTaken  = 4;    // claimed by neither side (legacy phase mode)
-int[15] g_cycle_modState;           // [1..14] one of c_cycleSlot* (keep > c_cycleModCount)
+int[20] g_cycle_modState;           // [1..17] one of c_cycleSlot* (keep > c_cycleModCount)
 int[4]  g_cycle_chosen;             // [1..3] chosen mod indices (phase order)
 
 // ── Per-player draft state (c_cyclePhaseMode == false) ────────────────────
-int[4]  g_cycle_p1Mods;             // [1..3] modifier indices picked by P1
-int[4]  g_cycle_p2Mods;             // [1..3] modifier indices picked by P2
+// Each side's ACTIVE modifiers, [1..count]. The draft fills three each; testing
+// mode adds and removes them live (CycleMod_SetSideMod), so they are sized for
+// the whole pool and every reader goes by the count, not by c_cyclePicksEach.
+int[20] g_cycle_p1Mods;             // [1..g_cycle_p1Count] modifier indices active for P1
+int[20] g_cycle_p2Mods;             // [1..g_cycle_p2Count] modifier indices active for P2
 int     g_cycle_p1Count    = 0;
 int     g_cycle_p2Count    = 0;
+// YOLO is a flag on the side, not an entry in its list: it is a meta pick
+// that replaces the side's draft, not a modifier (see CycleMod_TakeYolo).
+bool    g_cycle_p1Yolo     = false;
+bool    g_cycle_p2Yolo     = false;
 int     g_cycle_draftPhase = 0;     // 0 = ban, 1 = pick
 int     g_cycle_stepIndex  = 1;     // step within the current phase order
 int[5]  g_cycle_banOrder;           // [1..4] picker per ban step
@@ -234,8 +263,9 @@ int    g_cycle_dialog   = c_invalidDialogId;
 int    g_cycle_lblTitle = c_invalidDialogControlId;
 int    g_cycle_lblSub   = c_invalidDialogControlId;
 int    g_cycle_lblLegend = c_invalidDialogControlId; // what the card markers mean
-int[15] g_cycle_btnMod;             // [1..14] modifier buttons (keep > c_cycleModCount)
+int[20] g_cycle_btnMod;             // [1..17] modifier buttons (keep > c_cycleModCount)
 trigger g_cycle_draftTrig = null;
+trigger g_cycle_autoTrig  = null;   // CycleMod_DraftAutoAct, run by the Tournament timer
 
 // ── Cycle (in-game) state ───────────────────────────────────────────────────
 fixed  g_cycle_phaseDuration;
@@ -348,6 +378,11 @@ string CycleMod_Behavior(int idx) {
     if (idx == 12) { return "TardigradeMod_NoBans"; }
     if (idx == 13) { return "TardigradeMod_Refund"; }
     if (idx == 14) { return c_cycleShareBehavior; }
+    // 15-17 are keys only too: Minerals Only and Long Reach are catalog
+    // changes (CycleMod_CatalogModForPlayer), Yolo acts on the roster draft.
+    if (idx == 15) { return "TardigradeMod_MineralsOnly"; }
+    if (idx == 16) { return "TardigradeMod_Yolo"; }
+    if (idx == 17) { return "TardigradeMod_LongReach"; }
     return "";
 }
 
@@ -376,6 +411,9 @@ string CycleMod_Name(int idx) {
     if (idx == 12) { return "No Bans"; }
     if (idx == 13) { return "Refund"; }
     if (idx == 14) { return "Shared Damage"; }
+    if (idx == 15) { return "Minerals Only"; }
+    if (idx == 16) { return "YOLO"; }
+    if (idx == 17) { return "Long Reach"; }
     return "";
 }
 
@@ -404,11 +442,41 @@ string CycleMod_Desc(int idx) {
     if (idx == 8)  { return "after 10s idle, +50% damage for 1s of attacking"; }
     if (idx == 9)  { return "units at 30% health blink away from their attacker"; }
     if (idx == 10) { return "kills: permanent +3% to all speeds and regen, stacks to 15"; }
-    if (idx == 11) { return "gas buildings mine by themselves at full rate, no workers"; }
+    if (idx == 11) { return "from 0:00: gas buildings mine themselves, cost 200 minerals"; }
     if (idx == 12) { return "your opponent gets no unit bans against your roster"; }
     if (idx == 13) { return "anything of yours that dies refunds 25% of its cost"; }
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
+    if (idx == 15) { return "from 0:00: gas costs paid as 1.5x minerals, gas mined = minerals"; }
+    if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
+    if (idx == 17) { return "workers build from range 30 and harvest from range 10"; }
     return "";
+}
+
+// Modifiers that skip the activation delay and are live from 0:00. Auto
+// Refineries and Minerals Only are economy: they shape the opening build, so a
+// side that drafted them has to have them while that build is being made.
+// No Bans and Yolo act on the roster draft, before the game exists, so the
+// delay never applies to them anyway - they are here so every "is it live"
+// question has one answer.
+bool CycleMod_ModActiveFromStart(int idx) {
+    return idx == c_cycleModAutoRefinery || idx == c_cycleModMineralsOnly
+        || idx == c_cycleModNoBans || idx == c_cycleModYolo;
+}
+
+// Modifiers that only exist in the roster draft - nothing to switch on or off
+// once the game is running (the testing panel greys them out).
+bool CycleMod_ModIsDraftOnly(int idx) {
+    return idx == c_cycleModNoBans || idx == c_cycleModYolo;
+}
+
+int CycleMod_BehaviorIdx(string beh) {
+    int i;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (CycleMod_Behavior(i) == beh) { return i; }
+        i = i + 1;
+    }
+    return 0;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -439,31 +507,76 @@ playergroup CycleMod_P2Team() {
 bool CycleMod_P1HasModIdx(int modIdx) {
     int i;
     i = 1;
-    while (i <= c_cyclePicksEach) { if (g_cycle_p1Mods[i] == modIdx) { return true; } i = i + 1; }
+    while (i <= g_cycle_p1Count) { if (g_cycle_p1Mods[i] == modIdx) { return true; } i = i + 1; }
     return false;
 }
 
 bool CycleMod_P2HasModIdx(int modIdx) {
     int i;
     i = 1;
-    while (i <= c_cyclePicksEach) { if (g_cycle_p2Mods[i] == modIdx) { return true; } i = i + 1; }
+    while (i <= g_cycle_p2Count) { if (g_cycle_p2Mods[i] == modIdx) { return true; } i = i + 1; }
     return false;
 }
 
-// True if the unit's owning side drafted the given modifier behavior.
+bool CycleMod_SideHasModIdx(bool isP1, int modIdx) {
+    if (isP1) { return CycleMod_P1HasModIdx(modIdx); }
+    return CycleMod_P2HasModIdx(modIdx);
+}
+
+bool CycleMod_SideIsYolo(bool isP1) {
+    if (isP1) { return g_cycle_p1Yolo; }
+    return g_cycle_p2Yolo;
+}
+
+// Add or remove one modifier from a side's active list. The draft only ever
+// appends; testing mode removes too, so a removal closes the gap to keep
+// [1..count] dense. Only the list - the caller handles what switching a
+// modifier on or off means in game (TestingMode_Toggle).
+void CycleMod_SetSideMod(bool isP1, int modIdx, bool on) {
+    int i;
+    int j;
+
+    if (CycleMod_SideHasModIdx(isP1, modIdx) == on) { return; }
+    if (on) {
+        if (isP1) { g_cycle_p1Count = g_cycle_p1Count + 1; g_cycle_p1Mods[g_cycle_p1Count] = modIdx; }
+        else      { g_cycle_p2Count = g_cycle_p2Count + 1; g_cycle_p2Mods[g_cycle_p2Count] = modIdx; }
+        return;
+    }
+    if (isP1) {
+        i = 1;
+        j = 1;
+        while (i <= g_cycle_p1Count) {
+            if (g_cycle_p1Mods[i] != modIdx) { g_cycle_p1Mods[j] = g_cycle_p1Mods[i]; j = j + 1; }
+            i = i + 1;
+        }
+        g_cycle_p1Count = j - 1;
+        g_cycle_p1Mods[j] = 0;
+    } else {
+        i = 1;
+        j = 1;
+        while (i <= g_cycle_p2Count) {
+            if (g_cycle_p2Mods[i] != modIdx) { g_cycle_p2Mods[j] = g_cycle_p2Mods[i]; j = j + 1; }
+            i = i + 1;
+        }
+        g_cycle_p2Count = j - 1;
+        g_cycle_p2Mods[j] = 0;
+    }
+}
+
+// True if the unit's owning side has the given modifier behavior active.
 bool CycleMod_UnitHasBehavior(unit u, string beh) {
     int owner;
     int i;
     owner = UnitGetOwner(u);
     if (CycleMod_OwnerIsP1(owner)) {
         i = 1;
-        while (i <= c_cyclePicksEach) {
+        while (i <= g_cycle_p1Count) {
             if (CycleMod_Behavior(g_cycle_p1Mods[i]) == beh) { return true; }
             i = i + 1;
         }
     } else if (CycleMod_OwnerIsP2(owner)) {
         i = 1;
-        while (i <= c_cyclePicksEach) {
+        while (i <= g_cycle_p2Count) {
             if (CycleMod_Behavior(g_cycle_p2Mods[i]) == beh) { return true; }
             i = i + 1;
         }
@@ -506,22 +619,44 @@ bool CycleMod_ModReachesWorkers(string beh) {
 // - so the worker exclusion lives here once. Open Skies is the exception: it
 // edits weapons in the catalog rather than asking about a unit, so worker
 // weapons are held back in CycleMod_OpenSkiesSkipsWeapon instead.
+// Past the activation delay? Testing mode has none - a modifier switched on
+// from the testing panel is meant to be looked at right away.
+bool CycleMod_ModsLive() {
+    if (GameMode_IsTesting()) { return true; }
+    return GameGetMissionTime() >= c_cycleActivationDelay;
+}
+
 bool CycleMod_UnitModActive(unit u, string beh) {
     if (CycleMod_IsWorker(u) && !CycleMod_ModReachesWorkers(beh)) { return false; }
     if (c_cyclePhaseMode) { return g_cycle_activeBehavior == beh; }
-    if (GameGetMissionTime() < c_cycleActivationDelay) { return false; }
+    // Nested rather than &&'d: the index lookup is a string walk over the whole
+    // pool, and it only needs to run during the opening minutes.
+    if (!CycleMod_ModsLive()) {
+        if (!CycleMod_ModActiveFromStart(CycleMod_BehaviorIdx(beh))) { return false; }
+    }
     return CycleMod_UnitHasBehavior(u, beh);
 }
 
-// Modifier index each TEAM drafted, for the shared in-game panel.
-int CycleMod_Team1Mod(int i) {
-    if (g_draft_p1_is_team1) { return g_cycle_p1Mods[i]; }
+// Modifier index each TEAM has active, for the shared in-game panel. 0 past
+// the end of the list (the panel draws that as an empty row).
+int CycleMod_P1Mod(int i) {
+    if (i > g_cycle_p1Count) { return 0; }
+    return g_cycle_p1Mods[i];
+}
+
+int CycleMod_P2Mod(int i) {
+    if (i > g_cycle_p2Count) { return 0; }
     return g_cycle_p2Mods[i];
 }
 
+int CycleMod_Team1Mod(int i) {
+    if (g_draft_p1_is_team1) { return CycleMod_P1Mod(i); }
+    return CycleMod_P2Mod(i);
+}
+
 int CycleMod_Team2Mod(int i) {
-    if (g_draft_p1_is_team1) { return g_cycle_p2Mods[i]; }
-    return g_cycle_p1Mods[i];
+    if (g_draft_p1_is_team1) { return CycleMod_P2Mod(i); }
+    return CycleMod_P1Mod(i);
 }
 
 string CycleMod_ModLine(int modIdx) {
@@ -530,17 +665,19 @@ string CycleMod_ModLine(int modIdx) {
         + CycleMod_Desc(modIdx) + "</c>";
 }
 
-// Comma-joined names of a player's picked modifiers (for reference strips).
+// Comma-joined names of a player's picked modifiers (for reference strips). A
+// YOLO side's three were rolled, not picked, and says so.
 string CycleMod_ModNamesJoined(bool isP1) {
     string s;
     int    i;
     int    idx;
     s = "";
+    if (CycleMod_SideIsYolo(isP1)) { s = "YOLO -> "; }
     i = 1;
-    while (i <= c_cyclePicksEach) {
-        if (isP1) { idx = g_cycle_p1Mods[i]; } else { idx = g_cycle_p2Mods[i]; }
+    while (i <= c_cycleModCount) {
+        if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
         if (idx > 0) {
-            if (s != "") { s = s + ", "; }
+            if (s != "" && s != "YOLO -> ") { s = s + ", "; }
             s = s + CycleMod_Name(idx);
         }
         i = i + 1;
@@ -568,6 +705,38 @@ string CycleMod_ModNamesJoined(bool isP1) {
 // viewerIsP1 decides whether a picked modifier reads YOURS or THEIRS; spectators
 // are on neither side and get P1 / P2 instead.
 //--------------------------------------------------------------------------------------------------
+bool CycleMod_DraftPickerIsP1();
+
+// Is this modifier a card on the draft board? Everything but YOLO: YOLO is not
+// a modifier but a choice about HOW a side drafts, so it is made on its own
+// screen before the bans (CycleMod_YoloChoiceStart) - it can't be banned, and
+// taking it can't come after a hand-made pick. Its button exists (the arrays
+// are indexed by modifier) but is never shown.
+bool CycleMod_OnBoard(int idx) {
+    return idx != c_cycleModYolo;
+}
+
+// Where a card sits: its index with YOLO's gap closed, so the board is
+// c_cycleModCount - 1 cards in two columns of c_cycleModRows.
+int CycleMod_BoardSlot(int idx) {
+    if (idx > c_cycleModYolo) { return idx - 1; }
+    return idx;
+}
+
+void CycleMod_PlaceBoardButton(int idx) {
+    int slot;
+    int col;
+    int row;
+
+    slot = CycleMod_BoardSlot(idx);
+    if (slot <= c_cycleModRows) { col = -150; row = slot - 1; }
+    else                        { col =  150; row = slot - c_cycleModRows - 1; }
+    DialogControlSetSize(g_cycle_btnMod[idx], Tardigrade_Viewers(), 280, 56);
+    DialogControlSetPosition(g_cycle_btnMod[idx], Tardigrade_Viewers(),
+        c_anchorTop, col, 80 + row * 60);
+    DialogControlSetVisible(g_cycle_btnMod[idx], Tardigrade_Viewers(), CycleMod_OnBoard(idx));
+}
+
 // The card state for one modifier as one side sees it. Kept separate from the
 // text, because the view also gates the button and tints it on this.
 int CycleMod_CardState(int idx, bool isBan, bool viewerIsP1) {
@@ -624,6 +793,7 @@ void CycleMod_UpdateAudienceUI(bool isBan) {
     // rather than YOURS / THEIRS. The whole board stays up, never clickable.
     i = 1;
     while (i <= c_cycleModCount) {
+        if (!CycleMod_OnBoard(i)) { i = i + 1; continue; }
         DraftStyle_ApplyCard(g_cycle_btnMod[i], aud,
             CycleMod_CardState(i, isBan, true),
             CycleMod_DraftCard(i, isBan, true, true), false);
@@ -659,6 +829,7 @@ void CycleMod_UpdateUI() {
     // switched off.
     i = 1;
     while (i <= c_cycleModCount) {
+        if (!CycleMod_OnBoard(i)) { i = i + 1; continue; }
         DraftStyle_ApplyCard(g_cycle_btnMod[i], pickGroup,
             CycleMod_CardState(i, false, true),
             CycleMod_DraftCard(i, false, true, false), true);
@@ -673,6 +844,7 @@ void CycleMod_UpdateUI() {
 
         i = 1;
         while (i <= c_cycleModCount) {
+            if (!CycleMod_OnBoard(i)) { i = i + 1; continue; }
             DraftStyle_ApplyCard(g_cycle_btnMod[i], waitGroup,
                 CycleMod_CardState(i, false, false),
                 CycleMod_DraftCard(i, false, false, false), false);
@@ -802,6 +974,8 @@ bool CycleMod_DraftPickerIsP1() {
     return g_cycle_pickIsP1[g_cycle_stepIndex];
 }
 
+void CycleMod_DraftChooseRandom();
+
 void CycleMod_UpdateDraftUI() {
     int         picker;
     int         waiter;
@@ -846,6 +1020,7 @@ void CycleMod_UpdateDraftUI() {
     pickerIsP1 = CycleMod_DraftPickerIsP1();
     i = 1;
     while (i <= c_cycleModCount) {
+        if (!CycleMod_OnBoard(i)) { i = i + 1; continue; }
         DraftStyle_ApplyCard(g_cycle_btnMod[i], pickGroup,
             CycleMod_CardState(i, isBan, pickerIsP1),
             CycleMod_DraftCard(i, isBan, pickerIsP1, false), true);
@@ -863,6 +1038,7 @@ void CycleMod_UpdateDraftUI() {
         waitGroup = PlayerGroupSingle(waiter);
         i = 1;
         while (i <= c_cycleModCount) {
+            if (!CycleMod_OnBoard(i)) { i = i + 1; continue; }
             DraftStyle_ApplyCard(g_cycle_btnMod[i], waitGroup,
                 CycleMod_CardState(i, isBan, !pickerIsP1),
                 CycleMod_DraftCard(i, isBan, !pickerIsP1, false), false);
@@ -880,9 +1056,23 @@ void CycleMod_UpdateDraftUI() {
     if (Tardigrade_HasAudience()) {
         CycleMod_UpdateAudienceUI(isBan);
     }
+
+    // A YOLO side's bans are made for it, at random, on the spot. (Its pick
+    // turns never come up at all - CycleMod_AdvancePick skips them.)
+    if (isBan && CycleMod_SideIsYolo(pickerIsP1)) {
+        DraftTimer_Disarm();
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"FFD54A\">YOLO</c> <c val=\"AAAAAA\">- a random ban:</c>"));
+        CycleMod_DraftChooseRandom();
+        return;
+    }
+
+    // Tournament: this step is on the clock (no-op in other modes).
+    DraftTimer_Arm(g_cycle_autoTrig);
 }
 
 void CycleMod_FinishDraftPerPlayer() {
+    DraftTimer_Disarm();
     if (g_cycle_draftTrig != null) {
         TriggerDestroy(g_cycle_draftTrig);
         g_cycle_draftTrig = null;
@@ -909,26 +1099,61 @@ void CycleMod_FinishDraftPerPlayer() {
     }
 }
 
-bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
-    int    control;
-    int    player;
-    int    picker;
+// Move on from a finished pick step, skipping every later step that belongs
+// to a YOLO side - its picks were all rolled when it took YOLO.
+void CycleMod_AdvancePick() {
+    g_cycle_stepIndex = g_cycle_stepIndex + 1;
+    while (g_cycle_stepIndex <= c_cyclePickTotal) {
+        if (!CycleMod_SideIsYolo(g_cycle_pickIsP1[g_cycle_stepIndex])) { break; }
+        g_cycle_stepIndex = g_cycle_stepIndex + 1;
+    }
+    if (g_cycle_stepIndex > c_cyclePickTotal) {
+        CycleMod_FinishDraftPerPlayer();
+    } else {
+        CycleMod_UpdateDraftUI();
+    }
+}
+
+// A side went YOLO (CycleMod_YoloResolve, before any ban): its three modifiers
+// are rolled now, from the whole pool - bans and the opponent's picks don't
+// matter, it is pure chance, and nothing it rolls leaves the board (both sides
+// may hold the same modifier; they are per side). Draft-only entries (No Bans,
+// YOLO itself) are left out: No Bans could only protect a pool nobody bans
+// from anyway. Its bans are then made at random (CycleMod_UpdateDraftUI), its
+// picks skipped (CycleMod_AdvancePick), and its units dealt by the roster
+// draft (RosterDraft_FillYolo).
+void CycleMod_TakeYolo(bool isP1, string side) {
     int    idx;
-    int    i;
+    int    tries;
+    string names;
+
+    if (isP1) { g_cycle_p1Yolo = true; } else { g_cycle_p2Yolo = true; }
+
+    tries = 0;
+    while (tries < 1000) {
+        if (isP1 && g_cycle_p1Count >= c_cyclePicksEach) { break; }
+        if (!isP1 && g_cycle_p2Count >= c_cyclePicksEach) { break; }
+        idx = RandomInt(1, c_cycleModCount);
+        if (!CycleMod_ModIsDraftOnly(idx) && !CycleMod_SideHasModIdx(isP1, idx)) {
+            CycleMod_SetSideMod(isP1, idx, true);
+        }
+        tries = tries + 1;
+    }
+
+    names = CycleMod_ModNamesJoined(isP1);
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        side + "<c val=\"FFD54A\">went YOLO!</c> <c val=\"AAAAAA\">Random modifiers:</c> "
+        + names + "  <c val=\"AAAAAA\">- and random units.</c>"));
+}
+
+// Ban or pick modifier idx for whoever is up. Shared by the click handler
+// (which has already checked it is that player clicking) and the Tournament
+// auto-pick.
+void CycleMod_DraftChoose(int idx) {
     string side;
 
-    control = EventDialogControl();
-    player  = EventPlayer();
-    picker  = CycleMod_DraftPicker();
-    if (player != picker) { return true; }
-
-    idx = 0;
-    i = 1;
-    while (i <= c_cycleModCount) {
-        if (control == g_cycle_btnMod[i]) { idx = i; break; }
-        i = i + 1;
-    }
-    if (idx == 0 || g_cycle_taken[idx]) { return true; }
+    if (idx <= 0 || idx > c_cycleModCount || g_cycle_taken[idx]) { return; }
+    if (!CycleMod_OnBoard(idx)) { return; }
 
     g_cycle_taken[idx] = true;
     if (g_cycle_draftPhase == 0) {
@@ -949,34 +1174,344 @@ bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
             side + "<c val=\"FF6060\">banned:</c> " + CycleMod_Name(idx)));
         g_cycle_stepIndex = g_cycle_stepIndex + 1;
         if (g_cycle_stepIndex > c_cycleBanTotal) {
+            // Into the picks, through AdvancePick so a YOLO side's turns are
+            // skipped from the very first one.
             g_cycle_draftPhase = 1;
-            g_cycle_stepIndex  = 1;
+            g_cycle_stepIndex  = 0;
+            CycleMod_AdvancePick();
+            return;
         }
         CycleMod_UpdateDraftUI();
     } else {
-        if (CycleMod_DraftPickerIsP1()) {
-            g_cycle_p1Count = g_cycle_p1Count + 1;
-            g_cycle_p1Mods[g_cycle_p1Count] = idx;
-        } else {
-            g_cycle_p2Count = g_cycle_p2Count + 1;
-            g_cycle_p2Mods[g_cycle_p2Count] = idx;
-        }
+        CycleMod_SetSideMod(CycleMod_DraftPickerIsP1(), idx, true);
         UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
             side + "<c val=\"00FF88\">picked:</c> " + CycleMod_Name(idx) + "  (" + CycleMod_Desc(idx) + ")"));
-        g_cycle_stepIndex = g_cycle_stepIndex + 1;
-        if (g_cycle_stepIndex > c_cyclePickTotal) {
-            CycleMod_FinishDraftPerPlayer();
-        } else {
-            CycleMod_UpdateDraftUI();
-        }
+        CycleMod_AdvancePick();
     }
+}
+
+bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
+    int control;
+    int idx;
+    int i;
+
+    if (EventPlayer() != CycleMod_DraftPicker()) { return true; }
+
+    control = EventDialogControl();
+    idx = 0;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (control == g_cycle_btnMod[i]) { idx = i; break; }
+        i = i + 1;
+    }
+    CycleMod_DraftChoose(idx);
     return true;
+}
+
+// Ban or pick a random modifier still on the board for whoever is up.
+void CycleMod_DraftChooseRandom() {
+    int open;
+    int n;
+    int i;
+
+    open = 0;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (!g_cycle_taken[i] && i != c_cycleModYolo) { open = open + 1; }
+        i = i + 1;
+    }
+    if (open == 0) { return; }
+
+    n = RandomInt(1, open);
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (!g_cycle_taken[i] && i != c_cycleModYolo) {
+            n = n - 1;
+            if (n == 0) { break; }
+        }
+        i = i + 1;
+    }
+    CycleMod_DraftChoose(i);
+}
+
+// Tournament: the clock ran out.
+bool CycleMod_DraftAutoAct(bool testConds, bool runActions) {
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"AAAAAA\">Time's up - a random choice is made.</c>"));
+    CycleMod_DraftChooseRandom();
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// The modifier board: bans, then picks.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_OpenDraftBoard() {
+    int i;
+
+    // Dialog: 640 x 600, two columns of eight buttons (YOLO is not on the
+    // board), then the legend. Buttons start at y=80 on a 60px pitch:
+    // 80 + 8*60 = 560, the legend sits at 566, plus a margin.
+    g_cycle_dialog = DialogCreate(640, 600, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_cycle_dialog);
+    DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
+
+    g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblTitle, Tardigrade_Viewers(), 600, 26);
+    DialogControlSetPosition(g_cycle_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 18);
+
+    g_cycle_lblSub = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblSub, Tardigrade_Viewers(), 600, 20);
+    DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 48);
+
+    i = 1;
+    while (i <= c_cycleModCount) {
+        g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_cycle_btnMod[i], Tardigrade_Viewers());
+        CycleMod_PlaceBoardButton(i);
+        i = i + 1;
+    }
+
+    // Legend, under the grid: the board keeps banned and picked modifiers, so it
+    // has to say what the markers on them mean.
+    g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 566);
+    DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
+        Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
+
+    g_cycle_draftTrig = TriggerCreate("CycleMod_OnDraftClicked");
+    i = 1;
+    while (i <= c_cycleModCount) {
+        TriggerAddEventDialogControl(g_cycle_draftTrig, c_playerAny,
+            g_cycle_btnMod[i], c_triggerControlEventTypeClick);
+        i = i + 1;
+    }
+
+    CycleMod_UpdateDraftUI();
+}
+
+//==================================================================================================
+// YOLO? - the choice before the modifier draft
+//
+// Each side decides, before any ban, whether to draft at all. Going YOLO makes
+// the side's whole draft chance (CycleMod_TakeYolo), which is why this is its
+// own screen rather than a card: it can't be banned, and it can't come after
+// a hand-made pick. The choice is simultaneous and hidden - each player locks
+// in without seeing the other's, and both are revealed together - so neither
+// side gets to react. When one human decides for both sides (PvAI), P1 is
+// decided first, then P2. Tournament mode puts the screen on the clock; an
+// undecided side drafts normally.
+//==================================================================================================
+int     g_cycle_yoloDlg    = c_invalidDialogId;
+int     g_cycle_yoloLblSub = c_invalidDialogControlId;
+int     g_cycle_yoloBtnNo  = c_invalidDialogControlId;
+int     g_cycle_yoloBtnYes = c_invalidDialogControlId;
+trigger g_cycle_yoloTrig   = null;
+trigger g_cycle_yoloAuto   = null;
+bool    g_cycle_yoloDoneP1 = false;
+bool    g_cycle_yoloDoneP2 = false;
+bool    g_cycle_yoloWantP1 = false;
+bool    g_cycle_yoloWantP2 = false;
+
+string CycleMod_YoloCard(bool yes, int state, string tag) {
+    if (yes) {
+        return DraftStyle_Card(state, tag, "Go YOLO",
+            "3 random modifiers + 7 random units, random bans");
+    }
+    return DraftStyle_Card(state, tag, "Draft normally",
+        "ban and pick your modifiers and units yourself");
+}
+
+// One viewer's copy of the screen. decided / want: what the side this viewer
+// speaks for has locked in; the chosen option is marked, both are switched off.
+void CycleMod_YoloShow(playergroup viewer, bool canClick, bool decided, bool want, string sub) {
+    int    stNo;
+    int    stYes;
+    string tagNo;
+    string tagYes;
+
+    stNo   = c_draftStateOpen;
+    stYes  = c_draftStateOpen;
+    tagNo  = "";
+    tagYes = "";
+    if (decided) {
+        if (want) { stYes = c_draftStateMine; tagYes = "LOCKED IN"; }
+        else      { stNo  = c_draftStateMine; tagNo  = "LOCKED IN"; }
+    }
+    DraftStyle_ApplyCard(g_cycle_yoloBtnNo, viewer, stNo,
+        CycleMod_YoloCard(false, stNo, tagNo), canClick && !decided);
+    DraftStyle_ApplyCard(g_cycle_yoloBtnYes, viewer, stYes,
+        CycleMod_YoloCard(true, stYes, tagYes), canClick && !decided);
+    DialogControlSetPropertyAsText(g_cycle_yoloLblSub, c_triggerControlPropertyText,
+        viewer, StringToText(sub));
+}
+
+void CycleMod_YoloRefresh() {
+    if (g_cycle_p1 == g_cycle_p2) {
+        if (!g_cycle_yoloDoneP1) {
+            CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, false,
+                "<c val=\"00FF88\">Decide for </c><c val=\"7FD0FF\">P1</c><c val=\"00FF88\"> (you ban first)</c>");
+        } else {
+            CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, false,
+                "<c val=\"00FF88\">Now decide for </c><c val=\"FF9F7F\">P2</c>");
+        }
+        return;
+    }
+
+    if (!g_cycle_yoloDoneP1) {
+        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, false,
+            "<c val=\"00FF88\">YOUR CHOICE  —  hidden from your opponent until you both lock in</c>");
+    } else {
+        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), false, true, g_cycle_yoloWantP1,
+            "<c val=\"888888\">Locked in  —  waiting for your opponent...</c>");
+    }
+    if (!g_cycle_yoloDoneP2) {
+        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p2), true, false, false,
+            "<c val=\"00FF88\">YOUR CHOICE  —  hidden from your opponent until you both lock in</c>");
+    } else {
+        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p2), false, true, g_cycle_yoloWantP2,
+            "<c val=\"888888\">Locked in  —  waiting for your opponent...</c>");
+    }
+    if (Tardigrade_HasAudience()) {
+        CycleMod_YoloShow(Tardigrade_Audience(), false, false, false,
+            "<c val=\"888888\">Spectating  —  the players are deciding...</c>");
+    }
+}
+
+// Both sides have decided: reveal, roll the YOLO sides, open the board - or,
+// if both went YOLO, skip it (nothing is left to ban or pick by hand).
+void CycleMod_YoloResolve() {
+    DraftTimer_Disarm();
+    if (g_cycle_yoloTrig != null) { TriggerDestroy(g_cycle_yoloTrig); g_cycle_yoloTrig = null; }
+    if (g_cycle_yoloDlg != c_invalidDialogId) {
+        DialogDestroy(g_cycle_yoloDlg);
+        g_cycle_yoloDlg = c_invalidDialogId;
+    }
+
+    if (g_cycle_yoloWantP1) { CycleMod_TakeYolo(true, "<c val=\"7FD0FF\">P1</c> "); }
+    else {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"7FD0FF\">P1</c> <c val=\"AAAAAA\">drafts normally.</c>"));
+    }
+    if (g_cycle_yoloWantP2) { CycleMod_TakeYolo(false, "<c val=\"FF9F7F\">P2</c> "); }
+    else {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"FF9F7F\">P2</c> <c val=\"AAAAAA\">drafts normally.</c>"));
+    }
+
+    if (g_cycle_yoloWantP1 && g_cycle_yoloWantP2) {
+        CycleMod_FinishDraftPerPlayer();
+        return;
+    }
+    CycleMod_OpenDraftBoard();
+}
+
+void CycleMod_YoloDecide(bool isP1, bool want) {
+    if (isP1) { g_cycle_yoloDoneP1 = true; g_cycle_yoloWantP1 = want; }
+    else      { g_cycle_yoloDoneP2 = true; g_cycle_yoloWantP2 = want; }
+
+    if (g_cycle_yoloDoneP1 && g_cycle_yoloDoneP2) {
+        CycleMod_YoloResolve();
+        return;
+    }
+    CycleMod_YoloRefresh();
+    // One human deciding both sides in turn: the second decision is a step of
+    // its own on the clock. Between two humans it is one simultaneous step, so
+    // the first lock-in must not restart the other player's clock.
+    if (g_cycle_p1 == g_cycle_p2) { DraftTimer_Arm(g_cycle_yoloAuto); }
+}
+
+bool CycleMod_OnYoloClicked(bool testConds, bool runActions) {
+    int  player;
+    int  control;
+    bool want;
+
+    player  = EventPlayer();
+    control = EventDialogControl();
+    if (control == g_cycle_yoloBtnYes)     { want = true; }
+    else if (control == g_cycle_yoloBtnNo) { want = false; }
+    else { return true; }
+
+    if (g_cycle_p1 == g_cycle_p2) {
+        if (player != g_cycle_p1) { return true; }
+        if (!g_cycle_yoloDoneP1)      { CycleMod_YoloDecide(true, want); }
+        else if (!g_cycle_yoloDoneP2) { CycleMod_YoloDecide(false, want); }
+        return true;
+    }
+    if (player == g_cycle_p1 && !g_cycle_yoloDoneP1)      { CycleMod_YoloDecide(true, want); }
+    else if (player == g_cycle_p2 && !g_cycle_yoloDoneP2) { CycleMod_YoloDecide(false, want); }
+    return true;
+}
+
+// Tournament: the clock ran out - whoever hasn't decided drafts normally.
+bool CycleMod_YoloAutoAct(bool testConds, bool runActions) {
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"AAAAAA\">Time's up - drafting normally.</c>"));
+    if (g_cycle_p1 == g_cycle_p2) {
+        if (!g_cycle_yoloDoneP1) { CycleMod_YoloDecide(true, false); }
+        else                     { CycleMod_YoloDecide(false, false); }
+        return true;
+    }
+    if (!g_cycle_yoloDoneP1) { g_cycle_yoloDoneP1 = true; g_cycle_yoloWantP1 = false; }
+    if (!g_cycle_yoloDoneP2) { g_cycle_yoloDoneP2 = true; g_cycle_yoloWantP2 = false; }
+    CycleMod_YoloResolve();
+    return true;
+}
+
+void CycleMod_YoloChoiceStart() {
+    int lbl;
+
+    g_cycle_yoloDoneP1 = false;
+    g_cycle_yoloDoneP2 = false;
+    g_cycle_yoloWantP1 = false;
+    g_cycle_yoloWantP2 = false;
+    g_cycle_yoloAuto   = TriggerCreate("CycleMod_YoloAutoAct");
+
+    g_cycle_yoloDlg = DialogCreate(600, 270, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_cycle_yoloDlg);
+    DialogSetVisible(g_cycle_yoloDlg, Tardigrade_Viewers(), true);
+
+    lbl = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
+    DialogControlSetSize(lbl, Tardigrade_Viewers(), 560, 26);
+    DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 18);
+    DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
+        StringToText("<c val=\"FFD54A\">YOLO?</c>   <c val=\"AAAAAA\">— before the modifier draft</c>"));
+
+    lbl = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
+    DialogControlSetSize(lbl, Tardigrade_Viewers(), 560, 60);
+    DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 50);
+    DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
+        StringToText(DraftStyle_Small("<c val=\"CCCCCC\">Go YOLO and your whole draft is chance:"
+            + " 3 modifiers rolled from the full pool (bans and your opponent's picks don't matter),"
+            + " your modifier bans made at random, and 7 units at random from your pool - nothing guaranteed."
+            + " Both players can go YOLO. No going back.</c>")));
+
+    g_cycle_yoloLblSub = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_yoloLblSub, Tardigrade_Viewers(), 560, 20);
+    DialogControlSetPosition(g_cycle_yoloLblSub, Tardigrade_Viewers(), c_anchorTop, 0, 118);
+
+    g_cycle_yoloBtnNo = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_cycle_yoloBtnNo, Tardigrade_Viewers());
+    DialogControlSetSize(g_cycle_yoloBtnNo, Tardigrade_Viewers(), 270, 56);
+    DialogControlSetPosition(g_cycle_yoloBtnNo, Tardigrade_Viewers(), c_anchorTop, -140, 160);
+
+    g_cycle_yoloBtnYes = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_cycle_yoloBtnYes, Tardigrade_Viewers());
+    DialogControlSetSize(g_cycle_yoloBtnYes, Tardigrade_Viewers(), 270, 56);
+    DialogControlSetPosition(g_cycle_yoloBtnYes, Tardigrade_Viewers(), c_anchorTop, 140, 160);
+
+    g_cycle_yoloTrig = TriggerCreate("CycleMod_OnYoloClicked");
+    TriggerAddEventDialogControl(g_cycle_yoloTrig, c_playerAny, g_cycle_yoloBtnNo,
+        c_triggerControlEventTypeClick);
+    TriggerAddEventDialogControl(g_cycle_yoloTrig, c_playerAny, g_cycle_yoloBtnYes,
+        c_triggerControlEventTypeClick);
+
+    CycleMod_YoloRefresh();
+    DraftTimer_Arm(g_cycle_yoloAuto);
 }
 
 void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     int i;
-    int col;
-    int row;
 
     g_cycle_callback   = callback;
     g_cycle_p1         = p1;
@@ -985,11 +1520,16 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     g_cycle_p2Count    = 0;
     g_cycle_draftPhase = 0;
     g_cycle_stepIndex  = 1;
+    g_cycle_p1Yolo     = false;
+    g_cycle_p2Yolo     = false;
+    g_cycle_autoTrig   = TriggerCreate("CycleMod_DraftAutoAct");
 
     i = 1;
     while (i <= c_cycleModCount) {
         g_cycle_taken[i]    = false;
         g_cycle_modState[i] = c_cycleSlotOpen;
+        g_cycle_p1Mods[i]   = 0;
+        g_cycle_p2Mods[i]   = 0;
         i = i + 1;
     }
 
@@ -1007,51 +1547,9 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     g_cycle_pickOrder[5] = p1; g_cycle_pickIsP1[5] = true;
     g_cycle_pickOrder[6] = p2; g_cycle_pickIsP1[6] = false;
 
-    // Dialog: 640 x 572, two columns of seven buttons (same layout as legacy),
-    // then the legend. Buttons start at y=80 on a 64px pitch: 80 + 7*64 = 528,
-    // the legend sits at 538, plus a margin.
-    g_cycle_dialog = DialogCreate(640, 572, c_anchorCenter, 0, 0, true);
-    Tardigrade_ObservableDialog(g_cycle_dialog);
-    DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
-
-    g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_cycle_lblTitle, Tardigrade_Viewers(), 600, 26);
-    DialogControlSetPosition(g_cycle_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 18);
-
-    g_cycle_lblSub = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_cycle_lblSub, Tardigrade_Viewers(), 600, 20);
-    DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 48);
-
-    i = 1;
-    while (i <= c_cycleModCount) {
-        g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
-        DraftStyle_InitButton(g_cycle_btnMod[i], Tardigrade_Viewers());
-        DialogControlSetSize(g_cycle_btnMod[i], Tardigrade_Viewers(), 280, 56);
-        if (i <= c_cycleModRows) { col = -150; row = i - 1; }
-        else                     { col =  150; row = i - c_cycleModRows - 1; }
-        DialogControlSetPosition(g_cycle_btnMod[i], Tardigrade_Viewers(),
-            c_anchorTop, col, 80 + row * 64);
-        DialogControlSetVisible(g_cycle_btnMod[i], Tardigrade_Viewers(), true);
-        i = i + 1;
-    }
-
-    // Legend, under the grid: the board keeps banned and picked modifiers, so it
-    // has to say what the markers on them mean.
-    g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
-    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 538);
-    DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
-        Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
-
-    g_cycle_draftTrig = TriggerCreate("CycleMod_OnDraftClicked");
-    i = 1;
-    while (i <= c_cycleModCount) {
-        TriggerAddEventDialogControl(g_cycle_draftTrig, c_playerAny,
-            g_cycle_btnMod[i], c_triggerControlEventTypeClick);
-        i = i + 1;
-    }
-
-    CycleMod_UpdateDraftUI();
+    // Each side decides YOLO or not first; the board opens once both have
+    // (CycleMod_YoloResolve -> CycleMod_OpenDraftBoard).
+    CycleMod_YoloChoiceStart();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1060,8 +1558,6 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
 //--------------------------------------------------------------------------------------------------
 void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     int i;
-    int col;
-    int row;
 
     if (!c_cyclePhaseMode) {
         CycleMod_StartDraftPerPlayer(callback, p1, p2);
@@ -1080,8 +1576,8 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
         i = i + 1;
     }
 
-    // Dialog: 640 x 572, two columns of seven buttons, then the legend.
-    g_cycle_dialog = DialogCreate(640, 572, c_anchorCenter, 0, 0, true);
+    // Dialog: 640 x 600, two columns of eight buttons, then the legend.
+    g_cycle_dialog = DialogCreate(640, 600, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
 
@@ -1097,19 +1593,14 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     while (i <= c_cycleModCount) {
         g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
         DraftStyle_InitButton(g_cycle_btnMod[i], Tardigrade_Viewers());
-        DialogControlSetSize(g_cycle_btnMod[i], Tardigrade_Viewers(), 280, 56);
-        if (i <= c_cycleModRows) { col = -150; row = i - 1; }
-        else                     { col =  150; row = i - c_cycleModRows - 1; }
-        DialogControlSetPosition(g_cycle_btnMod[i], Tardigrade_Viewers(),
-            c_anchorTop, col, 80 + row * 64);
-        DialogControlSetVisible(g_cycle_btnMod[i], Tardigrade_Viewers(), true);
+        CycleMod_PlaceBoardButton(i);
         i = i + 1;
     }
 
     // Legend, under the grid (see CycleMod_StartDraftPerPlayer).
     g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
-    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 538);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 566);
     DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
         Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
 
@@ -1748,6 +2239,22 @@ void CycleMod_OpenSkiesForPlayer(int player) {
     CycleMod_GateFiltersForPlayer(player, true);
 }
 
+// Testing mode: put one player's weapons, splash searches and gate validators
+// back as shipped (the caches hold the shipped filters).
+void CycleMod_RevertOpenSkiesForPlayer(int player) {
+    int i;
+
+    CycleMod_EnsureWeaponCache();
+    i = 0;
+    while (i < g_cycle_weaponCount) {
+        CatalogFieldValueSet(c_gameCatalogWeapon, g_cycle_weaponEntry[i], "TargetFilters",
+            player, g_cycle_weaponFilter[i]);
+        i = i + 1;
+    }
+    CycleMod_SplashFiltersForPlayer(player, false);
+    CycleMod_GateFiltersForPlayer(player, false);
+}
+
 void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
     int n;
     int i;
@@ -1791,21 +2298,64 @@ string CycleMod_BaneEffect(int i) {
     return "";
 }
 
-// Multiply one catalog field in place for one player. A field the effect does
-// not carry reads back empty and is skipped - the fallback payloads inherit
-// their numbers and may not define AttributeBonus at all.
+//--------------------------------------------------------------------------------------------------
+// Shipped catalog values, for switching a catalog modifier back OFF.
+//
+// The draft only ever switches catalog modifiers on, once. Testing mode turns
+// them on and off at will, so every per-player write has to be undoable - and
+// "undo" means the value Blizzard shipped, not whatever the field held before
+// the last write. CycleMod_CatalogBase remembers that value per field in the
+// global data table the first time ANY player's copy of it is written: at that
+// moment no player's copy has been touched yet (a touched field would already
+// have a key), so whichever player it is read from still holds the shipped
+// value.
+//
+// A base that reads back empty (the entry does not define the field) is
+// remembered as empty and never written back.
+//--------------------------------------------------------------------------------------------------
+string CycleMod_CatalogBaseKey(int catalog, string entry, string field) {
+    return "TgBase_" + IntToString(catalog) + "_" + entry + "_" + field;
+}
+
+string CycleMod_CatalogBase(int catalog, string entry, string field, int player) {
+    string key;
+    key = CycleMod_CatalogBaseKey(catalog, entry, field);
+    if (!DataTableValueExists(true, key)) {
+        DataTableSetString(true, key, CatalogFieldValueGet(catalog, entry, field, player));
+    }
+    return DataTableGetString(true, key);
+}
+
+// Write one player's copy, remembering the shipped value first.
+void CycleMod_CatalogSet(int catalog, string entry, string field, int player, string value) {
+    CycleMod_CatalogBase(catalog, entry, field, player);
+    CatalogFieldValueSet(catalog, entry, field, player, value);
+}
+
+// Put one player's copy back to the shipped value.
+void CycleMod_CatalogRestore(int catalog, string entry, string field, int player) {
+    string base;
+    base = CycleMod_CatalogBase(catalog, entry, field, player);
+    if (base == "") { return; }
+    CatalogFieldValueSet(catalog, entry, field, player, base);
+}
+
+// Scale one catalog field for one player, from the SHIPPED value - so doing it
+// twice (testing mode switching Overwatch off and on) cannot compound. A field
+// the effect does not carry reads back empty and is skipped - the fallback
+// payloads inherit their numbers and may not define AttributeBonus at all.
 void CycleMod_ScaleEffectField(string effect, string field, int player) {
-    string current;
+    string base;
     string scaled;
 
-    current = CatalogFieldValueGet(c_gameCatalogEffect, effect, field, player);
-    if (current == "") {
+    base = CycleMod_CatalogBase(c_gameCatalogEffect, effect, field, player);
+    if (base == "") {
         Debug_Log("Overwatch flat: " + effect + "." + field + " absent, skipped");
         return;
     }
-    scaled = FixedToString(StringToFixed(current) * c_cycleOverwatchFlatMult, 4);
+    scaled = FixedToString(StringToFixed(base) * c_cycleOverwatchFlatMult, 4);
     CatalogFieldValueSet(c_gameCatalogEffect, effect, field, player, scaled);
-    Debug_Log("Overwatch flat: " + effect + "." + field + " " + current + " -> "
+    Debug_Log("Overwatch flat: " + effect + "." + field + " " + base + " -> "
         + CatalogFieldValueGet(c_gameCatalogEffect, effect, field, player));
 }
 
@@ -1815,6 +2365,16 @@ void CycleMod_ApplyOverwatchDamageForPlayer(int player) {
     while (i < c_cycleBaneEffectCount) {
         CycleMod_ScaleEffectField(CycleMod_BaneEffect(i), "Amount", player);
         CycleMod_ScaleEffectField(CycleMod_BaneEffect(i), "AttributeBonus[Light]", player);
+        i = i + 1;
+    }
+}
+
+void CycleMod_RevertOverwatchDamageForPlayer(int player) {
+    int i;
+    i = 0;
+    while (i < c_cycleBaneEffectCount) {
+        CycleMod_CatalogRestore(c_gameCatalogEffect, CycleMod_BaneEffect(i), "Amount", player);
+        CycleMod_CatalogRestore(c_gameCatalogEffect, CycleMod_BaneEffect(i), "AttributeBonus[Light]", player);
         i = i + 1;
     }
 }
@@ -1933,21 +2493,277 @@ void CycleMod_SetArcaneSurge(bool enabled) {
     g_cycle_arcaneEnabled = enabled;
 }
 
-// One-time activation once the 3-minute delay elapses (draft mode). Open Skies
-// and Arcane Surge are catalog changes so they are applied here rather than
-// per-unit in the scan.
-void CycleMod_ActivateDelayedMods() {
-    if (CycleMod_P1HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P1Team()); }
-    if (CycleMod_P2HasModIdx(1)) { CycleMod_ApplyOpenSkiesTeam(CycleMod_P2Team()); }
-    if (CycleMod_P1HasModIdx(7)) { CycleMod_ApplyArcaneSurgeTeam(CycleMod_P1Team()); }
-    if (CycleMod_P2HasModIdx(7)) { CycleMod_ApplyArcaneSurgeTeam(CycleMod_P2Team()); }
-    // Overwatch is per-unit state in the scan, except for the Baneling, whose
-    // share is a catalog change and so belongs here.
-    if (CycleMod_P1HasModIdx(8)) { CycleMod_ApplyOverwatchDamageTeam(CycleMod_P1Team()); }
-    if (CycleMod_P2HasModIdx(8)) { CycleMod_ApplyOverwatchDamageTeam(CycleMod_P2Team()); }
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"FFD54A\">Battlefield modifiers are now ACTIVE.</c>"
-        + "  <c val=\"AAAAAA\">Opening vision ends - only a side that drafted Eyes Everywhere keeps it.</c>"));
+// Testing mode: one player's energy regen back to the cached base rates.
+void CycleMod_RevertArcaneSurgeForPlayer(int player) {
+    int i;
+
+    CycleMod_EnsureEnergyCache();
+    i = 0;
+    while (i < g_cycle_energyCount) {
+        CatalogFieldValueSet(c_gameCatalogUnit, g_cycle_energyEntry[i],
+            "EnergyRegenRate", player, g_cycle_energyRate[i]);
+        i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Minerals Only (modifier 15): nothing costs gas. Every gas cost is folded into
+// the mineral cost at c_cycleMineralsPerGas (a 100/100 upgrade becomes 250/0),
+// and every point of gas that reaches the bank is paid out as a mineral
+// (CycleMod_ConvertGasIncome, from the scan). Live from 0:00.
+//
+// Costs live in three places in the melee data, and all three are covered:
+//   - CUnit CostResource: everything trained, built, warped or morphed. Zerg
+//     morph costs are cumulative there (Lair 475/100 = Hatchery 325 + 150/100)
+//     and the engine charges the difference, so converting both ends keeps
+//     the difference converted too.
+//   - CAbilResearch InfoArray[].Resource: every upgrade. Curated list below,
+//     taken from every melee layer (liberty .. voidmulti) - the abilities
+//     that carry a gas cost on any research slot.
+//   - CAbilMorph Cost: MorphToTransportOverlord (25/25) is the one melee
+//     ability with its own gas cost.
+// The unit catalog is swept once, like the Arcane Surge cache; only the
+// entries that actually cost gas are kept.
+//--------------------------------------------------------------------------------------------------
+const int c_cycleResearchAbilCount = 28;
+const int c_cycleResearchSlots     = 30;   // Research1..Research30
+
+string CycleMod_ResearchAbil(int i) {
+    if (i == 1)  { return "ArmoryResearch"; }
+    if (i == 2)  { return "ArmoryResearchSwarm"; }
+    if (i == 3)  { return "BanelingNestResearch"; }
+    if (i == 4)  { return "BarracksTechLabResearch"; }
+    if (i == 5)  { return "CyberneticsCoreResearch"; }
+    if (i == 6)  { return "DarkShrineResearch"; }
+    if (i == 7)  { return "EngineeringBayResearch"; }
+    if (i == 8)  { return "FactoryTechLabResearch"; }
+    if (i == 9)  { return "FleetBeaconResearch"; }
+    if (i == 10) { return "ForgeResearch"; }
+    if (i == 11) { return "FusionCoreResearch"; }
+    if (i == 12) { return "GhostAcademyResearch"; }
+    if (i == 13) { return "HydraliskDenResearch"; }
+    if (i == 14) { return "InfestationPitResearch"; }
+    if (i == 15) { return "LairResearch"; }
+    if (i == 16) { return "LurkerDenResearch"; }
+    if (i == 17) { return "MercCompoundResearch"; }
+    if (i == 18) { return "RoachWarrenResearch"; }
+    if (i == 19) { return "RoboticsBayResearch"; }
+    if (i == 20) { return "SpawningPoolResearch"; }
+    if (i == 21) { return "SpireResearch"; }
+    if (i == 22) { return "StarportTechLabResearch"; }
+    if (i == 23) { return "TemplarArchivesResearch"; }
+    if (i == 24) { return "TwilightCouncilResearch"; }
+    if (i == 25) { return "UltraliskCavernResearch"; }
+    if (i == 26) { return "evolutionchamberresearch"; }
+    if (i == 27) { return "HatcheryResearch"; }
+    if (i == 28) { return "NexusResearch"; }
+    return "";
+}
+
+// Field-path spellings. Blizzard's own scripts only ever index catalog arrays
+// by number, and it is not certain the engine accepts enum NAMES in a field
+// path for these arrays (the same doubt as CycleMod_BlockGasHarvest). Rather
+// than write both and hope, probe once against values the melee data is known
+// to hold, and use whichever form reads back.
+bool   g_cycle_pathsResolved = false;
+string g_cycle_resMin = "[Minerals]";
+string g_cycle_resGas = "[Vespene]";
+bool   g_cycle_infoNamed = true;
+
+void CycleMod_ResolveCostPaths() {
+    if (g_cycle_pathsResolved) { return; }
+    g_cycle_pathsResolved = true;
+
+    // A Marauder costs 100/25 in every layer.
+    if (CatalogFieldValueGet(c_gameCatalogUnit, "Marauder", "CostResource[Vespene]", 1) == "") {
+        g_cycle_resMin = "[0]";
+        g_cycle_resGas = "[1]";
+    }
+    // Stimpack is BarracksTechLabResearch's first slot.
+    g_cycle_infoNamed = CatalogFieldValueGet(c_gameCatalogAbil, "BarracksTechLabResearch",
+        "InfoArray[Research1].Resource" + g_cycle_resGas, 1) != "";
+    Debug_Log("Cost paths: resource " + g_cycle_resGas + ", research named="
+        + libNtve_gf_ConvertBooleanToString(g_cycle_infoNamed));
+}
+
+string CycleMod_ResearchSlotPath(int slot) {
+    if (g_cycle_infoNamed) { return "InfoArray[Research" + IntToString(slot) + "]"; }
+    return "InfoArray[" + IntToString(slot - 1) + "]";
+}
+
+// Everything that costs gas: unit types, and ability cost slots given as
+// (ability, path prefix) pairs whose Resource array holds the cost.
+string[512] g_cycle_gasUnit;
+int         g_cycle_gasUnitCount = 0;
+string[256] g_cycle_gasAbil;
+string[256] g_cycle_gasAbilPrefix;
+int         g_cycle_gasAbilCount = 0;
+bool        g_cycle_gasCached = false;
+
+void CycleMod_AddGasAbilSlot(string abil, string prefix) {
+    string gas;
+    if (g_cycle_gasAbilCount >= 256) { return; }
+    gas = CatalogFieldValueGet(c_gameCatalogAbil, abil, prefix + ".Resource" + g_cycle_resGas, 1);
+    if (StringToFixed(gas) > 0.0) {
+        g_cycle_gasAbil[g_cycle_gasAbilCount]       = abil;
+        g_cycle_gasAbilPrefix[g_cycle_gasAbilCount] = prefix;
+        g_cycle_gasAbilCount = g_cycle_gasAbilCount + 1;
+    }
+}
+
+// Read from player 1 like every other cache in this file. Safe whenever it
+// runs: Minerals Only is the only writer of a gas cost, and this runs first.
+void CycleMod_EnsureGasCostCache() {
+    int    catalogCount;
+    int    i;
+    int    slot;
+    string entry;
+
+    if (g_cycle_gasCached) { return; }
+    g_cycle_gasCached = true;
+    CycleMod_ResolveCostPaths();
+
+    catalogCount = CatalogEntryCount(c_gameCatalogUnit);
+    i = 1;
+    while (i <= catalogCount && g_cycle_gasUnitCount < 512) {
+        entry = CatalogEntryGet(c_gameCatalogUnit, i);
+        if (StringToFixed(CatalogFieldValueGet(c_gameCatalogUnit, entry,
+                "CostResource" + g_cycle_resGas, 1)) > 0.0) {
+            g_cycle_gasUnit[g_cycle_gasUnitCount] = entry;
+            g_cycle_gasUnitCount = g_cycle_gasUnitCount + 1;
+        }
+        i = i + 1;
+    }
+
+    i = 1;
+    while (i <= c_cycleResearchAbilCount) {
+        entry = CycleMod_ResearchAbil(i);
+        if (CatalogEntryIsValid(c_gameCatalogAbil, entry)) {
+            slot = 1;
+            while (slot <= c_cycleResearchSlots) {
+                CycleMod_AddGasAbilSlot(entry, CycleMod_ResearchSlotPath(slot));
+                slot = slot + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    // The one ability with a Cost of its own. Cost is a one-element array in
+    // the data (<Cost> with no index); try the indexed spelling, then the bare.
+    if (CatalogEntryIsValid(c_gameCatalogAbil, "MorphToTransportOverlord")) {
+        if (CatalogFieldValueGet(c_gameCatalogAbil, "MorphToTransportOverlord",
+                "Cost[0].Resource" + g_cycle_resGas, 1) != "") {
+            CycleMod_AddGasAbilSlot("MorphToTransportOverlord", "Cost[0]");
+        } else {
+            CycleMod_AddGasAbilSlot("MorphToTransportOverlord", "Cost");
+        }
+    }
+
+    Debug_Log("Minerals Only: " + IntToString(g_cycle_gasUnitCount) + " unit types, "
+        + IntToString(g_cycle_gasAbilCount) + " ability cost slots carry gas");
+}
+
+// minerals + gas x c_cycleMineralsPerGas, rounded to a whole mineral.
+string CycleMod_MineralsFor(string minerals, string gas) {
+    return IntToString(FixedToInt(StringToFixed(minerals)
+        + StringToFixed(gas) * c_cycleMineralsPerGas + 0.5));
+}
+
+// Convert (or restore) one cost: `catalog` / `entry`, with the Minerals and
+// Vespene values at prefix + "[Minerals]" / prefix + "[Vespene]".
+void CycleMod_ConvertCost(int catalog, string entry, string prefix, int player, bool on) {
+    string minF;
+    string gasF;
+
+    minF = prefix + g_cycle_resMin;
+    gasF = prefix + g_cycle_resGas;
+    if (on) {
+        CycleMod_CatalogSet(catalog, entry, minF, player, CycleMod_MineralsFor(
+            CycleMod_CatalogBase(catalog, entry, minF, player),
+            CycleMod_CatalogBase(catalog, entry, gasF, player)));
+        CycleMod_CatalogSet(catalog, entry, gasF, player, "0");
+    } else {
+        CycleMod_CatalogRestore(catalog, entry, minF, player);
+        CycleMod_CatalogRestore(catalog, entry, gasF, player);
+    }
+}
+
+void CycleMod_MineralsOnlyForPlayer(int player, bool on) {
+    int i;
+
+    CycleMod_EnsureGasCostCache();
+    i = 0;
+    while (i < g_cycle_gasUnitCount) {
+        CycleMod_ConvertCost(c_gameCatalogUnit, g_cycle_gasUnit[i], "CostResource", player, on);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < g_cycle_gasAbilCount) {
+        CycleMod_ConvertCost(c_gameCatalogAbil, g_cycle_gasAbil[i],
+            g_cycle_gasAbilPrefix[i] + ".Resource", player, on);
+        i = i + 1;
+    }
+}
+
+// Gas that reaches the bank - mined, auto-refined, refunded - is paid out as
+// minerals, 1:1. Run from the scan, so the bank shows gas for at most half a
+// second. The engine's "vespene collected" total is left as it is: the gas
+// was mined, and the income stats should say so.
+void CycleMod_ConvertGasIncome(playergroup team) {
+    int n;
+    int i;
+    int p;
+    int gas;
+
+    n = PlayerGroupCount(team);
+    i = 1;
+    while (i <= n) {
+        p = PlayerGroupPlayer(team, i);
+        gas = PlayerGetPropertyInt(p, c_playerPropVespene);
+        if (gas > 0) {
+            PlayerModifyPropertyInt(p, c_playerPropMinerals, c_playerPropOperAdd, gas);
+            PlayerModifyPropertyInt(p, c_playerPropVespene, c_playerPropOperSetTo, 0);
+        }
+        i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Long Reach (modifier 17): workers build from range 30 and harvest from range
+// 10. Both are the Range field of the worker's build / harvest ability, set
+// per player. The shipped value is 0 for both (the worker walks up to the
+// site or the patch); MULEGather's 0.5 and RavenBuild's 5 are the precedent
+// for a non-zero Range on these ability classes.
+//--------------------------------------------------------------------------------------------------
+string CycleMod_WorkerBuildAbil(int i) {
+    if (i == 1) { return "TerranBuild"; }
+    if (i == 2) { return "ProtossBuild"; }
+    if (i == 3) { return "ZergBuild"; }
+    return "";
+}
+
+string CycleMod_WorkerGatherAbil(int i) {
+    if (i == 1) { return "SCVHarvest"; }
+    if (i == 2) { return "ProbeHarvest"; }
+    if (i == 3) { return "DroneHarvest"; }
+    return "";
+}
+
+void CycleMod_LongReachForPlayer(int player, bool on) {
+    int i;
+    i = 1;
+    while (i <= 3) {
+        if (on) {
+            CycleMod_CatalogSet(c_gameCatalogAbil, CycleMod_WorkerBuildAbil(i), "Range",
+                player, c_cycleLongReachBuild);
+            CycleMod_CatalogSet(c_gameCatalogAbil, CycleMod_WorkerGatherAbil(i), "Range",
+                player, c_cycleLongReachHarvest);
+        } else {
+            CycleMod_CatalogRestore(c_gameCatalogAbil, CycleMod_WorkerBuildAbil(i), "Range", player);
+            CycleMod_CatalogRestore(c_gameCatalogAbil, CycleMod_WorkerGatherAbil(i), "Range", player);
+        }
+        i = i + 1;
+    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -2213,27 +3029,126 @@ void CycleMod_BlockGasHarvest(int player, string harvestAbil) {
 
     byName  = "ResourceAllowed[" + c_resourceTypeVespeneName + "]";
     byIndex = "ResourceAllowed[" + IntToString(c_resourceTypeVespene) + "]";
-    CatalogFieldValueSet(c_gameCatalogAbil, harvestAbil, byName, player, "0");
-    CatalogFieldValueSet(c_gameCatalogAbil, harvestAbil, byIndex, player, "0");
+    CycleMod_CatalogSet(c_gameCatalogAbil, harvestAbil, byName, player, "0");
+    CycleMod_CatalogSet(c_gameCatalogAbil, harvestAbil, byIndex, player, "0");
     Debug_Log("Auto Refineries: " + harvestAbil + " P" + IntToString(player)
         + " vespene allowed byName=" + CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byName, player)
         + " byIndex=" + CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byIndex, player));
 }
 
-void CycleMod_BlockGasHarvestTeam(playergroup team) {
+void CycleMod_UnblockGasHarvest(int player, string harvestAbil) {
+    CycleMod_CatalogRestore(c_gameCatalogAbil, harvestAbil,
+        "ResourceAllowed[" + c_resourceTypeVespeneName + "]", player);
+    CycleMod_CatalogRestore(c_gameCatalogAbil, harvestAbil,
+        "ResourceAllowed[" + IntToString(c_resourceTypeVespene) + "]", player);
+}
+
+// The six gas buildings, for the Auto Refineries price.
+string CycleMod_GasBuildingType(int i) {
+    if (i == 1) { return "Refinery"; }
+    if (i == 2) { return "Assimilator"; }
+    if (i == 3) { return "Extractor"; }
+    if (i == 4) { return "RefineryRich"; }
+    if (i == 5) { return "AssimilatorRich"; }
+    if (i == 6) { return "ExtractorRich"; }
+    return "";
+}
+
+// Auto Refineries' catalog half, for one player: the gas buildings cost
+// c_cycleAutoRefineryCost minerals, and the worker harvest abilities are
+// barred from gas. Switched off (testing mode), both go back as shipped.
+// Buildings already stripped of their resource behavior stay stripped - see
+// CycleMod_MakeUnharvestable.
+void CycleMod_AutoRefineryForPlayer(int player, bool on) {
+    int i;
+
+    CycleMod_ResolveCostPaths();
+    i = 1;
+    while (i <= 6) {
+        if (on) {
+            CycleMod_CatalogSet(c_gameCatalogUnit, CycleMod_GasBuildingType(i),
+                "CostResource" + g_cycle_resMin, player, IntToString(c_cycleAutoRefineryCost));
+        } else {
+            CycleMod_CatalogRestore(c_gameCatalogUnit, CycleMod_GasBuildingType(i),
+                "CostResource" + g_cycle_resMin, player);
+        }
+        i = i + 1;
+    }
+    i = 1;
+    while (i <= 3) {
+        if (on) { CycleMod_BlockGasHarvest(player, CycleMod_WorkerGatherAbil(i)); }
+        else    { CycleMod_UnblockGasHarvest(player, CycleMod_WorkerGatherAbil(i)); }
+        i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Catalog modifiers, one switch for all of them. These change the player's copy
+// of the game data instead of anything on a unit, so they are applied once per
+// player rather than from the scan: at game start for the ones live from 0:00
+// (CycleMod_ModActiveFromStart), at the activation delay for the rest, and on
+// every click of the testing panel. Every other modifier is a no-op here.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_CatalogModForPlayer(int player, int idx, bool on) {
+    if (idx == 1) {
+        if (on) { CycleMod_OpenSkiesForPlayer(player); }
+        else    { CycleMod_RevertOpenSkiesForPlayer(player); }
+    } else if (idx == 7) {
+        if (on) { CycleMod_ArcaneSurgeForPlayer(player); }
+        else    { CycleMod_RevertArcaneSurgeForPlayer(player); }
+    } else if (idx == 8) {
+        // Overwatch is per-unit state in the scan, except for the Baneling,
+        // whose share is baked into its damage numbers.
+        if (on) { CycleMod_ApplyOverwatchDamageForPlayer(player); }
+        else    { CycleMod_RevertOverwatchDamageForPlayer(player); }
+    } else if (idx == c_cycleModAutoRefinery) {
+        CycleMod_AutoRefineryForPlayer(player, on);
+    } else if (idx == c_cycleModMineralsOnly) {
+        CycleMod_MineralsOnlyForPlayer(player, on);
+    } else if (idx == c_cycleModLongReach) {
+        CycleMod_LongReachForPlayer(player, on);
+    }
+}
+
+void CycleMod_CatalogModForTeam(playergroup team, int idx, bool on) {
     int n;
     int i;
-    int p;
 
     n = PlayerGroupCount(team);
     i = 1;
     while (i <= n) {
-        p = PlayerGroupPlayer(team, i);
-        CycleMod_BlockGasHarvest(p, "SCVHarvest");
-        CycleMod_BlockGasHarvest(p, "ProbeHarvest");
-        CycleMod_BlockGasHarvest(p, "DroneHarvest");
+        CycleMod_CatalogModForPlayer(PlayerGroupPlayer(team, i), idx, on);
         i = i + 1;
     }
+}
+
+// Switch on both sides' catalog modifiers of one kind: the ones live from 0:00
+// (fromStart) or the ones that wait for the activation delay.
+void CycleMod_ApplyCatalogMods(bool fromStart) {
+    int i;
+
+    i = 1;
+    while (i <= g_cycle_p1Count) {
+        if (CycleMod_ModActiveFromStart(g_cycle_p1Mods[i]) == fromStart) {
+            CycleMod_CatalogModForTeam(CycleMod_P1Team(), g_cycle_p1Mods[i], true);
+        }
+        i = i + 1;
+    }
+    i = 1;
+    while (i <= g_cycle_p2Count) {
+        if (CycleMod_ModActiveFromStart(g_cycle_p2Mods[i]) == fromStart) {
+            CycleMod_CatalogModForTeam(CycleMod_P2Team(), g_cycle_p2Mods[i], true);
+        }
+        i = i + 1;
+    }
+}
+
+// One-time activation once the delay elapses (draft mode).
+void CycleMod_ActivateDelayedMods() {
+    CycleMod_ApplyCatalogMods(false);
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"FFD54A\">Battlefield modifiers are now ACTIVE.</c>"
+        + "  <c val=\"AAAAAA\">Opening vision ends - only a side that drafted Eyes Everywhere keeps it.</c>"));
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -2253,7 +3168,9 @@ void CycleMod_UpdateOpeningVision(unit u) {
     string beh;
 
     beh = CycleMod_Behavior(5);   // Eyes Everywhere
-    if (GameGetMissionTime() < c_cycleActivationDelay) {
+    // Testing mode has no opening (CycleMod_ModsLive is true from 0:00), so
+    // this only ever strips there.
+    if (!CycleMod_ModsLive()) {
         if (CycleMod_IsParticipantUnit(u) && !CycleMod_IsWorker(u)) {
             UnitBehaviorAdd(u, beh, u, 1);
         }
@@ -3214,7 +4131,8 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
     }
     if (beh == "" || beh == "TardigradeMod_BattleBlink"
         || beh == "TardigradeMod_Refund" || beh == "TardigradeMod_AutoRefinery"
-        || beh == "TardigradeMod_NoBans") {
+        || beh == "TardigradeMod_NoBans" || beh == "TardigradeMod_MineralsOnly"
+        || beh == "TardigradeMod_Yolo" || beh == "TardigradeMod_LongReach") {
         return;
     }
     if (beh == c_cycleMarchBehavior) {
@@ -3274,12 +4192,12 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
         if (!c_cyclePhaseMode) {
             if (!g_cycle_delayedApplied && GameGetMissionTime() >= c_cycleActivationDelay) {
                 CycleMod_ActivateDelayedMods();
-                // Here rather than inside ActivateDelayedMods, which is defined
-                // above the Auto Refineries section it would need to call.
-                if (CycleMod_P1HasModIdx(c_cycleModAutoRefinery)) { CycleMod_BlockGasHarvestTeam(CycleMod_P1Team()); }
-                if (CycleMod_P2HasModIdx(c_cycleModAutoRefinery)) { CycleMod_BlockGasHarvestTeam(CycleMod_P2Team()); }
                 g_cycle_delayedApplied = true;
             }
+            // Minerals Only: gas that reached the bank since the last tick
+            // becomes minerals.
+            if (CycleMod_P1HasModIdx(c_cycleModMineralsOnly)) { CycleMod_ConvertGasIncome(CycleMod_P1Team()); }
+            if (CycleMod_P2HasModIdx(c_cycleModMineralsOnly)) { CycleMod_ConvertGasIncome(CycleMod_P2Team()); }
         }
         if (c_cyclePhaseMode) { doScan = g_cycle_activeBehavior != ""; }
         else                  { doScan = true; }
@@ -3309,8 +4227,12 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
                 } else {
                     // Draft: apply each side's picks only to that side's own units.
                     p = 1;
-                    while (p <= c_cyclePicksEach) {
+                    while (p <= g_cycle_p1Count) {
                         CycleMod_ApplyPickedBehavior(u, g_cycle_p1Mods[p]);
+                        p = p + 1;
+                    }
+                    p = 1;
+                    while (p <= g_cycle_p2Count) {
                         CycleMod_ApplyPickedBehavior(u, g_cycle_p2Mods[p]);
                         p = p + 1;
                     }
@@ -3588,11 +4510,20 @@ void CycleMod_StartCycle() {
 
     if (c_cyclePhaseMode) {
         CycleMod_InitHUD();
+    } else if (GameMode_IsTesting()) {
+        // No draft, no delay, no opening vision: the testing panel
+        // (TestingMode.galaxy) switches modifiers on and off, and does its own
+        // catalog work as it goes. Nothing is left to activate at the delay.
+        g_cycle_delayedApplied = true;
     } else {
         CycleMod_InitDraftPanel();
+        // Live from 0:00 (Auto Refineries, Minerals Only): costs and harvest
+        // rules have to be in place before the first thing is built.
+        CycleMod_ApplyCatalogMods(true);
         UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
             "<c val=\"7FD0FF\">Eyes Everywhere is on for everyone until modifiers activate at "
-            + CycleMod_ActivationClockText() + ".</c>"));
+            + CycleMod_ActivationClockText() + ".</c>"
+            + "  <c val=\"AAAAAA\">Auto Refineries and Minerals Only are live from the start.</c>"));
     }
 
     g_cycle_damageTrig = TriggerCreate("CycleMod_OnUnitDamaged");
@@ -3611,7 +4542,8 @@ void CycleMod_StartCycle() {
 
     // Auto Refineries: every Gather order any worker receives. Harmless for
     // everyone else - the handler bails unless the target is an automatic
-    // refinery, which only exists for the drafting side after 3:00.
+    // refinery, which only exists for the side that has the modifier (live
+    // from 0:00, see CycleMod_ModActiveFromStart).
     // Veteran Forces: catch every unit creation, to link spawned units
     // (Interceptors, Locusts, Broodlings, Auto-Turrets) to their spawner.
     tSpawned = TriggerCreate("CycleMod_OnUnitSpawned");

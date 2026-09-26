@@ -1,0 +1,238 @@
+//--------------------------------------------------------------------------------------------------
+// Game Modes
+//
+// Chosen once, before the race draft, by the first human decider (see
+// RaceDraft_Setup). Everything else in the mod reads g_game_mode through the
+// GameMode_Is* helpers below.
+//
+//   Casual     - the draft as it always was: no time limits, normal game.
+//   Tournament - every draft step (race ban/pick, modifier ban/pick, unit
+//                pick/ban) has a c_tournamentStepSeconds limit. When it runs
+//                out, a random legal option is taken for whoever was up.
+//   Testing    - no draft at all. Everyone keeps their lobby town hall, gets one
+//                SCV, one Probe and one Drone, a huge bank, instant build times
+//                and every unit unlocked, plus a panel to switch modifiers on
+//                and off for their own side at will (TestingMode.galaxy).
+//
+// Included before RaceDraft, so it can only lean on natives and DraftStyle:
+// every dialog here addresses PlayerGroupAll() directly, which is exactly what
+// Tardigrade_Viewers() returns anyway (see Tardigrade_RefreshViewerGroups).
+//--------------------------------------------------------------------------------------------------
+
+const int c_gameModeCasual     = 0;
+const int c_gameModeTournament = 1;
+const int c_gameModeTesting    = 2;
+
+// Real seconds per draft step in Tournament mode. The draft runs with mission
+// time paused, so this is counted in real time (see DraftTimer_Run).
+const int c_tournamentStepSeconds = 10;
+
+int g_game_mode = c_gameModeCasual;
+
+bool GameMode_IsTournament() { return g_game_mode == c_gameModeTournament; }
+bool GameMode_IsTesting()    { return g_game_mode == c_gameModeTesting; }
+
+string GameMode_Name(int mode) {
+    if (mode == c_gameModeTournament) { return "Tournament"; }
+    if (mode == c_gameModeTesting)    { return "Testing"; }
+    return "Casual";
+}
+
+string GameMode_Desc(int mode) {
+    if (mode == c_gameModeTournament) {
+        return IntToString(c_tournamentStepSeconds) + "s per draft step, then a random pick";
+    }
+    if (mode == c_gameModeTesting) { return "no draft: huge bank, instant builds, all units"; }
+    return "normal draft, no time limits";
+}
+
+//==================================================================================================
+// MODE SELECT
+//==================================================================================================
+int     g_gmode_dialog   = c_invalidDialogId;
+int     g_gmode_label    = c_invalidDialogControlId;
+int[3]  g_gmode_btn;                 // [0..2] indexed by c_gameMode*
+int     g_gmode_chooser  = 0;
+trigger g_gmode_trigger  = null;
+trigger g_gmode_callback = null;
+
+bool GameMode_OnClicked(bool testConds, bool runActions) {
+    int control;
+    int mode;
+    int i;
+
+    if (EventPlayer() != g_gmode_chooser) { return true; }
+    control = EventDialogControl();
+    mode = -1;
+    i = 0;
+    while (i <= 2) {
+        if (control == g_gmode_btn[i]) { mode = i; }
+        i = i + 1;
+    }
+    if (mode < 0) { return true; }
+
+    g_game_mode = mode;
+    if (g_gmode_trigger != null) { TriggerDestroy(g_gmode_trigger); g_gmode_trigger = null; }
+    DialogDestroy(g_gmode_dialog);
+    g_gmode_dialog = c_invalidDialogId;
+
+    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
+        "<c val=\"FFD54A\">Game mode: " + GameMode_Name(mode) + "</c>  <c val=\"AAAAAA\">- "
+        + GameMode_Desc(mode) + "</c>"));
+
+    if (g_gmode_callback != null) {
+        TriggerExecute(g_gmode_callback, false, false);
+    }
+    return true;
+}
+
+// Show the mode picker. Only `chooser` can click; everyone else sees the same
+// three cards disabled (a spectator only ever sees a dialog through the player
+// they are watching - Tardigrade_ObservableDialog - so nobody gets a blank
+// screen). `callback` runs once a mode is chosen.
+void GameMode_Select(int chooser, trigger callback) {
+    playergroup all;
+    playergroup mine;
+    playergroup others;
+    int         i;
+
+    g_gmode_chooser  = chooser;
+    g_gmode_callback = callback;
+    all    = PlayerGroupAll();
+    mine   = PlayerGroupSingle(chooser);
+    others = PlayerGroupCopy(PlayerGroupAll());
+    PlayerGroupRemove(others, chooser);
+
+    g_gmode_dialog = DialogCreate(460, 330, c_anchorCenter, 0, 0, true);
+    DialogSetObservedType(g_gmode_dialog, c_triggerObservedTypeObservedOrSelectedPlayerId);
+    DialogSetTitle(g_gmode_dialog, StringToText("Tardigrade  -  Game Mode"));
+    DialogSetVisible(g_gmode_dialog, all, true);
+
+    g_gmode_label = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_gmode_label, all, 400, 40);
+    DialogControlSetPosition(g_gmode_label, all, c_anchorTop, 0, 60);
+    DialogControlSetPropertyAsText(g_gmode_label, c_triggerControlPropertyText, mine,
+        StringToText("<c val=\"00FF88\">Choose the game mode</c>"));
+    DialogControlSetPropertyAsText(g_gmode_label, c_triggerControlPropertyText, others,
+        StringToText("<c val=\"888888\">Player " + IntToString(chooser)
+            + " is choosing the game mode...</c>"));
+
+    i = 0;
+    while (i <= 2) {
+        g_gmode_btn[i] = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_gmode_btn[i], all);
+        DialogControlSetSize(g_gmode_btn[i], all, 380, 54);
+        DialogControlSetPosition(g_gmode_btn[i], all, c_anchorTop, 0, 110 + i * 64);
+        DraftStyle_ApplyCard(g_gmode_btn[i], mine, c_draftStateOpen,
+            DraftStyle_Card(c_draftStateOpen, "", GameMode_Name(i), GameMode_Desc(i)), true);
+        DraftStyle_ApplyCard(g_gmode_btn[i], others, c_draftStateOpen,
+            DraftStyle_Card(c_draftStateOpen, "", GameMode_Name(i), GameMode_Desc(i)), false);
+        i = i + 1;
+    }
+
+    g_gmode_trigger = TriggerCreate("GameMode_OnClicked");
+    i = 0;
+    while (i <= 2) {
+        TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_btn[i],
+            c_triggerControlEventTypeClick);
+        i = i + 1;
+    }
+}
+
+//==================================================================================================
+// DRAFT TIMER (Tournament)
+//
+// One persistent thread for the whole draft, not one per step. Each draft
+// screen calls DraftTimer_Arm(onExpire) as it starts a new step; that resets
+// the clock to c_tournamentStepSeconds and remembers which auto-pick to run.
+// When it reaches zero the thread disarms and runs onExpire, which takes a
+// random legal option through the same path a click would - and that path
+// arms the timer again for the next step. A per-step thread would need a
+// token to tell a stale countdown from the live one; a single thread with a
+// deadline has nothing to go stale.
+//
+// Counted in real time in 0.25s ticks: the draft runs with mission time
+// paused, and c_timeGame waits do not advance while it is (see
+// Tardigrade_Countdown).
+//--------------------------------------------------------------------------------------------------
+bool    g_dtimer_running = false;
+bool    g_dtimer_armed   = false;
+fixed   g_dtimer_left    = 0.0;
+trigger g_dtimer_expire  = null;
+int     g_dtimer_dialog  = c_invalidDialogId;
+int     g_dtimer_label   = c_invalidDialogControlId;
+
+void DraftTimer_Show(bool visible) {
+    if (g_dtimer_dialog == c_invalidDialogId) { return; }
+    DialogSetVisible(g_dtimer_dialog, PlayerGroupAll(), visible);
+}
+
+bool DraftTimer_Run(bool testConds, bool runActions) {
+    int     secs;
+    trigger expire;
+
+    while (g_dtimer_running) {
+        if (g_dtimer_armed) {
+            if (g_dtimer_left <= 0.0) {
+                g_dtimer_armed = false;
+                DraftTimer_Show(false);
+                expire = g_dtimer_expire;
+                if (expire != null) {
+                    // Wait for it: the auto-pick re-arms the timer for the
+                    // next step, and that has to land before the next tick.
+                    TriggerExecute(expire, false, true);
+                }
+            } else {
+                secs = FixedToInt(g_dtimer_left + 0.99);
+                DialogControlSetPropertyAsText(g_dtimer_label, c_triggerControlPropertyText,
+                    PlayerGroupAll(), StringToText("<c val=\"FFD54A\">TOURNAMENT</c>   "
+                        + "<c val=\"FFFFFF\">" + IntToString(secs) + "s</c>"
+                        + "  <c val=\"AAAAAA\">left - then a random pick</c>"));
+                g_dtimer_left = g_dtimer_left - 0.25;
+            }
+        }
+        Wait(0.25, c_timeReal);
+    }
+    return true;
+}
+
+// Start (or restart) the countdown for the step that is now up. No-op outside
+// Tournament mode, so every draft screen can call it unconditionally.
+void DraftTimer_Arm(trigger onExpire) {
+    if (!GameMode_IsTournament()) { return; }
+
+    if (g_dtimer_dialog == c_invalidDialogId) {
+        g_dtimer_dialog = DialogCreate(420, 44, c_anchorTop, 0, 90, false);
+        DialogSetObservedType(g_dtimer_dialog, c_triggerObservedTypeObservedOrSelectedPlayerId);
+        DialogSetImageVisible(g_dtimer_dialog, true);
+        g_dtimer_label = DialogControlCreate(g_dtimer_dialog, c_triggerControlTypeLabel);
+        DialogControlSetSize(g_dtimer_label, PlayerGroupAll(), 400, 30);
+        DialogControlSetPosition(g_dtimer_label, PlayerGroupAll(), c_anchorCenter, 0, 0);
+    }
+
+    g_dtimer_expire = onExpire;
+    g_dtimer_left   = IntToFixed(c_tournamentStepSeconds);
+    g_dtimer_armed  = true;
+    DraftTimer_Show(true);
+
+    if (!g_dtimer_running) {
+        g_dtimer_running = true;
+        TriggerExecute(TriggerCreate("DraftTimer_Run"), false, false);
+    }
+}
+
+// Stop counting (a step finished some other way, e.g. the debug auto-run).
+void DraftTimer_Disarm() {
+    g_dtimer_armed = false;
+    DraftTimer_Show(false);
+}
+
+// The draft is over: stop the thread and drop the dialog.
+void DraftTimer_Shutdown() {
+    g_dtimer_armed   = false;
+    g_dtimer_running = false;
+    if (g_dtimer_dialog != c_invalidDialogId) {
+        DialogDestroy(g_dtimer_dialog);
+        g_dtimer_dialog = c_invalidDialogId;
+    }
+}

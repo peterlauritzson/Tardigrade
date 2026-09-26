@@ -1,20 +1,31 @@
 //--------------------------------------------------------------------------------------------------
 // Roster Draft System
 //
-// Players snake-draft 4 specialized units each (2 core are auto-assigned).
-// Snake pick order: P2, P1, P1, P2, P2, P1, P1, P2  (1-2-2-1 format x2)
-// Each player picks from their own race's independent 12-unit pool.
-// Total roster per player: 2 Core + 4 Drafted = 6 units.
+// Each player drafts 6 units from their own race's pool (no protected core):
+//   opening picks  P1 P2 P2 P1          (2 each, before any bans)
+//   cross-bans     P1 P2 P1 P2          (each bans from the OPPONENT's pool)
+//   final picks    P2 P1 P1 P2 P2 P1 P1 P2
+//
+// The schedule is built per game in RosterDraft_Start, not fixed, because two
+// modifiers drafted just before this remove steps from it:
+//   No Bans (12) - the opponent's bans against that side are dropped.
+//   YOLO    (16) - that side does not draft at all. Its roster is dealt at the
+//                  start: 7 units at random from its race's pool, nothing
+//                  guaranteed. Its pick steps are
+//                  dropped, bans against it are dropped (nothing to protect),
+//                  and its own ban turns are taken at random, on the spot.
 //
 // Requires: RaceDraft.galaxy (for GetRaceConfigId, race constants)
 //--------------------------------------------------------------------------------------------------
 
 // Constants
 const int c_rosterPoolMax    = 18; // max draftable units per race (2 columns of 9)
-const int c_rosterBanTotal   = 4;  // total cross-bans (2 per player)
-const int c_rosterPickTotal  = 12; // total snake picks (6 per player)
+const int c_rosterBanTotal   = 4;  // total cross-bans (2 per player), before skips
+const int c_rosterPickTotal  = 12; // total snake picks (6 per player), before skips
 const int c_rosterPreBanPicks = 4; // opening picks made BEFORE bans (2 per player)
 const int c_rosterRosterSize = 6;  // drafted units per player (no protected core)
+const int c_rosterYoloSize   = 7;  // a YOLO roster: 7 random units
+// Roster arrays are sized with the literal 8 - keep > c_rosterYoloSize.
 
 // State
 trigger g_roster_callback    = null;
@@ -23,22 +34,25 @@ int     g_roster_p2;
 int     g_roster_p1Race;
 int     g_roster_p2Race;
 
-// Roster results — index 1..6 (all drafted; no protected core units)
+// Roster results — index 1..6, or 1..7 for a YOLO side; unused slots are "".
 // Accessible globally for later systems (roster enforcement, etc.)
-string[7] g_roster_p1Units;
-string[7] g_roster_p2Units;
+string[8] g_roster_p1Units;
+string[8] g_roster_p2Units;
 
 // Draft tracking
-int       g_roster_phase       = 0;   // 0 = ban phase, 1 = pick phase
+int       g_roster_phase       = 0;   // 0 = opening picks, 1 = bans, 2 = final picks
 int       g_roster_banIndex    = 0;
-int       g_roster_banCount    = 0;   // bans actually scheduled: c_rosterBanTotal minus No Bans skips
+int       g_roster_banCount    = 0;   // bans actually scheduled: c_rosterBanTotal minus skips
 int[5]    g_roster_banOrder;          // [1..banCount] who is doing the banning
 bool[5]   g_roster_banIsP1;           // [1..banCount] true = P1 is banning (from P2's pool)
 bool[19]  g_roster_p1Banned;          // units banned FROM P1's pool (by P2)
 bool[19]  g_roster_p2Banned;          // units banned FROM P2's pool (by P1)
 int       g_roster_pickIndex   = 0;
+int       g_roster_pickCount   = 0;   // picks actually scheduled: c_rosterPickTotal minus YOLO skips
+int       g_roster_openCount   = 0;   // how many of them are opening picks (before bans)
 int[13]   g_roster_pickOrder;
 bool[13]  g_roster_pickIsP1;
+trigger   g_roster_autoTrig    = null; // RosterDraft_AutoAct, run by the Tournament timer
 bool[19]  g_roster_p1Picked;          // [1..18] which pool slots P1 has taken
 bool[19]  g_roster_p2Picked;          // [1..18] which pool slots P2 has taken
 int       g_roster_p1PickCount = 0;
@@ -50,8 +64,8 @@ int       g_roster_lblTitle    = c_invalidDialogControlId;
 int       g_roster_lblSubtitle = c_invalidDialogControlId; // "YOUR TURN" or "waiting..."
 int       g_roster_lblPoolHdr = c_invalidDialogControlId;   // "YOUR POOL" / "THEIR POOL"
 int[19]   g_roster_btnPool;                                // [1..18] unit pool buttons
-int[7]    g_roster_lblSlot;                                // [1..6] your roster slots
-int[7]    g_roster_lblOppSlot;                             // [1..6] opponent roster slots
+int[8]    g_roster_lblSlot;                                // [1..7] your roster slots
+int[8]    g_roster_lblOppSlot;                             // [1..7] opponent roster slots
 trigger   g_roster_trigger     = null;
 
 // In-game roster HUD (top-left toggle that expands to your 6 drafted units +
@@ -65,12 +79,12 @@ int[16]    g_rhud_dialog;
 int[16]    g_rhud_btn;
 int[16]    g_rhud_hdrMine;
 int[16]    g_rhud_hdrOpp;
-int[16][7] g_rhud_lblMine;
-int[16][7] g_rhud_lblOpp;
+int[16][8] g_rhud_lblMine;
+int[16][8] g_rhud_lblOpp;
 bool[16]   g_rhud_expanded;
 int    g_rhud_audDialog = c_invalidDialogId;
 int    g_rhud_audTitle  = c_invalidDialogControlId;
-int[7] g_rhud_audRow;
+int[8] g_rhud_audRow;
 
 //--------------------------------------------------------------------------------------------------
 // Data Helpers
@@ -87,8 +101,10 @@ int GetRosterPoolCount(int race) {
     return UserDataGetInt("TardigradeRosterConfig", GetRaceConfigId(race), "PoolCount", 1);
 }
 
-// Human-readable display name for a unit type string.
+// Human-readable display name for a unit type string. An empty roster slot
+// (the 7th row, when only the other side is YOLO) reads as a dash.
 string RosterUnitDisplayName(string unitType) {
+    if (unitType == "")             { return "-"; }
     // Terran
     if (unitType == "Marine")       { return "Marine"; }
     if (unitType == "Medivac")      { return "Medivac"; }
@@ -202,6 +218,103 @@ string RosterUnitRole(string unitType) {
 }
 
 //--------------------------------------------------------------------------------------------------
+// YOLO (modifier 16)
+//--------------------------------------------------------------------------------------------------
+bool RosterDraft_IsYolo(bool isP1) {
+    return CycleMod_SideIsYolo(isP1);
+}
+
+// Rows every roster list shows: 7 when a YOLO roster is in the game, so both
+// columns line up; 6 otherwise.
+int RosterDraft_Rows() {
+    if (RosterDraft_IsYolo(true) || RosterDraft_IsYolo(false)) { return c_rosterYoloSize; }
+    return c_rosterRosterSize;
+}
+
+// A random slot of this pool that is neither banned nor picked, or 0.
+int RosterDraft_RandomOpenSlot(bool poolIsP1, int race) {
+    int poolCount;
+    int open;
+    int n;
+    int i;
+    bool taken;
+
+    poolCount = GetRosterPoolCount(race);
+    open = 0;
+    i = 1;
+    while (i <= poolCount) {
+        if (poolIsP1) { taken = g_roster_p1Banned[i] || g_roster_p1Picked[i]; }
+        else          { taken = g_roster_p2Banned[i] || g_roster_p2Picked[i]; }
+        if (!taken) { open = open + 1; }
+        i = i + 1;
+    }
+    if (open == 0) { return 0; }
+
+    n = RandomInt(1, open);
+    i = 1;
+    while (i <= poolCount) {
+        if (poolIsP1) { taken = g_roster_p1Banned[i] || g_roster_p1Picked[i]; }
+        else          { taken = g_roster_p2Banned[i] || g_roster_p2Picked[i]; }
+        if (!taken) {
+            n = n - 1;
+            if (n == 0) { return i; }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Take pool slot `idx` into a side's roster (marks it picked, so the board
+// shows it as that side's).
+void RosterDraft_TakeSlot(bool isP1, int race, int idx) {
+    string unitType;
+    unitType = GetRosterPoolUnit(race, idx);
+    if (isP1) {
+        g_roster_p1Picked[idx] = true;
+        g_roster_p1PickCount   = g_roster_p1PickCount + 1;
+        g_roster_p1Units[g_roster_p1PickCount] = unitType;
+    } else {
+        g_roster_p2Picked[idx] = true;
+        g_roster_p2PickCount   = g_roster_p2PickCount + 1;
+        g_roster_p2Units[g_roster_p2PickCount] = unitType;
+    }
+}
+
+// Deal a YOLO side its whole roster: 7 units at random from the race's pool,
+// nothing guaranteed. Expects the side's picked flags and pick count to be
+// freshly reset. Also used by the debug auto-run, which skips the draft screens.
+void RosterDraft_FillYolo(bool isP1, int race) {
+    int    i;
+    string unitType;
+    string names;
+
+    while ((isP1 && g_roster_p1PickCount < c_rosterYoloSize)
+        || (!isP1 && g_roster_p2PickCount < c_rosterYoloSize)) {
+        i = RosterDraft_RandomOpenSlot(isP1, race);
+        if (i == 0) { break; }
+        RosterDraft_TakeSlot(isP1, race, i);
+    }
+
+    names = "";
+    i = 1;
+    while (i <= c_rosterYoloSize) {
+        if (isP1) { unitType = g_roster_p1Units[i]; } else { unitType = g_roster_p2Units[i]; }
+        if (unitType != "") {
+            if (names != "") { names = names + ", "; }
+            names = names + RosterUnitDisplayName(unitType);
+        }
+        i = i + 1;
+    }
+    if (isP1) {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"7FD0FF\">P1</c> <c val=\"FFD54A\">YOLO roster:</c> " + names));
+    } else {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"FF9F7F\">P2</c> <c val=\"FFD54A\">YOLO roster:</c> " + names));
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
 // Roster Draft: Roster Panel (right side)
 // Shows BOTH your roster and the opponent's roster live, so players can
 // counter-draft. Each player sees their own picks in green (top) and the
@@ -255,7 +368,7 @@ void RosterDraft_UpdateRosterPanel() {
     aud     = Tardigrade_Audience();
 
     i = 1;
-    while (i <= c_rosterRosterSize) {
+    while (i <= RosterDraft_Rows()) {
         // P1's view: own = P1, opponent = P2
         DialogControlSetPropertyAsText(g_roster_lblSlot[i], c_triggerControlPropertyText,
             p1Group, StringToText(RosterDraft_SlotText(g_roster_p1Units[i], i, true)));
@@ -366,7 +479,7 @@ void RosterDraft_UpdateUI() {
     } else {
         // PICK PHASE: active player picks from their own pool (phase 0 = opening, 2 = final)
         stepNum      = g_roster_pickIndex + 1;
-        stepTotal    = c_rosterPickTotal;
+        stepTotal    = g_roster_pickCount;
         activePicker = g_roster_pickOrder[stepNum];
         activeIsP1   = g_roster_pickIsP1[stepNum];
         // Picking from your own pool.
@@ -525,6 +638,8 @@ void RosterDraft_Finish() {
     string logMsg;
     int i;
 
+    DraftTimer_Disarm();
+
     // Cleanup
     if (g_roster_trigger != null) {
         TriggerDestroy(g_roster_trigger);
@@ -538,16 +653,14 @@ void RosterDraft_Finish() {
     // Debug log
     logMsg = "=== Roster Draft Complete ===\nP1 Roster:";
     i = 1;
-    while (i <= c_rosterRosterSize) {
-        logMsg = logMsg + " " + g_roster_p1Units[i];
-        if (i < c_rosterRosterSize) { logMsg = logMsg + ","; }
+    while (i <= c_rosterYoloSize) {
+        if (g_roster_p1Units[i] != "") { logMsg = logMsg + " " + g_roster_p1Units[i]; }
         i = i + 1;
     }
     logMsg = logMsg + "\nP2 Roster:";
     i = 1;
-    while (i <= c_rosterRosterSize) {
-        logMsg = logMsg + " " + g_roster_p2Units[i];
-        if (i < c_rosterRosterSize) { logMsg = logMsg + ","; }
+    while (i <= c_rosterYoloSize) {
+        if (g_roster_p2Units[i] != "") { logMsg = logMsg + " " + g_roster_p2Units[i]; }
         i = i + 1;
     }
     Debug_Log(logMsg);
@@ -561,18 +674,152 @@ void RosterDraft_Finish() {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Roster Draft: steps
+//
+// A step is one ban or one pick. RosterDraft_Choose applies one for whoever is
+// up - the click handler, the Tournament auto-pick and a YOLO side's automatic
+// bans all go through it - then RosterDraft_Advance moves the phase along and
+// RosterDraft_BeginStep sets up the next one.
+//--------------------------------------------------------------------------------------------------
+void RosterDraft_BeginStep();
+
+// Close any phase whose steps are all done. True if the whole draft is over
+// (and has been finished).
+bool RosterDraft_Advance() {
+    if (g_roster_phase == 0 && g_roster_pickIndex >= g_roster_openCount) {
+        // Opening picks done -> ban phase, unless No Bans / YOLO left nothing
+        // to ban - an empty ban phase would wait on a click that can't come.
+        if (g_roster_banCount > 0) {
+            g_roster_phase = 1;
+            UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
+                StringToText("<c val=\"FF4444\">Opening picks done! Ban phase begins.</c>"));
+        } else {
+            g_roster_phase = 2;
+        }
+    }
+    if (g_roster_phase == 1 && g_roster_banIndex >= g_roster_banCount) {
+        // Bans done -> resume picking (pickIndex continues from the opening picks)
+        g_roster_phase = 2;
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
+            StringToText("<c val=\"FFD700\">Bans complete! Final picks begin.</c>"));
+    }
+    if (g_roster_phase == 2 && g_roster_pickIndex >= g_roster_pickCount) {
+        RosterDraft_Finish();
+        return true;
+    }
+    return false;
+}
+
+// Skip the current step outright - only when it has no legal option left
+// (a pool with nothing open), which a normal pool size never produces.
+void RosterDraft_SkipStep() {
+    if (g_roster_phase == 1) { g_roster_banIndex = g_roster_banIndex + 1; }
+    else                     { g_roster_pickIndex = g_roster_pickIndex + 1; }
+    if (!RosterDraft_Advance()) { RosterDraft_BeginStep(); }
+}
+
+void RosterDraft_Choose(int poolIndex) {
+    bool   activeIsP1;
+    int    activeRace;
+    string unitType;
+
+    if (poolIndex <= 0 || poolIndex > c_rosterPoolMax) { return; }
+
+    if (g_roster_phase == 1) {
+        // ── BAN: the active banner bans from the OPPONENT's pool ─────────────
+        activeIsP1 = g_roster_banIsP1[g_roster_banIndex + 1];
+        if (activeIsP1) {
+            // P1 banning from P2's pool (can't ban units P2 already banned or picked)
+            if (g_roster_p2Banned[poolIndex] || g_roster_p2Picked[poolIndex]) { return; }
+            unitType = GetRosterPoolUnit(g_roster_p2Race, poolIndex);
+            if (unitType == "") { return; }
+            g_roster_p2Banned[poolIndex] = true;
+            Debug_Log("P1 banned from P2 pool: " + unitType);
+        } else {
+            // P2 banning from P1's pool (can't ban units P1 already banned or picked)
+            if (g_roster_p1Banned[poolIndex] || g_roster_p1Picked[poolIndex]) { return; }
+            unitType = GetRosterPoolUnit(g_roster_p1Race, poolIndex);
+            if (unitType == "") { return; }
+            g_roster_p1Banned[poolIndex] = true;
+            Debug_Log("P2 banned from P1 pool: " + unitType);
+        }
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
+            StringToText("<c val=\"FF4444\">BANNED: " + RosterUnitDisplayName(unitType) + "</c>"));
+        g_roster_banIndex = g_roster_banIndex + 1;
+    } else {
+        // ── PICK: from your own pool ─────────────────────────────────────────
+        activeIsP1 = g_roster_pickIsP1[g_roster_pickIndex + 1];
+        if (activeIsP1) {
+            activeRace = g_roster_p1Race;
+            if (g_roster_p1Picked[poolIndex] || g_roster_p1Banned[poolIndex]) { return; }
+        } else {
+            activeRace = g_roster_p2Race;
+            if (g_roster_p2Picked[poolIndex] || g_roster_p2Banned[poolIndex]) { return; }
+        }
+        unitType = GetRosterPoolUnit(activeRace, poolIndex);
+        if (unitType == "") { return; }
+        RosterDraft_TakeSlot(activeIsP1, activeRace, poolIndex);
+        if (activeIsP1) { Debug_Log("P1 drafted: " + unitType); }
+        else            { Debug_Log("P2 drafted: " + unitType); }
+        g_roster_pickIndex = g_roster_pickIndex + 1;
+    }
+
+    if (!RosterDraft_Advance()) { RosterDraft_BeginStep(); }
+}
+
+// A random legal option for the step that is up: a ban from the opponent's
+// pool, or a pick from your own. 0 if there is none.
+int RosterDraft_RandomChoice() {
+    bool isP1;
+    if (g_roster_phase == 1) {
+        isP1 = g_roster_banIsP1[g_roster_banIndex + 1];
+        if (isP1) { return RosterDraft_RandomOpenSlot(false, g_roster_p2Race); }
+        return RosterDraft_RandomOpenSlot(true, g_roster_p1Race);
+    }
+    isP1 = g_roster_pickIsP1[g_roster_pickIndex + 1];
+    if (isP1) { return RosterDraft_RandomOpenSlot(true, g_roster_p1Race); }
+    return RosterDraft_RandomOpenSlot(false, g_roster_p2Race);
+}
+
+void RosterDraft_ChooseRandom() {
+    int slot;
+    slot = RosterDraft_RandomChoice();
+    if (slot == 0) { RosterDraft_SkipStep(); }
+    else           { RosterDraft_Choose(slot); }
+}
+
+// Tournament: the clock ran out.
+bool RosterDraft_AutoAct(bool testConds, bool runActions) {
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"AAAAAA\">Time's up - a random choice is made.</c>"));
+    RosterDraft_ChooseRandom();
+    return true;
+}
+
+void RosterDraft_BeginStep() {
+    RosterDraft_UpdateUI();
+
+    // A YOLO side's ban turns are taken for it, at random, on the spot.
+    if (g_roster_phase == 1 && RosterDraft_IsYolo(g_roster_banIsP1[g_roster_banIndex + 1])) {
+        DraftTimer_Disarm();
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"FFD54A\">YOLO</c> <c val=\"AAAAAA\">- a random ban:</c>"));
+        RosterDraft_ChooseRandom();
+        return;
+    }
+
+    // Tournament: this step is on the clock (no-op in other modes).
+    DraftTimer_Arm(g_roster_autoTrig);
+}
+
+//--------------------------------------------------------------------------------------------------
 // Roster Draft: Button Click Handler
 //--------------------------------------------------------------------------------------------------
 bool RosterDraft_OnClicked(bool testConds, bool runActions) {
-    int  control;
-    int  player;
-    int  stepNum;
-    int  activePicker;
-    bool activeIsP1;
-    int  activeRace;
-    int  poolIndex;
-    int  btnIdx;
-    string unitType;
+    int control;
+    int player;
+    int poolIndex;
+    int btnIdx;
 
     control = EventDialogControl();
     player  = EventPlayer();
@@ -589,91 +836,14 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
     }
     if (poolIndex == 0) { return true; }
 
+    // Only whoever is up may act.
     if (g_roster_phase == 1) {
-        // ── BAN PHASE ────────────────────────────────────────────────────────
-        stepNum      = g_roster_banIndex + 1;
-        activePicker = g_roster_banOrder[stepNum];
-        activeIsP1   = g_roster_banIsP1[stepNum];
-
-        if (player != activePicker) { return true; }
-
-        // Active banner bans from the OPPONENT's pool
-        if (activeIsP1) {
-            // P1 banning from P2's pool (can't ban units P2 already banned or picked)
-            if (g_roster_p2Banned[poolIndex] || g_roster_p2Picked[poolIndex]) { return true; }
-            unitType = GetRosterPoolUnit(g_roster_p2Race, poolIndex);
-            g_roster_p2Banned[poolIndex] = true;
-            Debug_Log("P1 banned from P2 pool: " + unitType);
-        } else {
-            // P2 banning from P1's pool (can't ban units P1 already banned or picked)
-            if (g_roster_p1Banned[poolIndex] || g_roster_p1Picked[poolIndex]) { return true; }
-            unitType = GetRosterPoolUnit(g_roster_p1Race, poolIndex);
-            g_roster_p1Banned[poolIndex] = true;
-            Debug_Log("P2 banned from P1 pool: " + unitType);
-        }
-
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
-            StringToText("<c val=\"FF4444\">BANNED: " + RosterUnitDisplayName(unitType) + "</c>"));
-
-        g_roster_banIndex = g_roster_banIndex + 1;
-        if (g_roster_banIndex >= g_roster_banCount) {
-            // Bans done -> resume picking (pickIndex continues from the opening picks)
-            g_roster_phase = 2;
-            UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
-                StringToText("<c val=\"FFD700\">Bans complete! Final picks begin.</c>"));
-        }
-        RosterDraft_UpdateUI();
-
+        if (player != g_roster_banOrder[g_roster_banIndex + 1]) { return true; }
     } else {
-        // ── PICK PHASE ───────────────────────────────────────────────────────
-        stepNum      = g_roster_pickIndex + 1;
-        activePicker = g_roster_pickOrder[stepNum];
-        activeIsP1   = g_roster_pickIsP1[stepNum];
-
-        if (player != activePicker) { return true; }
-
-        if (activeIsP1) { activeRace = g_roster_p1Race; }
-        else            { activeRace = g_roster_p2Race; }
-
-        // Guard: already picked or banned
-        if (activeIsP1 && (g_roster_p1Picked[poolIndex] || g_roster_p1Banned[poolIndex])) { return true; }
-        if (!activeIsP1 && (g_roster_p2Picked[poolIndex] || g_roster_p2Banned[poolIndex])) { return true; }
-
-        unitType = GetRosterPoolUnit(activeRace, poolIndex);
-
-        if (activeIsP1) {
-            g_roster_p1Picked[poolIndex] = true;
-            g_roster_p1PickCount         = g_roster_p1PickCount + 1;
-            g_roster_p1Units[g_roster_p1PickCount] = unitType;
-            Debug_Log("P1 drafted: " + unitType + " (slot " + IntToString(g_roster_p1PickCount) + ")");
-        } else {
-            g_roster_p2Picked[poolIndex] = true;
-            g_roster_p2PickCount         = g_roster_p2PickCount + 1;
-            g_roster_p2Units[g_roster_p2PickCount] = unitType;
-            Debug_Log("P2 drafted: " + unitType + " (slot " + IntToString(g_roster_p2PickCount) + ")");
-        }
-
-        g_roster_pickIndex = g_roster_pickIndex + 1;
-
-        if (g_roster_phase == 0 && g_roster_pickIndex >= c_rosterPreBanPicks) {
-            // Opening picks done -> ban phase, unless No Bans left nothing to ban
-            // (only possible if both sides had it, which one draft cannot produce -
-            // but an empty ban phase would otherwise wait on a click that can't come).
-            if (g_roster_banCount > 0) {
-                g_roster_phase = 1;
-                UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
-                    StringToText("<c val=\"FF4444\">Opening picks done! Ban phase begins.</c>"));
-            } else {
-                g_roster_phase = 2;
-            }
-            RosterDraft_UpdateUI();
-        } else if (g_roster_pickIndex >= c_rosterPickTotal) {
-            RosterDraft_Finish();
-        } else {
-            RosterDraft_UpdateUI();
-        }
+        if (player != g_roster_pickOrder[g_roster_pickIndex + 1]) { return true; }
     }
 
+    RosterDraft_Choose(poolIndex);
     return true;
 }
 
@@ -683,12 +853,25 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
 //--------------------------------------------------------------------------------------------------
 // Append a ban step for this banner unless their target pool is protected.
 // bannerIsP1 = true means P1 bans from P2's pool, so P2's No Bans cancels it.
+// A YOLO pool is skipped too: its roster is already dealt, so a ban on it
+// could only ever land on a unit nobody was going to pick.
 void RosterDraft_ScheduleBan(int banner, bool bannerIsP1) {
     if (bannerIsP1 && CycleMod_P2HasModIdx(c_cycleModNoBans)) { return; }
     if (!bannerIsP1 && CycleMod_P1HasModIdx(c_cycleModNoBans)) { return; }
+    if (RosterDraft_IsYolo(!bannerIsP1)) { return; }
     g_roster_banCount = g_roster_banCount + 1;
     g_roster_banOrder[g_roster_banCount] = banner;
     g_roster_banIsP1[g_roster_banCount]  = bannerIsP1;
+}
+
+// Append a pick step, unless the picker is YOLO (their roster is dealt, not
+// drafted). opening = before the bans.
+void RosterDraft_SchedulePick(int picker, bool pickerIsP1, bool opening) {
+    if (RosterDraft_IsYolo(pickerIsP1)) { return; }
+    g_roster_pickCount = g_roster_pickCount + 1;
+    g_roster_pickOrder[g_roster_pickCount] = picker;
+    g_roster_pickIsP1[g_roster_pickCount]  = pickerIsP1;
+    if (opening) { g_roster_openCount = g_roster_openCount + 1; }
 }
 
 // Say so up front: otherwise the protected side's opponent just finds their
@@ -739,12 +922,15 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     int i;
     int row;
     int lblSection;
+    int rows;
+    int pitch;
 
     g_roster_callback  = callback;
     g_roster_p1        = p1;
     g_roster_p2        = p2;
     g_roster_p1Race    = p1Race;
     g_roster_p2Race    = p2Race;
+    g_roster_autoTrig  = TriggerCreate("RosterDraft_AutoAct");
 
     // Reset state
     g_roster_phase       = 0;
@@ -761,6 +947,14 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
         i = i + 1;
     }
 
+    // All roster slots start empty (no protected core units).
+    i = 1;
+    while (i <= c_rosterYoloSize) {
+        g_roster_p1Units[i] = "";
+        g_roster_p2Units[i] = "";
+        i = i + 1;
+    }
+
     // Ban order: P1 bans from P2's pool, P2 bans from P1's pool, repeat x2
     // (banIsP1 = true means P1 is the one banning, targeting P2's pool).
     // The No Bans modifier protects its drafter's pool: the opponent's ban steps
@@ -774,26 +968,25 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
 
     // Pick order: 2 OPENING picks each (P1 P2 P2 P1) happen BEFORE bans so
     // players can secure key units, then bans, then the remaining FINAL picks.
-    g_roster_pickOrder[1]  = p1;  g_roster_pickIsP1[1]  = true;
-    g_roster_pickOrder[2]  = p2;  g_roster_pickIsP1[2]  = false;
-    g_roster_pickOrder[3]  = p2;  g_roster_pickIsP1[3]  = false;
-    g_roster_pickOrder[4]  = p1;  g_roster_pickIsP1[4]  = true;
-    g_roster_pickOrder[5]  = p2;  g_roster_pickIsP1[5]  = false;
-    g_roster_pickOrder[6]  = p1;  g_roster_pickIsP1[6]  = true;
-    g_roster_pickOrder[7]  = p1;  g_roster_pickIsP1[7]  = true;
-    g_roster_pickOrder[8]  = p2;  g_roster_pickIsP1[8]  = false;
-    g_roster_pickOrder[9]  = p2;  g_roster_pickIsP1[9]  = false;
-    g_roster_pickOrder[10] = p1;  g_roster_pickIsP1[10] = true;
-    g_roster_pickOrder[11] = p1;  g_roster_pickIsP1[11] = true;
-    g_roster_pickOrder[12] = p2;  g_roster_pickIsP1[12] = false;
+    // A YOLO side's steps are left out (RosterDraft_SchedulePick).
+    g_roster_pickCount = 0;
+    g_roster_openCount = 0;
+    RosterDraft_SchedulePick(p1, true,  true);
+    RosterDraft_SchedulePick(p2, false, true);
+    RosterDraft_SchedulePick(p2, false, true);
+    RosterDraft_SchedulePick(p1, true,  true);
+    RosterDraft_SchedulePick(p2, false, false);
+    RosterDraft_SchedulePick(p1, true,  false);
+    RosterDraft_SchedulePick(p1, true,  false);
+    RosterDraft_SchedulePick(p2, false, false);
+    RosterDraft_SchedulePick(p2, false, false);
+    RosterDraft_SchedulePick(p1, true,  false);
+    RosterDraft_SchedulePick(p1, true,  false);
+    RosterDraft_SchedulePick(p2, false, false);
 
-    // All roster slots start empty (no protected core units).
-    i = 1;
-    while (i <= c_rosterRosterSize) {
-        g_roster_p1Units[i] = "";
-        g_roster_p2Units[i] = "";
-        i = i + 1;
-    }
+    // YOLO: deal the whole roster now, before anyone drafts.
+    if (RosterDraft_IsYolo(true))  { RosterDraft_FillYolo(true,  p1Race); }
+    if (RosterDraft_IsYolo(false)) { RosterDraft_FillYolo(false, p2Race); }
 
     Debug_Log("RosterDraft: P1=" + IntToString(p1) + " race=" + GetRaceConfigId(p1Race)
         + " poolCount=" + IntToString(GetRosterPoolCount(p1Race)));
@@ -866,21 +1059,25 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     }
 
     // ── Roster panels — right column: YOUR ROSTER (top) + OPPONENT (below) ─────
-    // Compact 32px rows so both 6-unit rosters fit; the opponent's live picks
-    // are shown so players can counter-draft.
+    // Compact 36px rows so both 6-unit rosters fit - 30px when a YOLO roster
+    // makes it 7; the opponent's live picks are shown so players can
+    // counter-draft.
+    rows = RosterDraft_Rows();
+    if (rows > c_rosterRosterSize) { pitch = 30; }
+    else                           { pitch = 36; }
     i = 1;
-    while (i <= c_rosterRosterSize) {
+    while (i <= rows) {
         g_roster_lblSlot[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-        DialogControlSetSize(g_roster_lblSlot[i], Tardigrade_Viewers(), 260, 32);
+        DialogControlSetSize(g_roster_lblSlot[i], Tardigrade_Viewers(), 260, pitch - 4);
         DialogControlSetPosition(g_roster_lblSlot[i], Tardigrade_Viewers(),
-            c_anchorTop, +260, 88 + (i - 1) * 36);
+            c_anchorTop, +260, 88 + (i - 1) * pitch);
         i = i + 1;
     }
 
     // OPPONENT section header
     lblSection = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(lblSection, Tardigrade_Viewers(), 260, 14);
-    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, +260, 300);
+    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, +260, 92 + rows * pitch);
     DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
         Tardigrade_Viewers(),
         StringToText("<c val=\"555555\">OPPONENT ────────────────────</c>"));
@@ -892,11 +1089,11 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
 
     // Opponent roster slots
     i = 1;
-    while (i <= c_rosterRosterSize) {
+    while (i <= rows) {
         g_roster_lblOppSlot[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-        DialogControlSetSize(g_roster_lblOppSlot[i], Tardigrade_Viewers(), 260, 32);
+        DialogControlSetSize(g_roster_lblOppSlot[i], Tardigrade_Viewers(), 260, pitch - 4);
         DialogControlSetPosition(g_roster_lblOppSlot[i], Tardigrade_Viewers(),
-            c_anchorTop, +260, 320 + (i - 1) * 36);
+            c_anchorTop, +260, 112 + rows * pitch + (i - 1) * pitch);
         i = i + 1;
     }
 
@@ -934,7 +1131,7 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     }
 
     // Initial render
-    RosterDraft_UpdateUI();
+    if (!RosterDraft_Advance()) { RosterDraft_BeginStep(); }
 }
 
 //==================================================================================================
@@ -953,7 +1150,7 @@ void RosterHUD_SetForPlayer(int player, int whichRoster) {
 
     viewer = PlayerGroupSingle(player);
     i = 1;
-    while (i <= c_rosterRosterSize) {
+    while (i <= RosterDraft_Rows()) {
         if (whichRoster == 1) {
             mineName = RosterUnitDisplayName(g_roster_p1Units[i]);
             oppName  = RosterUnitDisplayName(g_roster_p2Units[i]);
@@ -982,7 +1179,7 @@ bool RosterHUD_OnToggle(bool testConds, bool runActions) {
         DialogControlSetVisible(g_rhud_hdrMine[player], viewer, false);
         DialogControlSetVisible(g_rhud_hdrOpp[player], viewer, false);
         i = 1;
-        while (i <= c_rosterRosterSize) {
+        while (i <= RosterDraft_Rows()) {
             DialogControlSetVisible(g_rhud_lblMine[player][i], viewer, false);
             DialogControlSetVisible(g_rhud_lblOpp[player][i], viewer, false);
             i = i + 1;
@@ -991,11 +1188,11 @@ bool RosterHUD_OnToggle(bool testConds, bool runActions) {
             viewer, StringToText("My Drafted Units  [+]"));
         g_rhud_expanded[player] = false;
     } else {
-        DialogSetSize(g_rhud_dialog[player], 390, 236);
+        DialogSetSize(g_rhud_dialog[player], 390, 236 + (RosterDraft_Rows() - c_rosterRosterSize) * 30);
         DialogControlSetVisible(g_rhud_hdrMine[player], viewer, true);
         DialogControlSetVisible(g_rhud_hdrOpp[player], viewer, true);
         i = 1;
-        while (i <= c_rosterRosterSize) {
+        while (i <= RosterDraft_Rows()) {
             DialogControlSetVisible(g_rhud_lblMine[player][i], viewer, true);
             DialogControlSetVisible(g_rhud_lblOpp[player][i], viewer, true);
             i = i + 1;
@@ -1017,7 +1214,7 @@ void RosterHUD_InitAudience() {
     if (!Tardigrade_HasAudience()) { return; }
     aud = Tardigrade_Audience();
 
-    g_rhud_audDialog = DialogCreate(410, 226, c_anchorTopLeft, 6, 28, false);
+    g_rhud_audDialog = DialogCreate(410, 226 + (RosterDraft_Rows() - c_rosterRosterSize) * 30, c_anchorTopLeft, 6, 28, false);
     Tardigrade_ObservableDialog(g_rhud_audDialog);
     DialogSetVisible(g_rhud_audDialog, aud, true);
     DialogSetImageVisible(g_rhud_audDialog, true);
@@ -1031,7 +1228,7 @@ void RosterHUD_InitAudience() {
             + "    <c val=\"FF9955\">P2 " + RaceName(g_roster_p2Race) + "</c>"));
 
     i = 1;
-    while (i <= c_rosterRosterSize) {
+    while (i <= RosterDraft_Rows()) {
         p1Name = RosterUnitDisplayName(g_roster_p1Units[i]);
         p2Name = RosterUnitDisplayName(g_roster_p2Units[i]);
         g_rhud_audRow[i] = DialogControlCreate(g_rhud_audDialog, c_triggerControlTypeLabel);
@@ -1083,9 +1280,9 @@ void RosterHUD_InitForPlayer(int player, int whichRoster, trigger t) {
         viewer, StringToText("<c val=\"FF9955\">OPPONENT</c>"));
     DialogControlSetVisible(g_rhud_hdrOpp[player], viewer, false);
 
-    // Two columns of 6 rows: MINE (left) + OPPONENT (right).
+    // Two columns of 6 rows (7 with a YOLO roster): MINE (left) + OPPONENT (right).
     i = 1;
-    while (i <= c_rosterRosterSize) {
+    while (i <= RosterDraft_Rows()) {
         g_rhud_lblMine[player][i] = DialogControlCreate(g_rhud_dialog[player], c_triggerControlTypeLabel);
         DialogControlSetSize(g_rhud_lblMine[player][i], viewer, 180, 28);
         DialogControlSetPosition(g_rhud_lblMine[player][i], viewer, c_anchorTop, -95, 50 + (i - 1) * 30);

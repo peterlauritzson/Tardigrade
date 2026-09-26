@@ -17,6 +17,8 @@ int g_draft_bannedRace = 0;
 int g_draft_phase = 0; // 0 = Ban, 1 = Pick
 trigger g_draft_trigger;
 trigger g_draft_callback = null;
+trigger g_draft_autoTrig = null;   // RaceDraft_AutoAct, run by the Tournament timer
+int     g_draft_modeChooser = 0;   // the human who picks the game mode (see RaceDraft_Setup)
 
 // Base-game starting worker count per player, captured before we wipe the melee
 // start (so post-draft spawns mirror whatever the current patch uses).
@@ -317,7 +319,7 @@ void SetPlayerRace(int player, int race) {
     // Lock the town hall unselectable immediately, rather than waiting up to
     // 0.5s for Tardigrade_DraftLockScan's next tick to reach it -
     // Tardigrade_DraftLock_Start() is already running by the time this
-    // function is reached (see RaceDraft_Start).
+    // function is reached (see RaceDraft_Setup).
     spawned = UnitGroup(null, player, RegionCircle(startLoc, 10.0), UnitFilter(0, 0, 0, 0), 0);
     i = 1;
     while (i <= UnitGroupCount(spawned, c_unitCountAll)) {
@@ -596,6 +598,47 @@ void RaceDraft_UpdateUI() {
     if (Tardigrade_HasAudience()) {
         RaceDraft_UpdateAudienceUI();
     }
+
+    // Tournament: this step is on the clock (no-op in other modes).
+    DraftTimer_Arm(g_draft_autoTrig);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Apply a ban or pick for whoever is up. Shared by the click handler (which
+// has already checked it is that player clicking) and the Tournament auto-pick.
+//--------------------------------------------------------------------------------------------------
+void RaceDraft_Choose(int race) {
+    // The banned race keeps its button rather than vanishing, so the pick phase
+    // has to refuse it here. Its button is also disabled for every viewer, but
+    // a click that slipped through would otherwise hand out the banned race.
+    if (race == 0 || race == g_draft_bannedRace) { return; }
+
+    if (g_draft_phase == 0) {
+        g_draft_bannedRace = race;
+        g_draft_phase = 1;
+        RaceDraft_UpdateUI();
+    } else {
+        DraftTimer_Disarm();
+        RaceDraft_Finish(race);
+    }
+}
+
+// Tournament: the clock ran out - ban or pick a random race that is still legal.
+bool RaceDraft_AutoAct(bool testConds, bool runActions) {
+    int race;
+    race = RandomInt(c_tardigrade_raceTerran, c_tardigrade_raceZerg);
+    while (race == g_draft_bannedRace) {
+        race = RandomInt(c_tardigrade_raceTerran, c_tardigrade_raceZerg);
+    }
+    if (g_draft_phase == 0) {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"FF6060\">Time's up - random ban:</c> " + RaceName(race)));
+    } else {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            "<c val=\"00FF88\">Time's up - random pick:</c> " + RaceName(race)));
+    }
+    RaceDraft_Choose(race);
+    return true;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -634,24 +677,11 @@ bool RaceDraft_OnClicked(bool testConds, bool runActions) {
 
     if (selectedRace == 0) { return true; }
 
-    // The banned race keeps its button rather than vanishing, so the pick phase
-    // has to refuse it here. Its button is also disabled for every viewer, but
-    // a click that slipped through would otherwise hand out the banned race.
-    if (selectedRace == g_draft_bannedRace) { return true; }
+    // Ban phase is P1's, pick phase is P2's.
+    if (g_draft_phase == 0 && player != g_draft_p1) { return true; }
+    if (g_draft_phase != 0 && player != g_draft_p2) { return true; }
 
-    if (g_draft_phase == 0) {
-        // Ban Phase
-        if (player != g_draft_p1) { return true; }
-        g_draft_bannedRace = selectedRace;
-        g_draft_phase = 1;
-        RaceDraft_UpdateUI();
-    }
-    else {
-        // Pick Phase
-        if (player != g_draft_p2) { return true; }
-        RaceDraft_Finish(selectedRace);
-    }
-
+    RaceDraft_Choose(selectedRace);
     return true;
 }
 
@@ -730,18 +760,19 @@ void Tardigrade_DraftLock_Stop() {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Main: Start Draft
+// Setup, run before the game mode is chosen: read the teams, pick the deciders
+// and the ban/pick roles, pause, lock, strip the melee workers and build the
+// viewer groups. Returns false if there is no human to draft (all-AI game).
+// The race draft UI itself is RaceDraft_ShowDraft, run after the mode select -
+// Testing mode never shows it.
 //--------------------------------------------------------------------------------------------------
-void RaceDraft_Start(trigger callback) {
+bool RaceDraft_Setup() {
     int i;
     int p;
     int decider1 = 0;
     int decider2 = 0;
     bool team1HasHuman = false;
     bool team2HasHuman = false;
-
-    // Store Callback
-    g_draft_callback = callback;
 
     // Wait for initialization to complete (units to spawn)
     Wait(0.1, c_timeGame);
@@ -774,12 +805,9 @@ void RaceDraft_Start(trigger callback) {
 
     // 2. Handle Solo / PvAI (One team has no humans)
     if (!team1HasHuman && !team2HasHuman) {
-        // All AI? Just return.
+        // All AI? Nothing to draft.
         Debug_Log("Draft Skipped: No human players found.");
-        if (g_draft_callback != null) {
-            TriggerExecute(g_draft_callback, false, false);
-        }
-        return; 
+        return false;
     }
     
     if (team1HasHuman && !team2HasHuman) {
@@ -803,6 +831,8 @@ void RaceDraft_Start(trigger callback) {
         g_draft_p2 = decider1; // Team 1 Picks
         g_draft_p1_is_team1 = false;
     }
+    // Team 1's human (or the only human) picks the game mode.
+    g_draft_modeChooser = decider1;
 
     // Pause Game. GameSetMissionTimePaused only stops the mission clock, not
     // player input - it does NOT stop a player from drag-selecting their
@@ -823,6 +853,16 @@ void RaceDraft_Start(trigger callback) {
     // players see this line too.
     UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
         "<c val=\"AAAAAA\">Spectating? Choose Player 1 or 2 in the observer vision menu to follow the draft.</c>"));
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Main: show the race draft (after RaceDraft_Setup and the game mode select).
+//--------------------------------------------------------------------------------------------------
+void RaceDraft_ShowDraft(trigger callback) {
+    // Store Callback
+    g_draft_callback = callback;
+    g_draft_autoTrig = TriggerCreate("RaceDraft_AutoAct");
 
     // Create UI
     g_draft_dialog = DialogCreate(500, 500, c_anchorCenter, 0, 0, true);

@@ -10,13 +10,29 @@ conditions.
 
 ---
 
+## Game modes
+
+Before anything else, team 1's player (or the only human, in a game against
+the AI) picks a mode. Everyone else sees the choice being made.
+
+| Mode | What changes |
+|---|---|
+| **Casual** | The drafts below with no time limits, then a normal game. |
+| **Tournament** | The same, but every draft step (each race ban/pick, modifier ban/pick, unit pick/ban) has a **10-second** limit, shown at the top of the screen. When it runs out, a random legal option is taken for whoever was up. |
+| **Testing** | No draft. Everyone keeps their lobby race's town hall and gets **one SCV, one Probe and one Drone** (so all three races can be built), **100,000 minerals and gas**, **instant** build/train/research/morph times and **every unit unlocked**. A panel at the top right switches any modifier on or off for your side at will, with no activation delay. |
+
+The Testing panel is a dialog rather than command-card buttons: a command card
+would need an ability per modifier placed on every unit, which is the kind of
+data the mod deliberately dropped (see "No modifier grants a clickable ability"
+below).
+
 ## The three drafts
 
 The drafts run in sequence on map init, while the game is paused. A 3-2-1
 countdown follows, then workers spawn and the game begins.
 
 ```
-Race Draft → Modifier Draft → Unit Draft → 3-2-1 → Game
+Mode → Race Draft → Modifier Draft → Unit Draft → 3-2-1 → Game
 ```
 
 Throughout, **P1** is the player who bans first and **P2** is the player who
@@ -35,13 +51,15 @@ rather than hardcoded, so it tracks whatever the current patch uses.
 
 ### 2. Modifier Draft
 
-There are **14 battlefield modifiers**. This is a **per-player** draft — there is
-no rotation and no shared phase:
+It opens with the **YOLO?** screen (see modifier 16): each player secretly
+chooses to draft normally or go fully random. Then the board: **16
+battlefield modifiers** (YOLO isn't one of the cards). This is a **per-player**
+draft — there is no rotation and no shared phase:
 
-- Each player **bans 2** (14 → 10), ban order `P1, P2, P1, P2`.
-- Each player then **picks 3** (10 → 4), snake order `P1, P2, P2, P1, P1, P2`.
+- Each player **bans 2** (16 → 12), ban order `P1, P2, P1, P2`.
+- Each player then **picks 3** (12 → 6), snake order `P1, P2, P2, P1, P1, P2`.
 
-Four modifiers go unpicked every game. Each pick is **always active in-game, but
+Six modifiers go unpicked in a normal game. Each pick is **always active in-game, but
 only for the picking side's own units** — never the opponent's. A top-center
 panel lists both sides' picks (YOURS / OPPONENT).
 
@@ -51,13 +69,15 @@ runs on Faster, 1.4× quicker), so the early game is untouched — except that
 **everyone plays with Eyes Everywhere** (full map vision and detection) until that
 moment. The opening vision is tied to the same constant, so changing the
 activation time moves it too; afterwards only a side that drafted Eyes
-Everywhere keeps it. **No Bans** is also exempt from the delay, since it acts
-on the unit draft that immediately follows.
+Everywhere keeps it. **Auto Refineries** and **Minerals Only** are live **from
+the start** — they shape the opening build, so they have to be there for it.
+**No Bans** and **YOLO** are also exempt from the delay, since they act on the
+unit draft that immediately follows.
 
 Modifiers **never affect workers** (SCV, Probe, Drone, MULE), except Free
-Labor and Auto Refineries, which are about workers to begin with.
+Labor, Auto Refineries and Long Reach, which are about workers to begin with.
 
-The 14 modifiers. **Every duration below is in real seconds**, the way you
+The 17 modifiers. **Every duration below is in real seconds**, the way you
 experience it on Faster — the same numbers the in-game descriptions use. The
 data files store game seconds, which tick 1.4× quicker.
 
@@ -73,10 +93,13 @@ data files store game seconds, which tick 1.4× quicker.
 | 8 | Overwatch | After 10s without attacking, a unit deals +50% damage for its next 1s of attacking — everything it lands inside that window, not just the first shot. Spells count as attacking, so a caster opens the window and is then "active". Banelings always get it (they only ever attack once) |
 | 9 | Battle Blink | Automatic: a unit that drops to 30% health teleports 8 range straight back from whatever last hit it. Once per 12s per unit — no button, no hotkey |
 | 10 | Veteran Forces | Each kill grants a permanent +3% to movement speed, attack speed, ability cooldowns/charges, and life/shield/energy regeneration, stacking to 15 (shown on the unit as "Veteran"). Kills by Interceptors, Locusts, Broodlings and Auto-Turrets count for the unit that spawned them |
-| 11 | Auto Refineries | Your finished gas buildings mine by themselves at the three-worker rate (rich geysers double). Workers physically can't harvest them — the building stops being a resource at all, and its worker counter disappears |
+| 11 | Auto Refineries | **Live from 0:00.** Your finished gas buildings mine by themselves at the three-worker rate (rich geysers double). Workers physically can't harvest them — the building stops being a resource at all, and its worker counter disappears. Your Refineries / Assimilators / Extractors (and rich versions) cost **200 minerals** |
 | 12 | No Bans | Your opponent gets no bans against your pool in the unit draft; their ban turns are skipped |
 | 13 | Refund | Any unit or building of yours that dies pays back 25% of its cost (a Marine returns 12.5 minerals), whoever killed it - a detonating Baneling counts. Workers are excluded, like every other modifier. Things that vanish without dying pay nothing: morphs (Zergling into Baneling), Archon merges, cancelled buildings, eggs and cocoons, units timing out |
 | 14 | Shared Damage | Every hit on one of your units (after armor): it keeps half, rounded up, and the other half is dealt out in whole points — at least 1 each — to as many of your other units within 3 range as it stretches to. Alone, or with nothing left over, it takes the full hit |
+| 15 | Minerals Only | **Live from 0:00.** Nothing you buy costs gas: every gas cost is added to the mineral cost at 1.5× and set to 0 (a 100/100 upgrade costs 250/0, a Stalker 125/50 costs 200/0). Units, structures, morphs and upgrades are all converted. Any gas you mine (or get from Auto Refineries or Refund) is turned into minerals 1:1 |
+| 16 | YOLO | **Not on the board — a choice made on its own "YOLO?" screen before the modifier bans.** Each player picks *Draft normally* or *Go YOLO*; the choice is hidden until both have locked in, and both may go YOLO. Going YOLO makes your whole draft chance: **3 random modifiers** rolled from the whole pool (bans and your opponent's picks don't matter; No Bans excluded), your modifier bans made at random, your pick turns skipped, and no unit draft — your roster is dealt: **7 units** at random from your race's pool (instead of 6), with nothing guaranteed. Your opponent can't ban from your unit pool, and your unit bans are random too. If both go YOLO the modifier board is skipped entirely. In Tournament mode the screen has the usual 10s; undecided = draft normally |
+| 17 | Long Reach | Your workers build from range 30 and harvest from range 10 |
 
 **No modifier grants a clickable ability.** Every pick is either always-on or
 fires itself off a condition. Battle Blink, Salvage and Medivac Boost all used
@@ -100,6 +123,10 @@ arsenal is bannable and pickable.
   If a side drafted **No Bans**, the opponent's ban turns are dropped and the
   protected side bans twice in a row.
 - **Final snake picks:** the remaining 4 each, until both rosters hold 6.
+
+A side that drafted **YOLO** sits this out: its 7-unit roster is dealt before
+the first pick, its pick turns are dropped, bans against it are dropped, and
+its own bans are made at random for it.
 
 Both rosters are shown live side by side (YOUR / OPPONENT) so players can
 counter-draft, with a modifier reference strip along the bottom.
@@ -164,6 +191,9 @@ randomize races, rosters and modifiers.
 | File | Role |
 |---|---|
 | `TardigradeLogic.galaxy` | Entry point, draft-chain orchestration, game start. |
+| `GameMode.galaxy` | Game mode select (Casual / Tournament / Testing) and the Tournament draft timer. |
+| `TestingMode.galaxy` | Testing mode: start setup, instant builds, the modifier on/off panel. |
+| `DraftStyle.galaxy` | Shared card styling for every draft screen. |
 | `RaceDraft.galaxy` | Race ban/pick; team, viewer and spectator globals. |
 | `RosterDraft.galaxy` | Unit draft UI (opening picks → bans → final picks) + in-game roster HUD. |
 | `RosterEnforce.galaxy` | Disables every non-drafted combat unit; grants coupled units. |

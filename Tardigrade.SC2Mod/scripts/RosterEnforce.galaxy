@@ -2,7 +2,8 @@
 // Roster Enforcement
 //
 // After the drafts resolve, each team may only build the 6 unit types it
-// drafted - derived units (Hellbat, Archon, the Zerg morphs) included. Every
+// drafted (7 for a YOLO roster) - derived units (Hellbat, Archon, the Zerg
+// morphs) included. Not applied at all in Testing mode. Every
 // other combat unit in the race's arsenal is disabled for that team via
 // TechTreeUnitAllow(..., false), and transforms into them are blocked too.
 //
@@ -60,7 +61,8 @@ void RosterEnforce_InitLists() {
 bool RosterEnforce_InRoster(int whichRoster, string unitType) {
     int i;
     i = 1;
-    while (i <= c_rosterRosterSize) {
+    // Up to 7: a YOLO roster has one more; unused slots are "" and match nothing.
+    while (i <= c_rosterYoloSize) {
         if (whichRoster == 1) {
             if (g_roster_p1Units[i] == unitType) { return true; }
         } else {

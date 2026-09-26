@@ -471,6 +471,27 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
+    <!-- 15-17: markers only, same reason as 11-13. Minerals Only and Long Reach
+         are per-player catalog changes (CycleMod_CatalogModForPlayer); Yolo
+         acts on the roster draft. -->
+    <CBehaviorBuff id="TardigradeMod_MineralsOnly">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_Yolo">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeMod_LongReach">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
 
     <!-- Battle Blink's cooldown. CycleMod_TryBattleBlink adds this the moment
          it teleports a unit and refuses to fire again while it is up, so the
