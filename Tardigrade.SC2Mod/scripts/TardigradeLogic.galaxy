@@ -17,6 +17,7 @@
 //--------------------------------------------------------------------------------------------------
 
 include "scripts/Debug"
+include "scripts/DraftStyle"
 include "scripts/RaceDraft"
 include "scripts/CycleMod"
 include "scripts/RosterDraft"

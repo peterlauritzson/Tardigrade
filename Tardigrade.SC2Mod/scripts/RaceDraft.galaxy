@@ -490,6 +490,48 @@ void RaceDraft_Finish(int pickedRace) {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Logic: Update UI
+//--------------------------------------------------------------------------------------------------
+
+// The one-line identity under each race name. The race buttons used to carry
+// the bare word "Terran"; the second line gives the card a body to dim, so a
+// banned race reads as a dead card rather than as a faint word.
+string RaceDraft_RaceRole(int race) {
+    if (race == c_tardigrade_raceTerran)  { return "Bio  ·  Siege  ·  Repair"; }
+    if (race == c_tardigrade_raceProtoss) { return "Shields  ·  Warp-in  ·  Tech"; }
+    if (race == c_tardigrade_raceZerg)    { return "Swarm  ·  Creep  ·  Larva"; }
+    return "";
+}
+
+// One race button for one viewer. The banned race is dimmed and marked BANNED
+// instead of disappearing between the ban and the pick - three buttons quietly
+// becoming two is the one moment in this draft where a player can lose track of
+// what was taken off the table, and the pick screen no longer says what the ban
+// was anywhere else.
+void RaceDraft_SetRaceButton(int btn, int race, playergroup viewer, bool banPhase, bool enabled) {
+    int state;
+
+    if (g_draft_bannedRace == race) { state = c_draftStateBanned; }
+    else if (banPhase)              { state = c_draftStateBanTarget; }
+    else                            { state = c_draftStateOpen; }
+
+    DraftStyle_ApplyCard(btn, viewer, state,
+        DraftStyle_Card(state, "", RaceName(race), RaceDraft_RaceRole(race)), enabled);
+}
+
+// The three race buttons for one viewer. The waiting player gets them too,
+// disabled, rather than hidden: a spectator only ever sees a dialog through the
+// player they are watching (Tardigrade_ObservableDialog), so hiding the waiting
+// player's buttons blanked the draft for anyone watching that player.
+// Enabled is set explicitly both ways - otherwise buttons disabled on a
+// player's waiting turn would stay disabled on their own turn.
+void RaceDraft_ShowRaceButtons(playergroup viewer, bool banPhase, bool enabled) {
+    RaceDraft_SetRaceButton(g_draft_btnTerran,  c_tardigrade_raceTerran,  viewer, banPhase, enabled);
+    RaceDraft_SetRaceButton(g_draft_btnProtoss, c_tardigrade_raceProtoss, viewer, banPhase, enabled);
+    RaceDraft_SetRaceButton(g_draft_btnZerg,    c_tardigrade_raceZerg,    viewer, banPhase, enabled);
+}
+
+//--------------------------------------------------------------------------------------------------
 // Logic: Update UI for spectators / referees (read-only mirror)
 //--------------------------------------------------------------------------------------------------
 void RaceDraft_UpdateAudienceUI() {
@@ -499,77 +541,53 @@ void RaceDraft_UpdateAudienceUI() {
 
     if (g_draft_phase == 0) {
         lbl = "<c val=\"FF6060\">Spectating  -  a race is being BANNED...</c>";
-        DialogControlSetVisible(g_draft_btnTerran,  aud, true);
-        DialogControlSetVisible(g_draft_btnProtoss, aud, true);
-        DialogControlSetVisible(g_draft_btnZerg,    aud, true);
     } else {
         lbl = "<c val=\"888888\">Spectating  -  a race is being PICKED...</c>";
-        DialogControlSetVisible(g_draft_btnTerran,  aud, (g_draft_bannedRace != c_tardigrade_raceTerran));
-        DialogControlSetVisible(g_draft_btnProtoss, aud, (g_draft_bannedRace != c_tardigrade_raceProtoss));
-        DialogControlSetVisible(g_draft_btnZerg,    aud, (g_draft_bannedRace != c_tardigrade_raceZerg));
     }
 
     DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, aud, StringToText(lbl));
 
-    // Never clickable for spectators.
-    DialogControlSetEnabled(g_draft_btnTerran,  aud, false);
-    DialogControlSetEnabled(g_draft_btnProtoss, aud, false);
-    DialogControlSetEnabled(g_draft_btnZerg,    aud, false);
-}
-
-//--------------------------------------------------------------------------------------------------
-// Logic: Update UI
-//--------------------------------------------------------------------------------------------------
-
-// The three race buttons for one viewer. The waiting player gets them too,
-// disabled, rather than hidden: a spectator only ever sees a dialog through the
-// player they are watching (Tardigrade_ObservableDialog), so hiding the waiting
-// player's buttons blanked the draft for anyone watching that player.
-// Enabled is set explicitly both ways - otherwise buttons disabled on a
-// player's waiting turn would stay disabled on their own turn.
-void RaceDraft_ShowRaceButtons(playergroup viewer, bool hideBanned, bool enabled) {
-    DialogControlSetVisible(g_draft_btnTerran, viewer,
-        !hideBanned || g_draft_bannedRace != c_tardigrade_raceTerran);
-    DialogControlSetVisible(g_draft_btnProtoss, viewer,
-        !hideBanned || g_draft_bannedRace != c_tardigrade_raceProtoss);
-    DialogControlSetVisible(g_draft_btnZerg, viewer,
-        !hideBanned || g_draft_bannedRace != c_tardigrade_raceZerg);
-    DialogControlSetEnabled(g_draft_btnTerran, viewer, enabled);
-    DialogControlSetEnabled(g_draft_btnProtoss, viewer, enabled);
-    DialogControlSetEnabled(g_draft_btnZerg, viewer, enabled);
+    // Same board as the players, never clickable.
+    RaceDraft_ShowRaceButtons(aud, g_draft_phase == 0, false);
 }
 
 void RaceDraft_UpdateUI() {
     if (g_draft_phase == 0) {
         // Ban Phase (P1)
         DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p1),
-            StringToText("<c val=\"FF4444\">BAN a Race</c>"));
-        
+            StringToText("<c val=\"FF4444\">BAN a Race</c>"
+                + "\n<c val=\"888888\">Your opponent picks from the two you leave</c>"));
+
         // Show all buttons to P1
-        RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p1), false, true);
+        RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p1), true, true);
 
         // Only update P2 view if P2 is a different player (avoids overwriting P1 view in solo testing)
         if (g_draft_p1 != g_draft_p2) {
             DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p2),
-                StringToText("<c val=\"FF6060\">Opponent is BANNING a race...</c>"));
+                StringToText("<c val=\"FF6060\">Opponent is BANNING a race...</c>"
+                    + "\n<c val=\"888888\">You pick from the two they leave</c>"));
 
             // P2 sees the same races, disabled - see RaceDraft_ShowRaceButtons.
-            RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p2), false, false);
+            RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p2), true, false);
         }
     }
     else {
         // Pick Phase (P2)
-        DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p2), StringToText("PICK your Race"));
+        DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p2),
+            StringToText("<c val=\"00FF88\">PICK your Race</c>"
+                + "\n<c val=\"888888\">Your opponent takes the one you leave</c>"));
 
-        // Show available buttons to P2
-        RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p2), true, true);
+        // The banned race stays on the board, marked - see RaceDraft_SetRaceButton.
+        RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p2), false, true);
 
         // Only update P1 view if P1 is a different player
         if (g_draft_p1 != g_draft_p2) {
-            DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p1), StringToText("Opponent is Picking..."));
+            DialogControlSetPropertyAsText(g_draft_label, c_triggerControlPropertyText, PlayerGroupSingle(g_draft_p1),
+                StringToText("<c val=\"888888\">Opponent is PICKING a race...</c>"
+                    + "\n<c val=\"888888\">You take the one they leave</c>"));
 
-            // P1 sees the remaining races, disabled.
-            RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p1), true, false);
+            // P1 sees the same board, disabled.
+            RaceDraft_ShowRaceButtons(PlayerGroupSingle(g_draft_p1), false, false);
         }
     }
 
@@ -615,6 +633,11 @@ bool RaceDraft_OnClicked(bool testConds, bool runActions) {
     }
 
     if (selectedRace == 0) { return true; }
+
+    // The banned race keeps its button rather than vanishing, so the pick phase
+    // has to refuse it here. Its button is also disabled for every viewer, but
+    // a click that slipped through would otherwise hand out the banned race.
+    if (selectedRace == g_draft_bannedRace) { return true; }
 
     if (g_draft_phase == 0) {
         // Ban Phase
@@ -815,17 +838,20 @@ void RaceDraft_Start(trigger callback) {
 
     // Buttons
     g_draft_btnTerran = DialogControlCreate(g_draft_dialog, c_triggerControlTypeButton);
-    DialogControlSetSize(g_draft_btnTerran, Tardigrade_Viewers(), 200, 50);
+    DraftStyle_InitButton(g_draft_btnTerran, Tardigrade_Viewers());
+    DialogControlSetSize(g_draft_btnTerran, Tardigrade_Viewers(), 240, 54);
     DialogControlSetPosition(g_draft_btnTerran, Tardigrade_Viewers(), c_anchorTop, 0, 150);
     DialogControlSetPropertyAsText(g_draft_btnTerran, c_triggerControlPropertyText, Tardigrade_Viewers(), StringToText("Terran"));
 
     g_draft_btnProtoss = DialogControlCreate(g_draft_dialog, c_triggerControlTypeButton);
-    DialogControlSetSize(g_draft_btnProtoss, Tardigrade_Viewers(), 200, 50);
+    DraftStyle_InitButton(g_draft_btnProtoss, Tardigrade_Viewers());
+    DialogControlSetSize(g_draft_btnProtoss, Tardigrade_Viewers(), 240, 54);
     DialogControlSetPosition(g_draft_btnProtoss, Tardigrade_Viewers(), c_anchorTop, 0, 210);
     DialogControlSetPropertyAsText(g_draft_btnProtoss, c_triggerControlPropertyText, Tardigrade_Viewers(), StringToText("Protoss"));
 
     g_draft_btnZerg = DialogControlCreate(g_draft_dialog, c_triggerControlTypeButton);
-    DialogControlSetSize(g_draft_btnZerg, Tardigrade_Viewers(), 200, 50);
+    DraftStyle_InitButton(g_draft_btnZerg, Tardigrade_Viewers());
+    DialogControlSetSize(g_draft_btnZerg, Tardigrade_Viewers(), 240, 54);
     DialogControlSetPosition(g_draft_btnZerg, Tardigrade_Viewers(), c_anchorTop, 0, 270);
     DialogControlSetPropertyAsText(g_draft_btnZerg, c_triggerControlPropertyText, Tardigrade_Viewers(), StringToText("Zerg"));
 

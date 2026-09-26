@@ -48,6 +48,7 @@ int       g_roster_p2PickCount = 0;
 int       g_roster_dialog      = c_invalidDialogId;
 int       g_roster_lblTitle    = c_invalidDialogControlId;
 int       g_roster_lblSubtitle = c_invalidDialogControlId; // "YOUR TURN" or "waiting..."
+int       g_roster_lblPoolHdr = c_invalidDialogControlId;   // "YOUR POOL" / "THEIR POOL"
 int[19]   g_roster_btnPool;                                // [1..18] unit pool buttons
 int[7]    g_roster_lblSlot;                                // [1..6] your roster slots
 int[7]    g_roster_lblOppSlot;                             // [1..6] opponent roster slots
@@ -281,6 +282,48 @@ void RosterDraft_UpdateRosterPanel() {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Roster Draft: pool card states
+//
+// A pool slot belongs to exactly one player - the pool on screen is one race's,
+// and only its owner can pick from it - so the slot's state is read from that
+// owner's ban/pick arrays, and only the WORD on the card changes with who is
+// looking at it.
+//--------------------------------------------------------------------------------------------------
+int RosterDraft_SlotState(bool poolIsP1, int idx, bool banPhase) {
+    if (poolIsP1) {
+        if (g_roster_p1Banned[idx]) { return c_draftStateBanned; }
+        if (g_roster_p1Picked[idx]) { return c_draftStateMine; }
+    } else {
+        if (g_roster_p2Banned[idx]) { return c_draftStateBanned; }
+        if (g_roster_p2Picked[idx]) { return c_draftStateMine; }
+    }
+    if (banPhase) { return c_draftStateBanTarget; }
+    return c_draftStateOpen;
+}
+
+// RosterDraft_SlotState reports a taken slot as c_draftStateMine because it
+// knows the pool, not the viewer. This turns it into the state this particular
+// viewer sees, which is also what the view tints and gates the button on.
+int RosterDraft_ShownState(int state, bool takenIsMine) {
+    if (state == c_draftStateMine && !takenIsMine) { return c_draftStateTheirs; }
+    return state;
+}
+
+// One pool card as one viewer sees it. tag overrides the word on the chip, for
+// spectators, who are on neither side.
+string RosterDraft_PoolCard(int state, string tag, string unitType) {
+    return DraftStyle_Card(state, tag, RosterUnitDisplayName(unitType), RosterUnitRole(unitType));
+}
+
+// The header over the pool column: whose pool it is, which race, and what
+// the markers on its dead cards mean.
+string RosterDraft_PoolHeader(string whose, int race) {
+    return DraftStyle_Small("<c val=\"999999\">" + whose + "</c>"
+        + "  <c val=\"555555\">─  " + RaceName(race) + "  ───</c>   "
+        + c_draftLegendShort);
+}
+
+//--------------------------------------------------------------------------------------------------
 // Roster Draft: Update UI
 //--------------------------------------------------------------------------------------------------
 void RosterDraft_UpdateUI() {
@@ -290,9 +333,13 @@ void RosterDraft_UpdateUI() {
     int         poolCount;
     int         i;
     string      unitType;
-    bool        unavailable;
+    bool        poolIsP1;        // the pool on screen belongs to P1
+    bool        activeOwnsPool;  // the active player is picking from their own pool
+    string      audienceTag;     // "P1" / "P2" - spectators are on neither side
+    string      audienceName;    // the same, spelled out for the pool header
+    int         slotState;      // as the pool's owner sees it
+    int         shownState;     // the same, turned round for the current viewer
     string      titleText;
-    string      btnTxt;
     playergroup activeGroup;
     playergroup waitGroup;
     int         waiter;
@@ -308,6 +355,8 @@ void RosterDraft_UpdateUI() {
         activePicker = g_roster_banOrder[stepNum];
         activeIsP1   = g_roster_banIsP1[stepNum];
         // The pool shown is the OPPONENT's pool
+        poolIsP1       = !activeIsP1;
+        activeOwnsPool = false;
         if (activeIsP1) { activeRace = g_roster_p2Race; }
         else            { activeRace = g_roster_p1Race; }
 
@@ -320,6 +369,9 @@ void RosterDraft_UpdateUI() {
         stepTotal    = c_rosterPickTotal;
         activePicker = g_roster_pickOrder[stepNum];
         activeIsP1   = g_roster_pickIsP1[stepNum];
+        // Picking from your own pool.
+        poolIsP1       = activeIsP1;
+        activeOwnsPool = true;
         if (activeIsP1) { activeRace = g_roster_p1Race; }
         else            { activeRace = g_roster_p2Race; }
 
@@ -363,49 +415,66 @@ void RosterDraft_UpdateUI() {
         waitGroup = PlayerGroupSingle(waiter);
     }
 
+    // ── Whose pool is on the left ──────────────────────────────────────
+    // Worth spelling out now that banned and picked units stay on the board:
+    // during bans the pool shown is the OPPONENT's, and a board with units
+    // marked THEIRS on it is only readable if you know whose board it is.
+    if (poolIsP1) {
+        audienceTag  = "P1";
+        audienceName = "PLAYER 1 POOL";
+    } else {
+        audienceTag  = "P2";
+        audienceName = "PLAYER 2 POOL";
+    }
+
+    if (activeOwnsPool) {
+        DialogControlSetPropertyAsText(g_roster_lblPoolHdr, c_triggerControlPropertyText,
+            activeGroup, StringToText(RosterDraft_PoolHeader("YOUR POOL", activeRace)));
+        if (hasWaiter) {
+            DialogControlSetPropertyAsText(g_roster_lblPoolHdr, c_triggerControlPropertyText,
+                waitGroup, StringToText(RosterDraft_PoolHeader("OPPONENT'S POOL", activeRace)));
+        }
+    } else {
+        DialogControlSetPropertyAsText(g_roster_lblPoolHdr, c_triggerControlPropertyText,
+            activeGroup, StringToText(RosterDraft_PoolHeader("OPPONENT'S POOL", activeRace)));
+        if (hasWaiter) {
+            DialogControlSetPropertyAsText(g_roster_lblPoolHdr, c_triggerControlPropertyText,
+                waitGroup, StringToText(RosterDraft_PoolHeader("YOUR POOL", activeRace)));
+        }
+    }
+    if (Tardigrade_HasAudience()) {
+        DialogControlSetPropertyAsText(g_roster_lblPoolHdr, c_triggerControlPropertyText,
+            Tardigrade_Audience(),
+            StringToText(RosterDraft_PoolHeader(audienceName, activeRace)));
+    }
+
     // ── Pool buttons for the active (and, disabled, the waiting) player ──────
+    // Banned and picked units keep their place on the board, marked and
+    // switched off. They used to be hidden, which made the grid reflow after
+    // every click - units moved under the cursor, and a player could not tell a
+    // unit that had been banned from one that was never in the pool.
     i = 1;
     while (i <= c_rosterPoolMax) {
         if (i <= poolCount) {
             unitType = GetRosterPoolUnit(activeRace, i);
+            slotState = RosterDraft_SlotState(poolIsP1, i, g_roster_phase == 1);
 
-            // A unit is unavailable if it's been banned or already picked
-            if (g_roster_phase == 1) {
-                // Banning from opponent's pool — hide already-banned AND already-picked units
-                if (activeIsP1) { unavailable = g_roster_p2Banned[i] || g_roster_p2Picked[i]; }
-                else            { unavailable = g_roster_p1Banned[i] || g_roster_p1Picked[i]; }
-            } else {
-                // Picking from own pool — hide picked AND banned units
-                if (activeIsP1) { unavailable = g_roster_p1Picked[i] || g_roster_p1Banned[i]; }
-                else            { unavailable = g_roster_p2Picked[i] || g_roster_p2Banned[i]; }
-            }
+            shownState = RosterDraft_ShownState(slotState, activeOwnsPool);
+            DraftStyle_ApplyCard(g_roster_btnPool[i], activeGroup, shownState,
+                RosterDraft_PoolCard(shownState, "", unitType), true);
 
-            if (g_roster_phase == 1) {
-                btnTxt = "<c val=\"FF8888\">" + RosterUnitDisplayName(unitType) + "</c>"
-                    + "\n<c val=\"664444\">BAN  ·  " + RosterUnitRole(unitType) + "</c>";
-            } else {
-                btnTxt = "<c val=\"FFFFFF\">" + RosterUnitDisplayName(unitType) + "</c>"
-                    + "\n<c val=\"666666\">" + RosterUnitRole(unitType) + "</c>";
-            }
-
-            DialogControlSetPropertyAsText(g_roster_btnPool[i], c_triggerControlPropertyText,
-                activeGroup, StringToText(btnTxt));
-            DialogControlSetVisible(g_roster_btnPool[i], activeGroup, !unavailable);
-            // Explicitly, since this player's buttons were disabled on their
-            // last waiting turn.
-            DialogControlSetEnabled(g_roster_btnPool[i], activeGroup, true);
             if (hasWaiter) {
-                DialogControlSetPropertyAsText(g_roster_btnPool[i], c_triggerControlPropertyText,
-                    waitGroup, StringToText(btnTxt));
-                DialogControlSetVisible(g_roster_btnPool[i], waitGroup, !unavailable);
-                DialogControlSetEnabled(g_roster_btnPool[i], waitGroup, false);
+                // Same board from the other side, so YOURS and THEIRS swap.
+                shownState = RosterDraft_ShownState(slotState, !activeOwnsPool);
+                DraftStyle_ApplyCard(g_roster_btnPool[i], waitGroup, shownState,
+                    RosterDraft_PoolCard(shownState, "", unitType), false);
             }
-            // Spectators see the same pool, but disabled so they can't click.
+            // Spectators see the same board, labelled P1 / P2 since they are on
+            // neither side, and never clickable.
             if (Tardigrade_HasAudience()) {
-                DialogControlSetPropertyAsText(g_roster_btnPool[i], c_triggerControlPropertyText,
-                    Tardigrade_Audience(), StringToText(btnTxt));
-                DialogControlSetVisible(g_roster_btnPool[i], Tardigrade_Audience(), !unavailable);
-                DialogControlSetEnabled(g_roster_btnPool[i], Tardigrade_Audience(), false);
+                shownState = RosterDraft_ShownState(slotState, poolIsP1);
+                DraftStyle_ApplyCard(g_roster_btnPool[i], Tardigrade_Audience(), shownState,
+                    RosterDraft_PoolCard(shownState, audienceTag, unitType), false);
             }
         } else {
             DialogControlSetVisible(g_roster_btnPool[i], activeGroup, false);
@@ -739,21 +808,24 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     // Title label — centered, top
     g_roster_lblTitle = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_roster_lblTitle, Tardigrade_Viewers(), 820, 28);
-    DialogControlSetPosition(g_roster_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 10);
+    DialogControlSetPosition(g_roster_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 16);
 
     // Subtitle label — centered, below title (YOUR TURN / waiting)
     g_roster_lblSubtitle = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_roster_lblSubtitle, Tardigrade_Viewers(), 820, 20);
-    DialogControlSetPosition(g_roster_lblSubtitle, Tardigrade_Viewers(), c_anchorTop, 0, 42);
+    DialogControlSetPosition(g_roster_lblSubtitle, Tardigrade_Viewers(), c_anchorTop, 0, 46);
 
-    // Section header: AVAILABLE UNITS (over left panel)
+    // Section header: the unit pool (over left panel)
     // center=270, xOffset=270-430=-160
-    lblSection = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 500, 14);
-    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, -160, 68);
+    // Kept in a global: RosterDraft_UpdateUI rewrites it per viewer each turn to
+    // say whose pool is on screen (during bans it is the opponent's).
+    g_roster_lblPoolHdr = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
+    lblSection = g_roster_lblPoolHdr;
+    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 520, 14);
+    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, -150, 68);
     DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
         Tardigrade_Viewers(),
-        StringToText("<c val=\"555555\">AVAILABLE UNITS ──────────────────────────────────────────────────</c>"));
+        StringToText("<c val=\"555555\">UNIT POOL</c>"));
 
     // Section header: YOUR ROSTER (over right panel)
     // center=690, xOffset=690-430=+260
@@ -777,6 +849,7 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     i = 1;
     while (i <= c_rosterPoolMax) {
         g_roster_btnPool[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_roster_btnPool[i], Tardigrade_Viewers());
         DialogControlSetSize(g_roster_btnPool[i], Tardigrade_Viewers(), 238, 48);
         if (i <= 8) {
             row = i - 1;
@@ -787,7 +860,7 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
             DialogControlSetPosition(g_roster_btnPool[i], Tardigrade_Viewers(),
                 c_anchorTop, -38, 84 + row * 54);
         }
-        // Hidden initially; UpdateUI makes the correct set visible per picker
+        // Hidden initially; UpdateUI shows every slot the pool actually has
         DialogControlSetVisible(g_roster_btnPool[i], Tardigrade_Viewers(), false);
         i = i + 1;
     }

@@ -149,9 +149,9 @@ const bool   c_cycleAutoGasRedirect = true;
 const string c_cycleMarchBehavior = "TardigradeMod_ForcedMarch";
 const string c_cycleMarchBroken   = "TardigradeMod_MarchBroken";
 
-// Refund (was Salvage): anything of yours that an enemy kills pays back a
-// quarter of what it cost. Replaces the old clickable salvage entirely - see
-// CycleMod_PayRefund for why deaths are gated on an enemy killer.
+// Refund (was Salvage): anything of yours that is lost pays back a quarter of
+// what it cost. Replaces the old clickable salvage entirely - see
+// CycleMod_PayRefund for which deaths count as a loss.
 const fixed c_cycleRefundFraction = 0.25;
 
 // Battle Blink, now automatic. A unit that drops to this fraction of its
@@ -190,6 +190,17 @@ int     g_cycle_p1;                 // Player A (picks first)
 int     g_cycle_p2;                 // Player B (picks second)
 int     g_cycle_pickIndex = 0;      // 0 = A picking, 1 = B picking
 bool[15] g_cycle_taken;             // [1..14] which mods are already claimed (keep > c_cycleModCount)
+
+// WHY a claimed modifier is claimed. g_cycle_taken only says a modifier is off
+// the table, which was enough while a claimed modifier disappeared. The board
+// now keeps all 14 on screen for the whole draft, so it also has to say whether
+// one was banned or picked, and by whom.
+const int c_cycleSlotOpen   = 0;
+const int c_cycleSlotBanned = 1;
+const int c_cycleSlotP1     = 2;
+const int c_cycleSlotP2     = 3;
+const int c_cycleSlotTaken  = 4;    // claimed by neither side (legacy phase mode)
+int[15] g_cycle_modState;           // [1..14] one of c_cycleSlot* (keep > c_cycleModCount)
 int[4]  g_cycle_chosen;             // [1..3] chosen mod indices (phase order)
 
 // ── Per-player draft state (c_cyclePhaseMode == false) ────────────────────
@@ -222,6 +233,7 @@ bool    g_cycle_delayedApplied = false;          // one-time 3-minute activation
 int    g_cycle_dialog   = c_invalidDialogId;
 int    g_cycle_lblTitle = c_invalidDialogControlId;
 int    g_cycle_lblSub   = c_invalidDialogControlId;
+int    g_cycle_lblLegend = c_invalidDialogControlId; // what the card markers mean
 int[15] g_cycle_btnMod;             // [1..14] modifier buttons (keep > c_cycleModCount)
 trigger g_cycle_draftTrig = null;
 
@@ -368,7 +380,7 @@ string CycleMod_Name(int idx) {
 }
 
 // The one-line blurb under each modifier. This is the ONLY description a player
-// ever reads - it feeds the draft buttons (CycleMod_DraftButtonText), the
+// ever reads - it feeds the draft buttons (CycleMod_DraftCard), the
 // "Picked:" line, and the cycle plan in chat - so everything a player is told
 // about the mod passes through here.
 //
@@ -541,21 +553,54 @@ string CycleMod_ModNamesJoined(bool isP1) {
 //==================================================================================================
 
 //--------------------------------------------------------------------------------------------------
-// Ban buttons are red and carry a BAN marker; pick buttons stay neutral. This is
-// the same treatment the roster draft uses, which nobody has ever misread - the
-// modifier draft previously rendered both phases identically and only changed one
-// small word in the title, so players banned when they thought they were picking.
+// One modifier's card. All 14 stay on the board for the whole draft: a banned or
+// picked modifier is restyled and switched off rather than hidden, so the two
+// columns never reflow under the players, and a player can see at a glance what
+// was banned, what the opponent already took, and what is still on offer.
+//
+// Ban buttons are red and carry a BAN marker; pick buttons stay neutral. The
+// modifier draft once rendered both phases identically and only changed one
+// small word in the title, so players banned when they thought they were
+// picking.
 //
 // isBan is passed in rather than read from g_cycle_draftPhase because legacy
 // phase mode leaves that global at 0, which would make every button read BAN.
+// viewerIsP1 decides whether a picked modifier reads YOURS or THEIRS; spectators
+// are on neither side and get P1 / P2 instead.
 //--------------------------------------------------------------------------------------------------
-string CycleMod_DraftButtonText(int idx, bool isBan) {
-    if (isBan) {
-        return "<c val=\"FF8888\">" + CycleMod_Name(idx) + "</c>"
-            + "\n<c val=\"664444\">BAN  ·  " + CycleMod_Desc(idx) + "</c>";
+// The card state for one modifier as one side sees it. Kept separate from the
+// text, because the view also gates the button and tints it on this.
+int CycleMod_CardState(int idx, bool isBan, bool viewerIsP1) {
+    int  slot;
+    bool mine;
+
+    slot = g_cycle_modState[idx];
+
+    if (slot == c_cycleSlotBanned) { return c_draftStateBanned; }
+    if (slot == c_cycleSlotTaken)  { return c_draftStateTaken; }
+    if (slot == c_cycleSlotP1 || slot == c_cycleSlotP2) {
+        if (viewerIsP1) { mine = (slot == c_cycleSlotP1); }
+        else            { mine = (slot == c_cycleSlotP2); }
+        if (mine) { return c_draftStateMine; }
+        return c_draftStateTheirs;
     }
-    return "<c val=\"FFFFFF\">" + CycleMod_Name(idx) + "</c>"
-        + "\n<c val=\"7FD0FF\">" + CycleMod_Desc(idx) + "</c>";
+    if (isBan) { return c_draftStateBanTarget; }
+    return c_draftStateOpen;
+}
+
+// Spectators are on neither side, so a picked modifier is labelled by side
+// instead of YOURS/THEIRS. They view the board as P1, so P1's picks come back
+// as c_draftStateMine and P2's as c_draftStateTheirs - the tags just name them.
+string CycleMod_CardTag(int idx, bool spectator) {
+    if (!spectator) { return ""; }
+    if (g_cycle_modState[idx] == c_cycleSlotP1) { return "P1"; }
+    if (g_cycle_modState[idx] == c_cycleSlotP2) { return "P2"; }
+    return "";
+}
+
+string CycleMod_DraftCard(int idx, bool isBan, bool viewerIsP1, bool spectator) {
+    return DraftStyle_Card(CycleMod_CardState(idx, isBan, viewerIsP1),
+        CycleMod_CardTag(idx, spectator), CycleMod_Name(idx), CycleMod_Desc(idx));
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -575,12 +620,13 @@ void CycleMod_UpdateAudienceUI(bool isBan) {
             aud, StringToText("<c val=\"888888\">Spectating  -  a modifier is being picked...</c>"));
     }
 
+    // Spectators are on neither side, so picked modifiers are labelled P1 / P2
+    // rather than YOURS / THEIRS. The whole board stays up, never clickable.
     i = 1;
     while (i <= c_cycleModCount) {
-        DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
-            aud, StringToText(CycleMod_DraftButtonText(i, isBan)));
-        DialogControlSetVisible(g_cycle_btnMod[i], aud, !g_cycle_taken[i]);
-        DialogControlSetEnabled(g_cycle_btnMod[i], aud, false);
+        DraftStyle_ApplyCard(g_cycle_btnMod[i], aud,
+            CycleMod_CardState(i, isBan, true),
+            CycleMod_DraftCard(i, isBan, true, true), false);
         i = i + 1;
     }
 }
@@ -593,7 +639,6 @@ void CycleMod_UpdateUI() {
     int         waiter;
     int         i;
     string      titleText;
-    string      btnTxt;
     playergroup pickGroup;
     playergroup waitGroup;
 
@@ -610,18 +655,17 @@ void CycleMod_UpdateUI() {
     DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
         pickGroup, StringToText("<c val=\"00FF88\">YOUR TURN  -  Choose a battlefield modifier</c>"));
 
-    // Buttons for the active picker: hide already-taken mods.
+    // Buttons for the active picker: taken mods stay on the board, marked and
+    // switched off.
     i = 1;
     while (i <= c_cycleModCount) {
-        btnTxt = "<c val=\"FFFFFF\">" + CycleMod_Name(i) + "</c>"
-            + "\n<c val=\"7FD0FF\">" + CycleMod_Desc(i) + "</c>";
-        DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
-            pickGroup, StringToText(btnTxt));
-        DialogControlSetVisible(g_cycle_btnMod[i], pickGroup, !g_cycle_taken[i]);
+        DraftStyle_ApplyCard(g_cycle_btnMod[i], pickGroup,
+            CycleMod_CardState(i, false, true),
+            CycleMod_DraftCard(i, false, true, false), true);
         i = i + 1;
     }
 
-    // Waiting player (if distinct): hide all buttons, show a wait message.
+    // Waiting player (if distinct): the same board, all of it disabled.
     if (g_cycle_p1 != g_cycle_p2) {
         if (picker == g_cycle_p1) { waiter = g_cycle_p2; }
         else                      { waiter = g_cycle_p1; }
@@ -629,7 +673,9 @@ void CycleMod_UpdateUI() {
 
         i = 1;
         while (i <= c_cycleModCount) {
-            DialogControlSetVisible(g_cycle_btnMod[i], waitGroup, false);
+            DraftStyle_ApplyCard(g_cycle_btnMod[i], waitGroup,
+                CycleMod_CardState(i, false, false),
+                CycleMod_DraftCard(i, false, false, false), false);
             i = i + 1;
         }
         DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
@@ -657,8 +703,9 @@ void CycleMod_FinishDraft() {
         if (!g_cycle_taken[i]) {
             remaining = remaining - 1;
             if (remaining == 0) {
-                g_cycle_chosen[3] = i;
-                g_cycle_taken[i]  = true;
+                g_cycle_chosen[3]     = i;
+                g_cycle_taken[i]      = true;
+                g_cycle_modState[i]   = c_cycleSlotTaken;
                 break;
             }
         }
@@ -722,7 +769,10 @@ bool CycleMod_OnClicked(bool testConds, bool runActions) {
     }
     if (idx == 0 || g_cycle_taken[idx]) { return true; }
 
+    // Legacy phase mode drafts one shared cycle, so a claimed modifier belongs
+    // to neither side - it renders as TAKEN rather than YOURS/THEIRS.
     g_cycle_taken[idx] = true;
+    g_cycle_modState[idx] = c_cycleSlotTaken;
     g_cycle_chosen[g_cycle_pickIndex + 1] = idx;
 
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
@@ -758,6 +808,7 @@ void CycleMod_UpdateDraftUI() {
     int         i;
     int         total;
     bool        isBan;
+    bool        pickerIsP1;
     string      titleText;
     playergroup pickGroup;
     playergroup waitGroup;
@@ -789,19 +840,22 @@ void CycleMod_UpdateDraftUI() {
             pickGroup, StringToText("<c val=\"00FF88\">YOUR TURN  —  Pick a modifier (active for you only)</c>"));
     }
 
-    // Buttons for the active picker: hide already-taken (banned/picked) mods.
+    // The whole pool, for the active picker. Banned and already-picked modifiers
+    // keep their place, marked and switched off, so the board is the same shape
+    // from the first ban to the last pick.
+    pickerIsP1 = CycleMod_DraftPickerIsP1();
     i = 1;
     while (i <= c_cycleModCount) {
-        DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
-            pickGroup, StringToText(CycleMod_DraftButtonText(i, isBan)));
-        DialogControlSetVisible(g_cycle_btnMod[i], pickGroup, !g_cycle_taken[i]);
-        DialogControlSetEnabled(g_cycle_btnMod[i], pickGroup, true);
+        DraftStyle_ApplyCard(g_cycle_btnMod[i], pickGroup,
+            CycleMod_CardState(i, isBan, pickerIsP1),
+            CycleMod_DraftCard(i, isBan, pickerIsP1, false), true);
         i = i + 1;
     }
 
-    // Waiting player (if distinct): the same options, disabled. They used to
-    // be hidden, but a spectator sees a dialog only through the player they
-    // are watching (see Tardigrade_ObservableDialog), so a blank waiting screen
+    // Waiting player (if distinct): the same board from their own side, all of
+    // it disabled - so YOURS and THEIRS swap over. They used to see nothing at
+    // all, but a spectator sees a dialog only through the player they are
+    // watching (see Tardigrade_ObservableDialog), so a blank waiting screen
     // meant watching that player showed nothing of the draft.
     if (g_cycle_p1 != g_cycle_p2) {
         if (picker == g_cycle_p1) { waiter = g_cycle_p2; }
@@ -809,10 +863,9 @@ void CycleMod_UpdateDraftUI() {
         waitGroup = PlayerGroupSingle(waiter);
         i = 1;
         while (i <= c_cycleModCount) {
-            DialogControlSetPropertyAsText(g_cycle_btnMod[i], c_triggerControlPropertyText,
-                waitGroup, StringToText(CycleMod_DraftButtonText(i, isBan)));
-            DialogControlSetVisible(g_cycle_btnMod[i], waitGroup, !g_cycle_taken[i]);
-            DialogControlSetEnabled(g_cycle_btnMod[i], waitGroup, false);
+            DraftStyle_ApplyCard(g_cycle_btnMod[i], waitGroup,
+                CycleMod_CardState(i, isBan, !pickerIsP1),
+                CycleMod_DraftCard(i, isBan, !pickerIsP1, false), false);
             i = i + 1;
         }
         if (isBan) {
@@ -878,6 +931,13 @@ bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
     if (idx == 0 || g_cycle_taken[idx]) { return true; }
 
     g_cycle_taken[idx] = true;
+    if (g_cycle_draftPhase == 0) {
+        g_cycle_modState[idx] = c_cycleSlotBanned;
+    } else if (CycleMod_DraftPickerIsP1()) {
+        g_cycle_modState[idx] = c_cycleSlotP1;
+    } else {
+        g_cycle_modState[idx] = c_cycleSlotP2;
+    }
 
     // Name the side on every ban and pick. Players know which one they are, but
     // a spectator following along in chat has no other way to tell who did what.
@@ -927,7 +987,11 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     g_cycle_stepIndex  = 1;
 
     i = 1;
-    while (i <= c_cycleModCount) { g_cycle_taken[i] = false; i = i + 1; }
+    while (i <= c_cycleModCount) {
+        g_cycle_taken[i]    = false;
+        g_cycle_modState[i] = c_cycleSlotOpen;
+        i = i + 1;
+    }
 
     // Ban order: P1, P2, P1, P2  (2 each).
     g_cycle_banOrder[1] = p1; g_cycle_banIsP1[1] = true;
@@ -943,31 +1007,41 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     g_cycle_pickOrder[5] = p1; g_cycle_pickIsP1[5] = true;
     g_cycle_pickOrder[6] = p2; g_cycle_pickIsP1[6] = false;
 
-    // Dialog: 640 x 540, two columns of seven buttons (same layout as legacy).
-    // Buttons start at y=80 on a 64px pitch: 80 + 7*64 = 528, plus a margin.
-    g_cycle_dialog = DialogCreate(640, 540, c_anchorCenter, 0, 0, true);
+    // Dialog: 640 x 572, two columns of seven buttons (same layout as legacy),
+    // then the legend. Buttons start at y=80 on a 64px pitch: 80 + 7*64 = 528,
+    // the legend sits at 538, plus a margin.
+    g_cycle_dialog = DialogCreate(640, 572, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
 
     g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblTitle, Tardigrade_Viewers(), 600, 26);
-    DialogControlSetPosition(g_cycle_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 12);
+    DialogControlSetPosition(g_cycle_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 18);
 
     g_cycle_lblSub = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblSub, Tardigrade_Viewers(), 600, 20);
-    DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 42);
+    DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 48);
 
     i = 1;
     while (i <= c_cycleModCount) {
         g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_cycle_btnMod[i], Tardigrade_Viewers());
         DialogControlSetSize(g_cycle_btnMod[i], Tardigrade_Viewers(), 280, 56);
         if (i <= c_cycleModRows) { col = -150; row = i - 1; }
         else                     { col =  150; row = i - c_cycleModRows - 1; }
         DialogControlSetPosition(g_cycle_btnMod[i], Tardigrade_Viewers(),
             c_anchorTop, col, 80 + row * 64);
-        DialogControlSetVisible(g_cycle_btnMod[i], Tardigrade_Viewers(), false);
+        DialogControlSetVisible(g_cycle_btnMod[i], Tardigrade_Viewers(), true);
         i = i + 1;
     }
+
+    // Legend, under the grid: the board keeps banned and picked modifiers, so it
+    // has to say what the markers on them mean.
+    g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 538);
+    DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
+        Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
 
     g_cycle_draftTrig = TriggerCreate("CycleMod_OnDraftClicked");
     i = 1;
@@ -1000,32 +1074,44 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     g_cycle_pickIndex = 0;
 
     i = 1;
-    while (i <= c_cycleModCount) { g_cycle_taken[i] = false; i = i + 1; }
+    while (i <= c_cycleModCount) {
+        g_cycle_taken[i]    = false;
+        g_cycle_modState[i] = c_cycleSlotOpen;
+        i = i + 1;
+    }
 
-    // Dialog: 640 x 540, two columns of seven buttons.
-    g_cycle_dialog = DialogCreate(640, 540, c_anchorCenter, 0, 0, true);
+    // Dialog: 640 x 572, two columns of seven buttons, then the legend.
+    g_cycle_dialog = DialogCreate(640, 572, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
 
     g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblTitle, Tardigrade_Viewers(), 600, 26);
-    DialogControlSetPosition(g_cycle_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 12);
+    DialogControlSetPosition(g_cycle_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 18);
 
     g_cycle_lblSub = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblSub, Tardigrade_Viewers(), 600, 20);
-    DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 42);
+    DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 48);
 
     i = 1;
     while (i <= c_cycleModCount) {
         g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_cycle_btnMod[i], Tardigrade_Viewers());
         DialogControlSetSize(g_cycle_btnMod[i], Tardigrade_Viewers(), 280, 56);
         if (i <= c_cycleModRows) { col = -150; row = i - 1; }
         else                     { col =  150; row = i - c_cycleModRows - 1; }
         DialogControlSetPosition(g_cycle_btnMod[i], Tardigrade_Viewers(),
             c_anchorTop, col, 80 + row * 64);
-        DialogControlSetVisible(g_cycle_btnMod[i], Tardigrade_Viewers(), false);
+        DialogControlSetVisible(g_cycle_btnMod[i], Tardigrade_Viewers(), true);
         i = i + 1;
     }
+
+    // Legend, under the grid (see CycleMod_StartDraftPerPlayer).
+    g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 538);
+    DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
+        Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
 
     g_cycle_draftTrig = TriggerCreate("CycleMod_OnClicked");
     i = 1;
@@ -2459,17 +2545,47 @@ void CycleMod_SyncVeteranStacks(unit child) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Refund (modifier 13): a quarter of the cost of anything of yours an enemy
-// kills comes straight back. Replaces the old Salvage ability outright - no
+// Refund (modifier 13): a quarter of the cost of anything of yours that is
+// lost comes straight back. Replaces the old Salvage ability outright - no
 // command-card button, no hotkey, no 5-second channel to interrupt.
 //
-// Gated on an ENEMY killer, deliberately. The unit-died event fires for far
-// more than combat deaths: a Zergling morphing into a Baneling is killed by
-// MorphZerglingToBaneling's KillOnFinish, a MULE times out, an Adept shade
-// expires, a Larva is consumed. Paying out on those would refund units the
-// player never lost, and morphs would be an outright minerals printer. A
-// killer that is null (a despawn) or friendly (your own Baneling, a morph)
-// pays nothing.
+// "Lost" is any death, whoever caused it: an enemy, your own Siege Tank's
+// splash, your own Baneling, a Terran building burning down. Friendly fire is
+// not an exploit worth guarding against - killing your own unit to get a
+// quarter of it back still costs you the other three quarters.
+//
+// What is NOT a loss is the unit-died event firing for something that was
+// never a death, and those are what the gate below keeps out:
+//
+//   - Morphs and merges. MorphZerglingToBaneling is a CAbilTrain: the
+//     Zergling turns into a BanelingCocoon, which trains the Baneling and is
+//     then killed by KillOnFinish - and the cocoon carries a 50/25
+//     CostResource, so every morph would have paid out. High and Dark Templar
+//     are used up by an Archon merge. Paying on those would make every
+//     Baneling and Archon cheaper than it is.
+//   - Cancellations. A building cancelled mid-construction already returns
+//     75%; Refund on top would make cancelling free. Same for an Egg or a
+//     morph cocoon.
+//   - Timeouts. MULEs, Broodlings, Locusts, Auto-Turrets and Adept shades
+//     expire on their own - but every one of them is either a worker or costs
+//     nothing in the catalog, so the cost check already pays zero on them.
+//
+// A real death always has a damage source: something hit the unit, and it is
+// not the unit itself. None of the non-deaths above has one - they are removed
+// by the unit's own ability (source = itself) or by the engine (no source). So
+// the rule for the types that CAN die that way is simply: a real killer pays,
+// no killer or a self-kill doesn't. Every other type pays on any death, since
+// it has no non-death way to go.
+//
+// That is also why the rule is per type rather than "no self-kills" across
+// the board: a Baneling's blast ends in the core Suicide effect (damage at
+// SourceUnit, Kill, NoKillCredit), so the engine reports it as itself or as
+// nothing - exactly what a morph looks like. But detonating is a real loss,
+// and since the Baneling is not on the list it pays however it dies.
+//
+// The raw damage source is used here, never the recorded last attacker that
+// Veteran Forces falls back to: a Zergling that took a shot earlier and then
+// morphed would otherwise "die" to that old attacker and pay out.
 //
 // Hallucinations are excluded for the same reason in reverse: they carry the
 // real unit's type, so CostResource would read the real unit's price and a
@@ -2489,21 +2605,39 @@ fixed CycleMod_UnitCost(string unitType, string resource, int player) {
     return StringToFixed(costText);
 }
 
-void CycleMod_PayRefund(unit dead, unit killer) {
-    int   owner;
-    fixed minerals;
-    fixed gas;
+// Types whose unit-died event can be a morph, a merge or a cancellation rather
+// than a death. Everything else only ever dies by actually dying. The Baneling
+// is deliberately absent - see above.
+bool CycleMod_RefundCanVanish(unit u) {
+    string unitType;
+    if (UnitTestState(u, c_unitStateUnderConstruction)) { return true; }
+    unitType = UnitGetType(u);
+    return unitType == "HighTemplar" || unitType == "DarkTemplar"  // -> Archon
+        || unitType == "Egg"
+        || unitType == "BanelingCocoon" || unitType == "RavagerCocoon"
+        || unitType == "LurkerMPEgg" || unitType == "BroodLordCocoon"
+        || unitType == "OverlordCocoon" || unitType == "TransportOverlordCocoon";
+}
 
-    if (killer == null) { return; }
-    owner = UnitGetOwner(dead);
-    if (UnitGetOwner(killer) == owner) { return; }
+// source is the killing blow's damage source as the engine reports it - null
+// when nothing dealt the killing damage. See the block above for the rules.
+void CycleMod_PayRefund(unit dead, unit source) {
+    int    owner;
+    fixed  minerals;
+    fixed  gas;
+    string unitType;
+
     if (!CycleMod_UnitModActive(dead, "TardigradeMod_Refund")) { return; }
     if (UnitTestState(dead, c_unitStateHallucination)) { return; }
 
-    minerals = CycleMod_UnitCost(UnitGetType(dead), "Minerals", owner)
-        * c_cycleRefundFraction;
-    gas      = CycleMod_UnitCost(UnitGetType(dead), "Vespene", owner)
-        * c_cycleRefundFraction;
+    if (CycleMod_RefundCanVanish(dead) && (source == null || source == dead)) { return; }
+
+    unitType = UnitGetType(dead);
+
+    owner = UnitGetOwner(dead);
+
+    minerals = CycleMod_UnitCost(unitType, "Minerals", owner) * c_cycleRefundFraction;
+    gas      = CycleMod_UnitCost(unitType, "Vespene", owner) * c_cycleRefundFraction;
     if (minerals <= 0.0 && gas <= 0.0) { return; }
 
     // Paid as fixed, not rounded to whole resources: a Marine is 50/4 = 12.5,
@@ -2515,7 +2649,7 @@ void CycleMod_PayRefund(unit dead, unit killer) {
     if (gas > 0.0) {
         PlayerModifyPropertyFixed(owner, c_playerPropVespene, c_playerPropOperAdd, gas);
     }
-    Debug_Log("Refund: " + UnitGetType(dead) + " -> player " + IntToString(owner)
+    Debug_Log("Refund: " + unitType + " -> player " + IntToString(owner)
         + " +" + FixedToString(minerals, 2) + "m +" + FixedToString(gas, 2) + "g");
 }
 
@@ -2795,12 +2929,14 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
     // blow names its own source; the recorded last attacker covers a death the
     // engine doesn't attribute (and any case where it comes back empty).
     killer = EventUnitDamageSourceUnit();
-    if (killer == null) { killer = CycleMod_GetUnitRef(c_cycleKeyLastAttacker, dead); }
 
-    // Before CycleMod_ForgetUnit below, which drops the recorded attacker that
-    // the enemy-killer test depends on. Structures included - a Refund side
-    // gets a quarter back on a razed Barracks as well as on a dead Marine.
+    // Refund takes the raw source, before the last-attacker fallback: a stale
+    // attacker would turn a morph into a paying "death". Structures included -
+    // a Refund side gets a quarter back on a razed Barracks as well as on a
+    // dead Marine.
     CycleMod_PayRefund(dead, killer);
+
+    if (killer == null) { killer = CycleMod_GetUnitRef(c_cycleKeyLastAttacker, dead); }
 
     if (CycleMod_IsCombatUnit(dead)) {
         // An Interceptor's kill belongs to its Carrier, and so on.

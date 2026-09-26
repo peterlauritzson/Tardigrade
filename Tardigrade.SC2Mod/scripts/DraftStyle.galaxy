@@ -1,0 +1,253 @@
+//--------------------------------------------------------------------------------------------------
+// Draft Styling  (shared by all three draft screens)
+//
+// ONE RULE: a card is never removed from the board.
+//
+// Every screen used to hide an option the moment it was banned or taken. That
+// made the board shrink and reflow under the players - options jumped rows
+// mid-draft, and a player who looked away for two seconds could not tell
+// whether a unit had been banned, taken by the opponent, or was simply never
+// in the pool. Banned and taken cards now STAY where they are, restyled and
+// unclickable, so the board is the same shape from the first click to the last
+// and reads as a record of what happened to it.
+//
+//--------------------------------------------------------------------------------------------------
+// WHY EVERY CARD SETS <s val="..."> EXPLICITLY
+//
+// The default label style on a trigger dialog button is StandardButton
+// (core.sc2mod, UI/FontStyles.SC2Style):
+//
+//   <Style name="StandardButton" template="HeaderExtendedTemplate" height="18"
+//          styleflags="Shadow|Uppercase" disabledcolor="#ColorStandardButtonDisabled" .../>
+//
+// Three separate problems came out of that one line, all of them visible in a
+// playtest screenshot of the modifier draft:
+//
+//   1. disabledcolor (#ColorStandardButtonDisabled = 3d5d7a) is applied to the
+//      WHOLE label the moment the button is disabled, and it overrides every
+//      inline <c val> in the string. Since a claimed card is a disabled button,
+//      banned / yours / theirs all rendered in the same flat blue-grey - the
+//      colour channel was not weak, it was being thrown away outright.
+//   2. styleflags="Uppercase" forced every name into ALL CAPS.
+//   3. height=18 in FontHeaderExtended - a wide display face - made the text so
+//      large that names truncated ("Veteran Forces" -> "Veter...") and the
+//      second line fell outside the 56px button and never drew at all. Every
+//      marker that lived on line two, including the older BAN marker, had in
+//      fact never been visible.
+//
+// The fix is to replace the style on the control itself, via
+// c_triggerControlPropertyStyle (this is what the editor's "Set Dialog Item
+// Style" action does - libNtve_gf_SetDialogItemStyle in NativeLib.galaxy).
+// StandardButtonMini is the one stock style that fixes all three at once:
+//
+//   <Style name="StandardButtonMini" template="StandardTemplate" height="16"
+//          vjustify="Middle" hjustify="Center" styleflags="Glow" .../>
+//
+// No disabledcolor, so inline <c val> survives being disabled. No Uppercase.
+// StandardTemplate's narrower font at height 16, so names fit and both lines
+// draw. And it keeps the same centring StandardButton had, so replacing the
+// style does not move anything on screen. The detail line additionally sets
+// Standard12 inline, purely to make it smaller than the name.
+//--------------------------------------------------------------------------------------------------
+// A card's state is carried by FIVE redundant channels, so no single one of
+// them has to be trusted:
+//
+//   state        line 1        line 2                        frame
+//   OPEN         Overwatch     Allies near a fight...        lit, clickable
+//   BAN TARGET   Overwatch     BAN · Allies near a...        lit, clickable
+//   BANNED       Overwatch     [X] BANNED · Allies...        flat
+//   YOURS / P1   Overwatch     [+] YOURS · Allies...         flat
+//   THEIRS / P2  Overwatch     [O] THEIRS · Allies...        flat
+//
+//   1. A WORD. BANNED / YOURS / THEIRS / TAKEN is spelled out. Nothing has to
+//      be inferred from an appearance at all.
+//   2. A GLYPH. [X], [+], [O], [=] are four different SHAPES in a fixed
+//      leading position on line two, so they hold a scannable column.
+//   3. THE BUTTON FRAME. A claimed card is disabled, so SC2 drops its lit blue
+//      frame to a flat panel. Which options are still live reads from the shape
+//      of the grid alone, with no text read and no colour seen.
+//   4. BRIGHTNESS. Banned sits below anything still on offer, taken between the
+//      two. This ordering survives greyscale.
+//   5. COLOUR, both as text and as a tint on the button itself. It is never the
+//      load-bearing channel. Green/orange for yours/theirs is precisely the
+//      pair a deuteranope cannot separate - which is why that pair also differs
+//      by word, by glyph and by brightness.
+//
+// The name stays alone on line one, flush left and unabbreviated: what a card
+// IS is read far more often than what happened to it, and a chip in front of
+// the name cost the end of every long name to say something line two already
+// said. BAN sits in the same slot as the state chips because it is the same
+// kind of information at the same moment - what this card is to you right now -
+// and a ban target is never also banned, so the two can never collide.
+//
+// Keeping the detail on a dead card (dimmed) rather than blanking it is
+// deliberate: the line keeps its height, so nothing below it moves when a card
+// changes state.
+//--------------------------------------------------------------------------------------------------
+
+// Card states.
+const int c_draftStateOpen      = 0; // on offer; clicking picks it
+const int c_draftStateBanTarget = 1; // on offer; clicking BANS it
+const int c_draftStateBanned    = 2; // removed by a ban
+const int c_draftStateMine      = 3; // taken by the side this viewer is on
+const int c_draftStateTheirs    = 4; // taken by the other side
+const int c_draftStateTaken     = 5; // claimed, no side (shared-pool drafts)
+
+// Text styles - see the block above for why these are set at all. All three are
+// plain StandardTemplate styles from core.sc2mod, so they are available to
+// every mod without shipping a style file.
+const string c_draftStyleButton = "StandardButtonMini"; // the button control
+const string c_draftStyleBody   = "Standard12";         // chip + detail, line 2
+const string c_draftStyleTiny   = "Standard11";         // legends and headers
+
+// Chip glyphs. Four distinct shapes, bracketed so they hold a fixed-width
+// column down the left edge of line two; all plain ASCII, so nothing here
+// depends on a font that may not have the character.
+const string c_draftGlyphBanned = "[X]";
+const string c_draftGlyphMine   = "[+]";
+const string c_draftGlyphTheirs = "[O]";
+const string c_draftGlyphTaken  = "[=]";
+
+// Separator between a chip and the card detail. Same middle dot the rest of
+// the draft text already uses.
+const string c_draftDot = "·";
+
+// Legend lines, in the same glyph order as the board. The short one is for a
+// header that already carries other text; the long one for a line of its own.
+const string c_draftLegendShort =
+    "<c val=\"C08888\">[X] BANNED</c>   <c val=\"4ADB92\">[+] YOURS / P1</c>   "
+    + "<c val=\"E8913F\">[O] THEIRS / P2</c>";
+const string c_draftLegend =
+    c_draftLegendShort + "   <c val=\"7A7A7A\">- nothing leaves the board</c>";
+
+//--------------------------------------------------------------------------------------------------
+// The colours and the chip for one state.
+//--------------------------------------------------------------------------------------------------
+string DraftStyle_NameColor(int state) {
+    if (state == c_draftStateBanned) { return "B07878"; }
+    if (state == c_draftStateMine)   { return "4ADB92"; }
+    if (state == c_draftStateTheirs) { return "F0A050"; }
+    if (state == c_draftStateTaken)  { return "9FB4C7"; }
+    return "FFFFFF";
+}
+
+string DraftStyle_BodyColor(int state) {
+    if (state == c_draftStateBanTarget) { return "FF8080"; }
+    if (state == c_draftStateBanned)    { return "8A5E5E"; }
+    if (state == c_draftStateMine)      { return "3FB077"; }
+    if (state == c_draftStateTheirs)    { return "B5793A"; }
+    if (state == c_draftStateTaken)     { return "6F8496"; }
+    return "8FC4E8";
+}
+
+// A tint multiplied over the button image itself, so a claimed card reads as
+// claimed before a single character is read. This is a second, independent
+// path for the colour: even if a style override ever swallows the inline text
+// colours again, the button underneath still carries the state.
+//
+// Only claimed states have one. An option still on offer is reset to white (no
+// tint), so it keeps SC2's stock button exactly as the rest of the UI draws it.
+// The reset matters: a control is not tied to one card for the whole draft.
+color DraftStyle_Tint(int state) {
+    if (state == c_draftStateBanned) { return Color(60, 32, 32); }
+    if (state == c_draftStateMine)   { return Color(34, 78, 54); }
+    if (state == c_draftStateTheirs) { return Color(80, 52, 24); }
+    return Color(52, 60, 68);
+}
+
+bool DraftStyle_HasTint(int state) {
+    return state == c_draftStateBanned || state == c_draftStateMine
+        || state == c_draftStateTheirs || state == c_draftStateTaken;
+}
+
+// The chip that leads a claimed card's detail line - glyph plus word. tag
+// overrides the default word: spectators are on neither side, so they get
+// "P1"/"P2" instead of "YOURS"/"THEIRS". A card still on offer has no chip,
+// so its detail line starts flush with its description.
+string DraftStyle_Chip(int state, string tag) {
+    string word;
+    word = tag;
+    if (state == c_draftStateBanTarget) { return "BAN"; }
+    if (state == c_draftStateBanned) {
+        if (word == "") { word = "BANNED"; }
+        return c_draftGlyphBanned + " " + word;
+    }
+    if (state == c_draftStateMine) {
+        if (word == "") { word = "YOURS"; }
+        return c_draftGlyphMine + " " + word;
+    }
+    if (state == c_draftStateTheirs) {
+        if (word == "") { word = "THEIRS"; }
+        return c_draftGlyphTheirs + " " + word;
+    }
+    if (state == c_draftStateTaken) {
+        if (word == "") { word = "TAKEN"; }
+        return c_draftGlyphTaken + " " + word;
+    }
+    return "";
+}
+
+//--------------------------------------------------------------------------------------------------
+// A full two-line card: the name, then the chip and the detail. Pass tag "" for
+// the default word for the state. Separators are dropped when either half is
+// missing, so a pool entry with no blurb doesn't end on a dangling dot.
+//--------------------------------------------------------------------------------------------------
+string DraftStyle_Card(int state, string tag, string name, string detail) {
+    string chip;
+    string body;
+
+    chip = DraftStyle_Chip(state, tag);
+    if (chip == "")        { body = detail; }
+    else if (detail == "") { body = chip; }
+    else                   { body = chip + " " + c_draftDot + " " + detail; }
+
+    // The name line takes the control's own style (see the header): leaving it
+    // unwrapped is what keeps it centred like every other button in the mod.
+    return "<c val=\"" + DraftStyle_NameColor(state) + "\">" + name + "</c>"
+        + "\n<s val=\"" + c_draftStyleBody + "\"><c val=\"" + DraftStyle_BodyColor(state)
+        + "\">" + body + "</c></s>";
+}
+
+// Wrap a header or legend in the small style, so it fits the width it was given
+// instead of being truncated by the default display font.
+string DraftStyle_Small(string s) {
+    return "<s val=\"" + c_draftStyleTiny + "\">" + s + "</s>";
+}
+
+//--------------------------------------------------------------------------------------------------
+// Call once per draft button, right after DialogControlCreate. This is the
+// call that actually restores the colours on a disabled card - see the header
+// block for what the stock StandardButton style was doing to them.
+//--------------------------------------------------------------------------------------------------
+void DraftStyle_InitButton(int control, playergroup viewer) {
+    DialogControlSetPropertyAsString(control, c_triggerControlPropertyStyle, viewer,
+        c_draftStyleButton);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Apply the whole treatment for one card to one viewer: text, tint, visibility
+// and whether it can be clicked. Every screen goes through this, so none of
+// them can style a card one way and gate it another. canClick is the viewer's
+// own right to act (it is false for the waiting player and for spectators);
+// the card's state decides the rest.
+//--------------------------------------------------------------------------------------------------
+void DraftStyle_ApplyCard(int control, playergroup viewer, int state, string card, bool canClick) {
+    DialogControlSetPropertyAsText(control, c_triggerControlPropertyText, viewer,
+        StringToText(card));
+    // Set both ways too: the same control is reused for different cards (the
+    // roster draft swaps between the two players' pools), so a tint left over
+    // from the previous card would otherwise bleed onto an untouched one.
+    if (DraftStyle_HasTint(state)) {
+        DialogControlSetPropertyAsColor(control, c_triggerControlPropertyColor, viewer,
+            DraftStyle_Tint(state));
+    } else {
+        DialogControlSetPropertyAsColor(control, c_triggerControlPropertyColor, viewer,
+            Color(100, 100, 100));
+    }
+    DialogControlSetVisible(control, viewer, true);
+    // Set both ways: a button disabled on this player's waiting turn would
+    // otherwise stay disabled on their own turn.
+    DialogControlSetEnabled(control, viewer,
+        canClick && (state == c_draftStateOpen || state == c_draftStateBanTarget));
+}
+
