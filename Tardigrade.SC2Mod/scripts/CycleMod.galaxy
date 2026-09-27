@@ -37,7 +37,7 @@ const int c_cycleModRefund       = 13;
 const int c_cycleModSharedDamage = 14;
 const int c_cycleModMineralsOnly = 15;
 const int c_cycleModYolo         = 16;
-const int c_cycleModLongReach    = 17;
+const int c_cycleModFactoryLines = 17;
 
 // Minerals Only: every gas cost becomes minerals at this rate, and gas income is
 // paid out as minerals 1:1 (CycleMod_ConvertGasIncome).
@@ -48,11 +48,9 @@ const fixed c_cycleMineralsPerGas = 1.5;
 // without the workers, so it costs like it.
 const int   c_cycleAutoRefineryCost = 200;
 
-// Long Reach: worker build range (CAbilBuild Range), and how much faster the
-// structures those workers place go up (build rate, so 1.2 = time / 1.2).
-const string c_cycleLongReachBuild     = "10";
-const fixed  c_cycleLongReachBuildRate = 1.2;
-const int    c_cycleBuildSlots         = 30;   // Build1..Build30
+// Factory Lines: build / train / morph rate for everything but workers
+// (time / 1.15).
+const fixed c_cycleFactoryRate = 1.15;
 
 // Master toggle for the legacy rotating-phase system (in-game Day/Dusk/Night
 // rotation, its HUD legend, and per-phase lighting). Set false: the game now
@@ -380,11 +378,11 @@ string CycleMod_Behavior(int idx) {
     if (idx == 12) { return "TardigradeMod_NoBans"; }
     if (idx == 13) { return "TardigradeMod_Refund"; }
     if (idx == 14) { return c_cycleShareBehavior; }
-    // 15-17 are keys only too: Minerals Only and Long Reach are catalog
+    // 15-17 are keys only too: Minerals Only and Factory Lines are catalog
     // changes (CycleMod_CatalogModForPlayer), Yolo acts on the roster draft.
     if (idx == 15) { return "TardigradeMod_MineralsOnly"; }
     if (idx == 16) { return "TardigradeMod_Yolo"; }
-    if (idx == 17) { return "TardigradeMod_LongReach"; }
+    if (idx == 17) { return "TardigradeMod_FactoryLines"; }
     return "";
 }
 
@@ -415,7 +413,7 @@ string CycleMod_Name(int idx) {
     if (idx == 14) { return "Shared Damage"; }
     if (idx == 15) { return "Minerals Only"; }
     if (idx == 16) { return "YOLO"; }
-    if (idx == 17) { return "Long Reach"; }
+    if (idx == 17) { return "Factory Lines"; }
     return "";
 }
 
@@ -450,7 +448,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
     if (idx == 15) { return "from 0:00: gas costs paid as 1.5x minerals, gas mined = minerals"; }
     if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
-    if (idx == 17) { return "workers build from range 10, and structures build 20% faster"; }
+    if (idx == 17) { return "everything but workers builds, trains and morphs 15% faster"; }
     return "";
 }
 
@@ -1101,12 +1099,19 @@ void CycleMod_FinishDraftPerPlayer() {
     }
 }
 
-// Move on from a finished pick step, skipping every later step that belongs
-// to a YOLO side - its picks were all rolled when it took YOLO.
+void CycleMod_YoloRollPick(bool isP1);
+
+// Move on from a finished pick step. A YOLO side's pick turns are rolled for
+// it on the spot (CycleMod_YoloRollPick), so its modifiers come out one at a
+// time in the normal pick order rather than all at once.
 void CycleMod_AdvancePick() {
+    bool isP1;
+
     g_cycle_stepIndex = g_cycle_stepIndex + 1;
     while (g_cycle_stepIndex <= c_cyclePickTotal) {
-        if (!CycleMod_SideIsYolo(g_cycle_pickIsP1[g_cycle_stepIndex])) { break; }
+        isP1 = g_cycle_pickIsP1[g_cycle_stepIndex];
+        if (!CycleMod_SideIsYolo(isP1)) { break; }
+        CycleMod_YoloRollPick(isP1);
         g_cycle_stepIndex = g_cycle_stepIndex + 1;
     }
     if (g_cycle_stepIndex > c_cyclePickTotal) {
@@ -1116,36 +1121,62 @@ void CycleMod_AdvancePick() {
     }
 }
 
-// A side went YOLO (CycleMod_YoloResolve, before any ban): its three modifiers
-// are rolled now, from the whole pool - bans and the opponent's picks don't
-// matter, it is pure chance, and nothing it rolls leaves the board (both sides
-// may hold the same modifier; they are per side). Draft-only entries (No Bans,
-// YOLO itself) are left out: No Bans could only protect a pool nobody bans
-// from anyway. Its bans are then made at random (CycleMod_UpdateDraftUI), its
-// picks skipped (CycleMod_AdvancePick), and its units dealt by the roster
-// draft (RosterDraft_FillYolo).
-void CycleMod_TakeYolo(bool isP1, string side) {
-    int    idx;
-    int    tries;
-    string names;
-
-    if (isP1) { g_cycle_p1Yolo = true; } else { g_cycle_p2Yolo = true; }
+// One random modifier for a YOLO side, from the whole pool - bans and the
+// opponent's picks don't matter, it is pure chance, and nothing it rolls
+// leaves the board (both sides may hold the same modifier; they are per
+// side). Draft-only entries (No Bans, YOLO itself) are left out: No Bans could
+// only protect a pool nobody bans from anyway. 0 if the side is already full.
+int CycleMod_YoloRollOne(bool isP1) {
+    int idx;
+    int tries;
 
     tries = 0;
     while (tries < 1000) {
-        if (isP1 && g_cycle_p1Count >= c_cyclePicksEach) { break; }
-        if (!isP1 && g_cycle_p2Count >= c_cyclePicksEach) { break; }
+        if (isP1 && g_cycle_p1Count >= c_cyclePicksEach) { return 0; }
+        if (!isP1 && g_cycle_p2Count >= c_cyclePicksEach) { return 0; }
         idx = RandomInt(1, c_cycleModCount);
         if (!CycleMod_ModIsDraftOnly(idx) && !CycleMod_SideHasModIdx(isP1, idx)) {
             CycleMod_SetSideMod(isP1, idx, true);
+            return idx;
         }
         tries = tries + 1;
     }
+    return 0;
+}
 
-    names = CycleMod_ModNamesJoined(isP1);
+// A YOLO side's pick turn: rolled and announced like a pick.
+void CycleMod_YoloRollPick(bool isP1) {
+    int    idx;
+    string side;
+
+    idx = CycleMod_YoloRollOne(isP1);
+    if (idx == 0) { return; }
+    if (isP1) { side = "<c val=\"7FD0FF\">P1</c> "; }
+    else      { side = "<c val=\"FF9F7F\">P2</c> "; }
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        side + "<c val=\"FFD54A\">YOLO rolled:</c> " + CycleMod_Name(idx)
+        + "  (" + CycleMod_Desc(idx) + ")"));
+}
+
+// A side went YOLO (CycleMod_YoloResolve, before any ban). Against a normal
+// drafter its modifiers are rolled one per pick turn (CycleMod_AdvancePick)
+// and its bans made at random (CycleMod_UpdateDraftUI), so they come out at
+// the normal draft's pace. When both sides went YOLO there is no board to
+// pace them by, so all three are rolled here. Its units are dealt by the
+// roster draft (RosterDraft_Start).
+void CycleMod_TakeYolo(bool isP1, string side, bool rollNow) {
+    if (isP1) { g_cycle_p1Yolo = true; } else { g_cycle_p2Yolo = true; }
+
+    if (!rollNow) {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            side + "<c val=\"FFD54A\">went YOLO!</c> <c val=\"AAAAAA\">Random modifiers and"
+            + " units, revealed as the draft goes.</c>"));
+        return;
+    }
+    while (CycleMod_YoloRollOne(isP1) != 0) { }
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
         side + "<c val=\"FFD54A\">went YOLO!</c> <c val=\"AAAAAA\">Random modifiers:</c> "
-        + names + "  <c val=\"AAAAAA\">- and random units.</c>"));
+        + CycleMod_ModNamesJoined(isP1) + "  <c val=\"AAAAAA\">- and random units.</c>"));
 }
 
 // Ban or pick modifier idx for whoever is up. Shared by the click handler
@@ -1383,6 +1414,8 @@ void CycleMod_YoloRefresh() {
 // Both sides have decided: reveal, roll the YOLO sides, open the board - or,
 // if both went YOLO, skip it (nothing is left to ban or pick by hand).
 void CycleMod_YoloResolve() {
+    bool bothYolo;
+
     DraftTimer_Disarm();
     if (g_cycle_yoloTrig != null) { TriggerDestroy(g_cycle_yoloTrig); g_cycle_yoloTrig = null; }
     if (g_cycle_yoloDlg != c_invalidDialogId) {
@@ -1390,18 +1423,19 @@ void CycleMod_YoloResolve() {
         g_cycle_yoloDlg = c_invalidDialogId;
     }
 
-    if (g_cycle_yoloWantP1) { CycleMod_TakeYolo(true, "<c val=\"7FD0FF\">P1</c> "); }
+    bothYolo = g_cycle_yoloWantP1 && g_cycle_yoloWantP2;
+    if (g_cycle_yoloWantP1) { CycleMod_TakeYolo(true, "<c val=\"7FD0FF\">P1</c> ", bothYolo); }
     else {
         UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
             "<c val=\"7FD0FF\">P1</c> <c val=\"AAAAAA\">drafts normally.</c>"));
     }
-    if (g_cycle_yoloWantP2) { CycleMod_TakeYolo(false, "<c val=\"FF9F7F\">P2</c> "); }
+    if (g_cycle_yoloWantP2) { CycleMod_TakeYolo(false, "<c val=\"FF9F7F\">P2</c> ", bothYolo); }
     else {
         UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
             "<c val=\"FF9F7F\">P2</c> <c val=\"AAAAAA\">drafts normally.</c>"));
     }
 
-    if (g_cycle_yoloWantP1 && g_cycle_yoloWantP2) {
+    if (bothYolo) {
         CycleMod_FinishDraftPerPlayer();
         return;
     }
@@ -2731,32 +2765,8 @@ void CycleMod_ConvertGasIncome(playergroup team) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Long Reach (modifier 17): workers build from range 10 - the Range field of
-// the worker's build ability, set per player. The shipped value is 0 (the
-// worker walks up to the site); RavenBuild's 5 is the precedent for a non-zero
-// Range on this ability class. Harvest range was part of it once and was
-// dropped: longer mining reach was too strong.
-//
-// Range alone only moves where the building is placed from. TerranBuild ships
-// with PeonMaintained on - the SCV has to stay with the building to construct
-// it - so the SCV placed the site from range and then walked over anyway.
-// Turning PeonMaintained off (as ProtossBuild and RavenBuild ship) makes the
-// building construct itself, so the SCV stays where it was.
-//
-// Structures also build 20% faster: every InfoArray[BuildN].Time on the three
-// worker build abilities is divided by c_cycleLongReachBuildRate, from the
-// shipped value (CycleMod_CatalogBase), so switching it off and on in testing
-// mode cannot compound. Only worker-placed structures - add-ons and morphs
-// (Orbital, Lair, ...) are other abilities and keep their times. A building
-// already under construction when this applies keeps its old time.
+// Worker harvest abilities, by race (Terran, Protoss, Zerg).
 //--------------------------------------------------------------------------------------------------
-string CycleMod_WorkerBuildAbil(int i) {
-    if (i == 1) { return "TerranBuild"; }
-    if (i == 2) { return "ProtossBuild"; }
-    if (i == 3) { return "ZergBuild"; }
-    return "";
-}
-
 string CycleMod_WorkerGatherAbil(int i) {
     if (i == 1) { return "SCVHarvest"; }
     if (i == 2) { return "ProbeHarvest"; }
@@ -2764,69 +2774,184 @@ string CycleMod_WorkerGatherAbil(int i) {
     return "";
 }
 
-// The same named-or-numbered doubt as CycleMod_ResolveCostPaths: probe once
-// against TerranBuild's first slot (the Command Center) and keep what reads.
-bool g_cycle_buildPathResolved = false;
-bool g_cycle_buildNamed = true;
+//--------------------------------------------------------------------------------------------------
+// Factory Lines (modifier 17): everything the side builds, trains, warps in or
+// morphs into goes up 15% faster (build rate, so time / 1.15) - structures,
+// add-ons, units, and production morphs like Orbital, Lair or Baneling. Workers
+// are the exception, and research is not included.
+//
+// Per-player catalog, like Minerals Only: each time field is set from its
+// shipped value (CycleMod_CatalogBase), so testing mode switching it off and on
+// cannot compound. The ability catalog is swept once for the fields, by class:
+//   - CAbilTrain / CAbilBuild: InfoArray[TrainN / BuildN].Time. A train slot
+//     whose first Unit is an SCV, Probe or Drone is skipped.
+//   - CAbilWarpTrain: the same Time, plus the Charge and Cooldown times - a
+//     warp gate's recharge is its real production time.
+//   - CAbilMorph: only InfoArray entries with Score set, which is how the data
+//     tells a production morph (Lair, Orbital, Baneling, Brood Lord) from a
+//     mode switch (Siege Mode, Burrow, Hellbat). Every section's Delay and
+//     Duration is scaled.
+// Anything already in production when it applies keeps its old time.
+//--------------------------------------------------------------------------------------------------
+const int c_cycleAbilClassBuild     = 12;   // c_classIdCAbilBuild
+const int c_cycleAbilClassMorph     = 22;   // c_classIdCAbilMorph
+const int c_cycleAbilClassTrain     = 34;   // c_classIdCAbilTrain
+const int c_cycleAbilClassWarpTrain = 37;   // c_classIdCAbilWarpTrain
+const int c_cycleProdSlots          = 30;   // Train1..Train30 / Build1..Build30
+const int c_cycleMorphInfos         = 4;    // morph InfoArray entries looked at
+const int c_cycleMaxProdFields      = 2048;
 
-string CycleMod_BuildTimePath(int slot) {
-    if (!g_cycle_buildPathResolved) {
-        g_cycle_buildPathResolved = true;
-        g_cycle_buildNamed = CatalogFieldValueGet(c_gameCatalogAbil, "TerranBuild",
-            "InfoArray[Build1].Time", 1) != "";
-        Debug_Log("Long Reach: build slots named="
-            + libNtve_gf_ConvertBooleanToString(g_cycle_buildNamed));
-    }
-    if (g_cycle_buildNamed) { return "InfoArray[Build" + IntToString(slot) + "].Time"; }
-    return "InfoArray[" + IntToString(slot - 1) + "].Time";
+string[2048] g_cycle_prodAbil;
+string[2048] g_cycle_prodField;
+int          g_cycle_prodCount = 0;
+bool         g_cycle_prodCached = false;
+bool         g_cycle_slotNamed = true;
+bool         g_cycle_morphNumeric = true;
+
+// Remember a field worth scaling: it exists and holds a positive time. Reading
+// it through CycleMod_CatalogBase also records the shipped value, before any
+// player's copy is touched.
+void CycleMod_AddProdField(string abil, string field) {
+    if (g_cycle_prodCount >= c_cycleMaxProdFields) { return; }
+    if (StringToFixed(CycleMod_CatalogBase(c_gameCatalogAbil, abil, field, 1)) <= 0.0) { return; }
+    g_cycle_prodAbil[g_cycle_prodCount]  = abil;
+    g_cycle_prodField[g_cycle_prodCount] = field;
+    g_cycle_prodCount = g_cycle_prodCount + 1;
 }
 
-void CycleMod_BuildTimesForPlayer(int player, bool on) {
-    string abil;
-    string field;
-    string base;
+string CycleMod_ProdSlotPath(string kind, int slot) {
+    if (g_cycle_slotNamed) { return "InfoArray[" + kind + IntToString(slot) + "]"; }
+    return "InfoArray[" + IntToString(slot - 1) + "]";
+}
+
+// Whether a train slot makes a worker. The Unit is read from the data; the
+// three melee worker slots are also named outright, in case that read comes
+// back empty.
+bool CycleMod_ProdSlotIsWorker(string abil, string prefix, int slot) {
+    string unitType;
+    unitType = CatalogFieldValueGet(c_gameCatalogAbil, abil, prefix + ".Unit[0]", 1);
+    if (unitType == "") {
+        unitType = CatalogFieldValueGet(c_gameCatalogAbil, abil, prefix + ".Unit", 1);
+    }
+    if (unitType == "SCV" || unitType == "Probe" || unitType == "Drone") { return true; }
+    return slot == 1 && (abil == "CommandCenterTrain" || abil == "NexusTrain" || abil == "LarvaTrain");
+}
+
+// Morph section names, used only when the numbered form reads nothing back.
+string CycleMod_MorphSectionName(int i) {
+    if (i == 0) { return "Abils"; }
+    if (i == 1) { return "Actor"; }
+    if (i == 2) { return "Artifacts"; }
+    if (i == 3) { return "Collide"; }
+    if (i == 4) { return "Facing"; }
+    if (i == 5) { return "Footprint"; }
+    if (i == 6) { return "Mover"; }
+    if (i == 7) { return "Stats"; }
+    return "";
+}
+
+void CycleMod_AddMorphFields(string abil, int info) {
+    string prefix;
+    string section;
+    int    s;
+
+    prefix = "InfoArray[" + IntToString(info) + "].SectionArray[";
+    s = 0;
+    while (s < 16) {
+        if (g_cycle_morphNumeric) {
+            section = prefix + IntToString(s) + "].DurationArray[";
+            CycleMod_AddProdField(abil, section + "0]");
+            CycleMod_AddProdField(abil, section + "1]");
+        } else if (CycleMod_MorphSectionName(s) != "") {
+            section = prefix + CycleMod_MorphSectionName(s) + "].DurationArray[";
+            CycleMod_AddProdField(abil, section + "Delay]");
+            CycleMod_AddProdField(abil, section + "Duration]");
+        }
+        s = s + 1;
+    }
+}
+
+void CycleMod_EnsureProdCache() {
+    int    catalogCount;
     int    i;
     int    slot;
+    int    cls;
+    string abil;
+    string prefix;
+    string kind;
 
+    if (g_cycle_prodCached) { return; }
+    g_cycle_prodCached = true;
+
+    // The same named-or-numbered doubt as CycleMod_ResolveCostPaths, probed
+    // against values the melee data is known to hold.
+    g_cycle_slotNamed = CatalogFieldValueGet(c_gameCatalogAbil, "BarracksTrain",
+        "InfoArray[Train1].Time", 1) != "";
+    g_cycle_morphNumeric = false;
+    i = 0;
+    while (i < 16 && !g_cycle_morphNumeric) {
+        g_cycle_morphNumeric = StringToFixed(CatalogFieldValueGet(c_gameCatalogAbil, "UpgradeToLair",
+            "InfoArray[0].SectionArray[" + IntToString(i) + "].DurationArray[0]", 1)) > 0.0;
+        i = i + 1;
+    }
+
+    catalogCount = CatalogEntryCount(c_gameCatalogAbil);
     i = 1;
-    while (i <= 3) {
-        abil = CycleMod_WorkerBuildAbil(i);
-        slot = 1;
-        while (slot <= c_cycleBuildSlots) {
-            field = CycleMod_BuildTimePath(slot);
-            base  = CycleMod_CatalogBase(c_gameCatalogAbil, abil, field, player);
-            if (StringToFixed(base) > 0.0) {
-                if (on) {
-                    CatalogFieldValueSet(c_gameCatalogAbil, abil, field, player,
-                        FixedToString(StringToFixed(base) / c_cycleLongReachBuildRate, 4));
-                } else {
-                    CatalogFieldValueSet(c_gameCatalogAbil, abil, field, player, base);
+    while (i <= catalogCount) {
+        abil = CatalogEntryGet(c_gameCatalogAbil, i);
+        cls  = CatalogEntryClass(c_gameCatalogAbil, abil);
+        if (cls == c_cycleAbilClassTrain || cls == c_cycleAbilClassWarpTrain
+                || cls == c_cycleAbilClassBuild) {
+            kind = "Train";
+            if (cls == c_cycleAbilClassBuild) { kind = "Build"; }
+            slot = 1;
+            while (slot <= c_cycleProdSlots) {
+                prefix = CycleMod_ProdSlotPath(kind, slot);
+                if (StringToFixed(CatalogFieldValueGet(c_gameCatalogAbil, abil, prefix + ".Time", 1)) > 0.0
+                        && (cls == c_cycleAbilClassBuild || !CycleMod_ProdSlotIsWorker(abil, prefix, slot))) {
+                    CycleMod_AddProdField(abil, prefix + ".Time");
+                    if (cls == c_cycleAbilClassWarpTrain) {
+                        CycleMod_AddProdField(abil, prefix + ".Charge.TimeUse");
+                        CycleMod_AddProdField(abil, prefix + ".Charge.TimeStart");
+                        CycleMod_AddProdField(abil, prefix + ".Cooldown.TimeUse");
+                    }
                 }
+                slot = slot + 1;
             }
-            slot = slot + 1;
+        } else if (cls == c_cycleAbilClassMorph) {
+            slot = 0;
+            while (slot < c_cycleMorphInfos) {
+                if (CatalogFieldValueGet(c_gameCatalogAbil, abil,
+                        "InfoArray[" + IntToString(slot) + "].Score", 1) == "1") {
+                    CycleMod_AddMorphFields(abil, slot);
+                }
+                slot = slot + 1;
+            }
         }
         i = i + 1;
     }
+
+    Debug_Log("Factory Lines: slots named=" + libNtve_gf_ConvertBooleanToString(g_cycle_slotNamed)
+        + ", morph numeric=" + libNtve_gf_ConvertBooleanToString(g_cycle_morphNumeric)
+        + ", " + IntToString(g_cycle_prodCount) + " time fields");
 }
 
-void CycleMod_LongReachForPlayer(int player, bool on) {
-    int i;
-    i = 1;
-    while (i <= 3) {
+void CycleMod_FactoryLinesForPlayer(int player, bool on) {
+    string base;
+    int    i;
+
+    CycleMod_EnsureProdCache();
+    i = 0;
+    while (i < g_cycle_prodCount) {
+        base = CycleMod_CatalogBase(c_gameCatalogAbil, g_cycle_prodAbil[i], g_cycle_prodField[i], player);
         if (on) {
-            CycleMod_CatalogSet(c_gameCatalogAbil, CycleMod_WorkerBuildAbil(i), "Range",
-                player, c_cycleLongReachBuild);
+            CatalogFieldValueSet(c_gameCatalogAbil, g_cycle_prodAbil[i], g_cycle_prodField[i], player,
+                FixedToString(StringToFixed(base) / c_cycleFactoryRate, 4));
         } else {
-            CycleMod_CatalogRestore(c_gameCatalogAbil, CycleMod_WorkerBuildAbil(i), "Range", player);
+            CatalogFieldValueSet(c_gameCatalogAbil, g_cycle_prodAbil[i], g_cycle_prodField[i], player, base);
         }
         i = i + 1;
     }
-    if (on) {
-        CycleMod_CatalogSet(c_gameCatalogAbil, "TerranBuild", "FlagArray[PeonMaintained]", player, "0");
-    } else {
-        CycleMod_CatalogRestore(c_gameCatalogAbil, "TerranBuild", "FlagArray[PeonMaintained]", player);
-    }
-    CycleMod_BuildTimesForPlayer(player, on);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -3168,8 +3293,8 @@ void CycleMod_CatalogModForPlayer(int player, int idx, bool on) {
         CycleMod_AutoRefineryForPlayer(player, on);
     } else if (idx == c_cycleModMineralsOnly) {
         CycleMod_MineralsOnlyForPlayer(player, on);
-    } else if (idx == c_cycleModLongReach) {
-        CycleMod_LongReachForPlayer(player, on);
+    } else if (idx == c_cycleModFactoryLines) {
+        CycleMod_FactoryLinesForPlayer(player, on);
     }
 }
 
@@ -4195,7 +4320,7 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
     if (beh == "" || beh == "TardigradeMod_BattleBlink"
         || beh == "TardigradeMod_Refund" || beh == "TardigradeMod_AutoRefinery"
         || beh == "TardigradeMod_NoBans" || beh == "TardigradeMod_MineralsOnly"
-        || beh == "TardigradeMod_Yolo" || beh == "TardigradeMod_LongReach") {
+        || beh == "TardigradeMod_Yolo" || beh == "TardigradeMod_FactoryLines") {
         return;
     }
     if (beh == c_cycleMarchBehavior) {

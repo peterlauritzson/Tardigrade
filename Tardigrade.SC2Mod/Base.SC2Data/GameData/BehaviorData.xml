@@ -471,7 +471,7 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
-    <!-- 15-17: markers only, same reason as 11-13. Minerals Only and Long Reach
+    <!-- 15-17: markers only, same reason as 11-13. Minerals Only and Factory Lines
          are per-player catalog changes (CycleMod_CatalogModForPlayer); Yolo
          acts on the roster draft. -->
     <CBehaviorBuff id="TardigradeMod_MineralsOnly">
@@ -486,7 +486,7 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
-    <CBehaviorBuff id="TardigradeMod_LongReach">
+    <CBehaviorBuff id="TardigradeMod_FactoryLines">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Positive"/>
         <Duration value="8"/>

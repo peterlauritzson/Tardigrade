@@ -75,7 +75,7 @@ the start** — they shape the opening build, so they have to be there for it.
 unit draft that immediately follows.
 
 Modifiers **never affect workers** (SCV, Probe, Drone, MULE), except Free
-Labor, Auto Refineries and Long Reach, which are about workers to begin with.
+Labor and Auto Refineries, which are about workers to begin with.
 
 The 17 modifiers. **Every duration below is in real seconds**, the way you
 experience it on Faster — the same numbers the in-game descriptions use. The
@@ -98,8 +98,8 @@ data files store game seconds, which tick 1.4× quicker.
 | 13 | Refund | Any unit or building of yours that dies pays back 25% of its cost (a Marine returns 12.5 minerals), whoever killed it - a detonating Baneling counts. Workers are excluded, like every other modifier. Things that vanish without dying pay nothing: morphs (Zergling into Baneling), Archon merges, cancelled buildings, eggs and cocoons, units timing out |
 | 14 | Shared Damage | Every hit on one of your units (after armor): it keeps half, rounded up, and the other half is dealt out in whole points — at least 1 each — to as many of your other units within 3 range as it stretches to. Alone, or with nothing left over, it takes the full hit |
 | 15 | Minerals Only | **Live from 0:00.** Nothing you buy costs gas: every gas cost is added to the mineral cost at 1.5× and set to 0 (a 100/100 upgrade costs 250/0, a Stalker 125/50 costs 200/0). Units, structures, morphs and upgrades are all converted. Any gas you mine (or get from Auto Refineries or Refund) is turned into minerals 1:1 |
-| 16 | YOLO | **Not on the board — a choice made on its own "YOLO?" screen before the modifier bans.** Each player picks *Draft normally* or *Go YOLO*; the choice is hidden until both have locked in, and both may go YOLO. Going YOLO makes your whole draft chance: **3 random modifiers** rolled from the whole pool (bans and your opponent's picks don't matter; No Bans excluded), your modifier bans made at random, your pick turns skipped, and no unit draft — your roster is dealt: **7 units** at random from your race's pool (instead of 6), with nothing guaranteed. Your opponent can't ban from your unit pool, and your unit bans are random too. If both go YOLO the modifier board is skipped entirely. In Tournament mode the screen has the usual 10s; undecided = draft normally |
-| 17 | Long Reach | Your workers build from range 10, and structures build 20% faster. SCVs no longer stay to construct — the building finishes on its own, like Protoss |
+| 16 | YOLO | **Not on the board — a choice made on its own "YOLO?" screen before the modifier bans.** Each player picks *Draft normally* or *Go YOLO*; the choice is hidden until both have locked in, and both may go YOLO. Going YOLO makes your whole draft chance: **3 random modifiers** rolled from the whole pool (bans and your opponent's picks don't matter; No Bans excluded), your modifier bans made at random, and no unit draft — your roster is **7 units** at random from your race's pool (instead of 6), with nothing guaranteed. Against a normal drafter everything is revealed at the normal draft's pace: each of your pick turns rolls one modifier or one unit on the spot (your 6th unit turn rolls the 7th too). Your opponent can't ban from your unit pool, and your unit bans are random too. If both go YOLO the modifier board is skipped entirely and everything is rolled at once. In Tournament mode the screen has the usual 10s; undecided = draft normally |
+| 17 | Factory Lines | Everything you build, train, warp in or morph into is 15% faster: structures, add-ons, units, warp gate recharge, and upgrades like Orbital, Lair or Baneling. Not workers, and not research |
 
 **No modifier grants a clickable ability.** Every pick is either always-on or
 fires itself off a condition. Battle Blink, Salvage and Medivac Boost all used
@@ -124,9 +124,10 @@ arsenal is bannable and pickable.
   protected side bans twice in a row.
 - **Final snake picks:** the remaining 4 each, until both rosters hold 6.
 
-A side that drafted **YOLO** sits this out: its 7-unit roster is dealt before
-the first pick, its pick turns are dropped, bans against it are dropped, and
-its own bans are made at random for it.
+A side that drafted **YOLO** sits this out: each of its pick turns rolls a
+random unit on the spot (its 6th turn rolls the 7th as well), bans against it
+are dropped, and its own bans are made at random for it. If both sides are
+YOLO, both 7-unit rosters are dealt before the first pick.
 
 Both rosters are shown live side by side (YOUR / OPPONENT) so players can
 counter-draft, with a modifier reference strip along the bottom.

@@ -9,11 +9,15 @@
 // The schedule is built per game in RosterDraft_Start, not fixed, because two
 // modifiers drafted just before this remove steps from it:
 //   No Bans (12) - the opponent's bans against that side are dropped.
-//   YOLO    (16) - that side does not draft at all. Its roster is dealt at the
-//                  start: 7 units at random from its race's pool, nothing
-//                  guaranteed. Its pick steps are
-//                  dropped, bans against it are dropped (nothing to protect),
-//                  and its own ban turns are taken at random, on the spot.
+//   YOLO    (16) - that side does not draft at all: 7 units at random from
+//                  its race's pool, nothing guaranteed. Against a normal
+//                  drafter each of its pick turns is rolled on the spot, the
+//                  7th together with the 6th, so the roster is revealed at the
+//                  normal draft's pace (RosterDraft_YoloPick). When both sides
+//                  are YOLO the pick steps are dropped and both rosters dealt
+//                  at the start. Bans against a YOLO side are dropped (its
+//                  roster is chance, not the opponent's to shape), and its own
+//                  ban turns are taken at random, on the spot.
 //
 // Requires: RaceDraft.galaxy (for GetRaceConfigId, race constants)
 //--------------------------------------------------------------------------------------------------
@@ -222,6 +226,13 @@ string RosterUnitRole(string unitType) {
 //--------------------------------------------------------------------------------------------------
 bool RosterDraft_IsYolo(bool isP1) {
     return CycleMod_SideIsYolo(isP1);
+}
+
+// Exactly one side is YOLO: its roster is rolled pick by pick alongside the
+// other side's draft. With both YOLO there is nothing to pace it by, and both
+// rosters are dealt at the start.
+bool RosterDraft_YoloGradual() {
+    return RosterDraft_IsYolo(true) != RosterDraft_IsYolo(false);
 }
 
 // Rows every roster list shows: 7 when a YOLO roster is in the game, so both
@@ -796,8 +807,47 @@ bool RosterDraft_AutoAct(bool testConds, bool runActions) {
     return true;
 }
 
+// A YOLO side's pick turn: one random unit from its pool, announced. Its 6th
+// turn also deals the 7th, so the last two come out together.
+void RosterDraft_YoloPick(bool isP1) {
+    int    race;
+    int    slot;
+    int    count;
+    string names;
+    string side;
+
+    if (isP1) { race = g_roster_p1Race; side = "<c val=\"7FD0FF\">P1</c> "; }
+    else      { race = g_roster_p2Race; side = "<c val=\"FF9F7F\">P2</c> "; }
+
+    slot = RosterDraft_RandomOpenSlot(isP1, race);
+    if (slot == 0) { RosterDraft_SkipStep(); return; }
+    RosterDraft_TakeSlot(isP1, race, slot);
+    names = RosterUnitDisplayName(GetRosterPoolUnit(race, slot));
+
+    if (isP1) { count = g_roster_p1PickCount; } else { count = g_roster_p2PickCount; }
+    if (count == c_rosterRosterSize) {
+        slot = RosterDraft_RandomOpenSlot(isP1, race);
+        if (slot != 0) {
+            RosterDraft_TakeSlot(isP1, race, slot);
+            names = names + ", " + RosterUnitDisplayName(GetRosterPoolUnit(race, slot));
+        }
+    }
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        side + "<c val=\"FFD54A\">YOLO rolled:</c> " + names));
+
+    g_roster_pickIndex = g_roster_pickIndex + 1;
+    if (!RosterDraft_Advance()) { RosterDraft_BeginStep(); }
+}
+
 void RosterDraft_BeginStep() {
     RosterDraft_UpdateUI();
+
+    // A YOLO side's pick turns are rolled for it, on the spot.
+    if (g_roster_phase != 1 && RosterDraft_IsYolo(g_roster_pickIsP1[g_roster_pickIndex + 1])) {
+        DraftTimer_Disarm();
+        RosterDraft_YoloPick(g_roster_pickIsP1[g_roster_pickIndex + 1]);
+        return;
+    }
 
     // A YOLO side's ban turns are taken for it, at random, on the spot.
     if (g_roster_phase == 1 && RosterDraft_IsYolo(g_roster_banIsP1[g_roster_banIndex + 1])) {
@@ -853,8 +903,7 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
 //--------------------------------------------------------------------------------------------------
 // Append a ban step for this banner unless their target pool is protected.
 // bannerIsP1 = true means P1 bans from P2's pool, so P2's No Bans cancels it.
-// A YOLO pool is skipped too: its roster is already dealt, so a ban on it
-// could only ever land on a unit nobody was going to pick.
+// A YOLO pool is skipped too: its roster is chance, not the opponent's to shape.
 void RosterDraft_ScheduleBan(int banner, bool bannerIsP1) {
     if (bannerIsP1 && CycleMod_P2HasModIdx(c_cycleModNoBans)) { return; }
     if (!bannerIsP1 && CycleMod_P1HasModIdx(c_cycleModNoBans)) { return; }
@@ -864,10 +913,11 @@ void RosterDraft_ScheduleBan(int banner, bool bannerIsP1) {
     g_roster_banIsP1[g_roster_banCount]  = bannerIsP1;
 }
 
-// Append a pick step, unless the picker is YOLO (their roster is dealt, not
-// drafted). opening = before the bans.
+// Append a pick step, unless both sides are YOLO (both rosters are dealt at
+// the start). A lone YOLO side keeps its steps; they are rolled for it
+// (RosterDraft_YoloPick). opening = before the bans.
 void RosterDraft_SchedulePick(int picker, bool pickerIsP1, bool opening) {
-    if (RosterDraft_IsYolo(pickerIsP1)) { return; }
+    if (RosterDraft_IsYolo(pickerIsP1) && !RosterDraft_YoloGradual()) { return; }
     g_roster_pickCount = g_roster_pickCount + 1;
     g_roster_pickOrder[g_roster_pickCount] = picker;
     g_roster_pickIsP1[g_roster_pickCount]  = pickerIsP1;
@@ -968,7 +1018,7 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
 
     // Pick order: 2 OPENING picks each (P1 P2 P2 P1) happen BEFORE bans so
     // players can secure key units, then bans, then the remaining FINAL picks.
-    // A YOLO side's steps are left out (RosterDraft_SchedulePick).
+    // Both YOLO: every step is left out (RosterDraft_SchedulePick).
     g_roster_pickCount = 0;
     g_roster_openCount = 0;
     RosterDraft_SchedulePick(p1, true,  true);
@@ -984,9 +1034,11 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     RosterDraft_SchedulePick(p1, true,  false);
     RosterDraft_SchedulePick(p2, false, false);
 
-    // YOLO: deal the whole roster now, before anyone drafts.
-    if (RosterDraft_IsYolo(true))  { RosterDraft_FillYolo(true,  p1Race); }
-    if (RosterDraft_IsYolo(false)) { RosterDraft_FillYolo(false, p2Race); }
+    // Both YOLO: deal both rosters now. (A lone YOLO side is rolled pick by pick.)
+    if (!RosterDraft_YoloGradual()) {
+        if (RosterDraft_IsYolo(true))  { RosterDraft_FillYolo(true,  p1Race); }
+        if (RosterDraft_IsYolo(false)) { RosterDraft_FillYolo(false, p2Race); }
+    }
 
     Debug_Log("RosterDraft: P1=" + IntToString(p1) + " race=" + GetRaceConfigId(p1Race)
         + " poolCount=" + IntToString(GetRosterPoolCount(p1Race)));
