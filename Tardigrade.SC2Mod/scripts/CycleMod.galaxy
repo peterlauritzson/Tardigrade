@@ -48,9 +48,11 @@ const fixed c_cycleMineralsPerGas = 1.5;
 // without the workers, so it costs like it.
 const int   c_cycleAutoRefineryCost = 200;
 
-// Long Reach: worker build and harvest ranges (CAbilBuild / CAbilHarvest Range).
-const string c_cycleLongReachBuild   = "30";
-const string c_cycleLongReachHarvest = "10";
+// Long Reach: worker build range (CAbilBuild Range), and how much faster the
+// structures those workers place go up (build rate, so 1.2 = time / 1.2).
+const string c_cycleLongReachBuild     = "10";
+const fixed  c_cycleLongReachBuildRate = 1.2;
+const int    c_cycleBuildSlots         = 30;   // Build1..Build30
 
 // Master toggle for the legacy rotating-phase system (in-game Day/Dusk/Night
 // rotation, its HUD legend, and per-phase lighting). Set false: the game now
@@ -448,7 +450,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
     if (idx == 15) { return "from 0:00: gas costs paid as 1.5x minerals, gas mined = minerals"; }
     if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
-    if (idx == 17) { return "workers build from range 30 and harvest from range 10"; }
+    if (idx == 17) { return "workers build from range 10, and structures build 20% faster"; }
     return "";
 }
 
@@ -2729,11 +2731,24 @@ void CycleMod_ConvertGasIncome(playergroup team) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Long Reach (modifier 17): workers build from range 30 and harvest from range
-// 10. Both are the Range field of the worker's build / harvest ability, set
-// per player. The shipped value is 0 for both (the worker walks up to the
-// site or the patch); MULEGather's 0.5 and RavenBuild's 5 are the precedent
-// for a non-zero Range on these ability classes.
+// Long Reach (modifier 17): workers build from range 10 - the Range field of
+// the worker's build ability, set per player. The shipped value is 0 (the
+// worker walks up to the site); RavenBuild's 5 is the precedent for a non-zero
+// Range on this ability class. Harvest range was part of it once and was
+// dropped: longer mining reach was too strong.
+//
+// Range alone only moves where the building is placed from. TerranBuild ships
+// with PeonMaintained on - the SCV has to stay with the building to construct
+// it - so the SCV placed the site from range and then walked over anyway.
+// Turning PeonMaintained off (as ProtossBuild and RavenBuild ship) makes the
+// building construct itself, so the SCV stays where it was.
+//
+// Structures also build 20% faster: every InfoArray[BuildN].Time on the three
+// worker build abilities is divided by c_cycleLongReachBuildRate, from the
+// shipped value (CycleMod_CatalogBase), so switching it off and on in testing
+// mode cannot compound. Only worker-placed structures - add-ons and morphs
+// (Orbital, Lair, ...) are other abilities and keep their times. A building
+// already under construction when this applies keeps its old time.
 //--------------------------------------------------------------------------------------------------
 string CycleMod_WorkerBuildAbil(int i) {
     if (i == 1) { return "TerranBuild"; }
@@ -2749,6 +2764,51 @@ string CycleMod_WorkerGatherAbil(int i) {
     return "";
 }
 
+// The same named-or-numbered doubt as CycleMod_ResolveCostPaths: probe once
+// against TerranBuild's first slot (the Command Center) and keep what reads.
+bool g_cycle_buildPathResolved = false;
+bool g_cycle_buildNamed = true;
+
+string CycleMod_BuildTimePath(int slot) {
+    if (!g_cycle_buildPathResolved) {
+        g_cycle_buildPathResolved = true;
+        g_cycle_buildNamed = CatalogFieldValueGet(c_gameCatalogAbil, "TerranBuild",
+            "InfoArray[Build1].Time", 1) != "";
+        Debug_Log("Long Reach: build slots named="
+            + libNtve_gf_ConvertBooleanToString(g_cycle_buildNamed));
+    }
+    if (g_cycle_buildNamed) { return "InfoArray[Build" + IntToString(slot) + "].Time"; }
+    return "InfoArray[" + IntToString(slot - 1) + "].Time";
+}
+
+void CycleMod_BuildTimesForPlayer(int player, bool on) {
+    string abil;
+    string field;
+    string base;
+    int    i;
+    int    slot;
+
+    i = 1;
+    while (i <= 3) {
+        abil = CycleMod_WorkerBuildAbil(i);
+        slot = 1;
+        while (slot <= c_cycleBuildSlots) {
+            field = CycleMod_BuildTimePath(slot);
+            base  = CycleMod_CatalogBase(c_gameCatalogAbil, abil, field, player);
+            if (StringToFixed(base) > 0.0) {
+                if (on) {
+                    CatalogFieldValueSet(c_gameCatalogAbil, abil, field, player,
+                        FixedToString(StringToFixed(base) / c_cycleLongReachBuildRate, 4));
+                } else {
+                    CatalogFieldValueSet(c_gameCatalogAbil, abil, field, player, base);
+                }
+            }
+            slot = slot + 1;
+        }
+        i = i + 1;
+    }
+}
+
 void CycleMod_LongReachForPlayer(int player, bool on) {
     int i;
     i = 1;
@@ -2756,14 +2816,17 @@ void CycleMod_LongReachForPlayer(int player, bool on) {
         if (on) {
             CycleMod_CatalogSet(c_gameCatalogAbil, CycleMod_WorkerBuildAbil(i), "Range",
                 player, c_cycleLongReachBuild);
-            CycleMod_CatalogSet(c_gameCatalogAbil, CycleMod_WorkerGatherAbil(i), "Range",
-                player, c_cycleLongReachHarvest);
         } else {
             CycleMod_CatalogRestore(c_gameCatalogAbil, CycleMod_WorkerBuildAbil(i), "Range", player);
-            CycleMod_CatalogRestore(c_gameCatalogAbil, CycleMod_WorkerGatherAbil(i), "Range", player);
         }
         i = i + 1;
     }
+    if (on) {
+        CycleMod_CatalogSet(c_gameCatalogAbil, "TerranBuild", "FlagArray[PeonMaintained]", player, "0");
+    } else {
+        CycleMod_CatalogRestore(c_gameCatalogAbil, "TerranBuild", "FlagArray[PeonMaintained]", player);
+    }
+    CycleMod_BuildTimesForPlayer(player, on);
 }
 
 //--------------------------------------------------------------------------------------------------

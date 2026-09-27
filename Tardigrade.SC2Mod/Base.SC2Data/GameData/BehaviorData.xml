@@ -517,6 +517,14 @@
              this every share would be absorbed and split again, forever.
            - TardigradeMod_OverwatchBonus: dealt per share by the damage handler,
              so it is already spread; splitting it again would shrink it.
+           - EMPDamage, Feedback: debuffs that ride on a damage effect. EMP is
+             Amount 0 + ShieldBonus (shields only), Feedback is scaled off the
+             target's energy. The redealt shares are plain damage, so splitting
+             either turned it into health damage on the victim and its partners.
+             They land on the victim alone, exactly as in melee.
+           - WidowMineExplode*Shields: the mine's shield-only extra hits (Amount
+             0, VitalBonus Shields, NoVitalAbsorbLife) - same problem as EMP.
+             The mine's main hits are real damage and still split.
            - Kill-flag effects: how temporary units expire and how several
              abilities remove units (a Baneling's own Suicide, KillHallucination,
              MULEFate, an Adept shade ending, Bile popping a Force Field,
@@ -534,6 +542,12 @@
             <Chance value="1"/>
             <ExcludeEffectArray value="TardigradeMod_SharedDamageHit"/>
             <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="EMPDamage"/>
+            <ExcludeEffectArray value="Feedback"/>
+            <ExcludeEffectArray value="WidowMineExplodeDirectShields"/>
+            <ExcludeEffectArray value="WidowMineExplodeSplashShields"/>
+            <ExcludeEffectArray value="WidowMineExplodeSplashShields2"/>
+            <ExcludeEffectArray value="WidowMineExplodeSplashShields3"/>
             <ExcludeEffectArray value="Suicide"/>
             <ExcludeEffectArray value="SuicideRemove"/>
             <ExcludeEffectArray value="Kill"/>
