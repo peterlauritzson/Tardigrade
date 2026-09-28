@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Catalog>
+    <!-- Satisfied once TardigradeUpg_OpenSkies is complete for the player. The
+         TechTreeCheat flag is off on purpose: testing mode unlocks every unit,
+         and with the cheat flag on this node would read as satisfied for
+         every player whether or not they have Open Skies. -->
+    <CRequirementCountUpgrade id="TardigradeReqNode_OpenSkies">
+        <Count Link="TardigradeUpg_OpenSkies" State="CompleteOnly"/>
+        <Flags index="TechTreeCheat" value="0"/>
+    </CRequirementCountUpgrade>
+</Catalog>

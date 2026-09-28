@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
 
+    <!-- Open Skies player flag - see UpgradeData.xml and ValidatorData.xml. -->
+    <CRequirement id="TardigradeReq_OpenSkies">
+        <NodeArray index="Use" Link="TardigradeReqNode_OpenSkies"/>
+    </CRequirement>
+
     <!-- =====================================================================
          TARDIGRADE: UPGRADE BUTTONS THE ROSTER DRAFT MUST NOT HIDE
 

@@ -52,4 +52,85 @@
 		<Kind value="Spell"/>
 		<ArmorReduction value="0"/>
 	</CEffectDamage>
+
+	<!-- Open Skies splash on the other plane, dealt by CycleMod_OnOpenSkiesSplash
+	     for the Siege Tank, Ultralisk, Baneling, Planetary Fortress and
+	     Liberator AA. The script passes the full amount (ring fraction and
+	     cross-plane penalty already applied), so Amount stays 0. Splash kind
+	     and normal armor, like the hit it stands in for. The VsAir / VsGround
+	     penalty buffs exclude it: the script has already halved it. -->
+	<CEffectDamage id="TardigradeMod_OpenSkiesSplash">
+		<Amount value="0"/>
+		<Kind value="Splash"/>
+		<KindSplash value="Splash"/>
+	</CEffectDamage>
+
+	<!-- ==================================================================
+	     OPEN SKIES, THE DATA HALF - see the header in ValidatorData.xml.
+	     Searches lose their Ground token for everyone; the damage effect
+	     each victim runs gets TardigradeVal_GroundOrOpenSkies, which puts
+	     "ground only" back for any player without Open Skies. The
+	     ValidatorArray entries are unindexed, so they are appended to
+	     Blizzard's list rather than replacing any of it.
+	=================================================================== -->
+	<CEffectEnumArea id="LurkerMPSearch"> <!-- Lurker spines -->
+		<SearchFilters value="-;Player,Ally,Missile,Stasis,Dead,Hidden,Invulnerable"/>
+	</CEffectEnumArea>
+	<CEffectEnumArea id="ThermalLancesE"> <!-- Colossus beam -->
+		<SearchFilters value="-;Player,Ally,Missile,Stasis,Dead,Hidden,Invulnerable"/>
+	</CEffectEnumArea>
+	<CEffectEnumArea id="ThermalLancesEReverse"> <!-- Colossus beam -->
+		<SearchFilters value="-;Player,Ally,Missile,Stasis,Dead,Hidden,Invulnerable"/>
+	</CEffectEnumArea>
+	<CEffectEnumArea id="InfernalFlameThrowerE"> <!-- Hellion flame line -->
+		<SearchFilters value="-;Player,Ally,Missile,Stasis,Dead,Hidden,Invulnerable"/>
+	</CEffectEnumArea>
+	<CEffectEnumArea id="HellionTankSearch"> <!-- Hellbat flame cone -->
+		<SearchFilters value="-;Self,Player,Ally,Missile,Dead,Hidden,Invulnerable"/>
+	</CEffectEnumArea>
+	<CEffectDamage id="LurkerMPDamage"> <!-- Lurker -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="ThermalLancesMU"> <!-- Colossus -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="ThermalLancesFriendlyDamage"> <!-- Colossus friendly fire -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="ThermalLancesFriendlyDamageAir"> <!-- Colossus friendly fire -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="PsiBlades"> <!-- Zealot -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="Talons"> <!-- Queen -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="TalonsMissileDamage"> <!-- Queen -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="P38ScytheGuassPistol"> <!-- Reaper -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="ThorsHammerDamage"> <!-- Thor -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="InfernalFlameThrower"> <!-- Hellion -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="HellionTankDamage"> <!-- Hellbat -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="BroodlingEscortDamageUnit"> <!-- Brood Lord -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="BroodlingEscortDamage"> <!-- Brood Lord -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="VolatileBurstDirectFallbackEnemyNeutralUnit"> <!-- Baneling direct hit -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
+	<CEffectDamage id="VolatileBurstDirectFallbackEnemyNeutralBuilding"> <!-- Baneling direct hit -->
+		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
+	</CEffectDamage>
 </Catalog>

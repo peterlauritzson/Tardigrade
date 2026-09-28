@@ -27,6 +27,9 @@ include "scripts/Debug"
 // sizes must be literals - so keep c_cycleModCount below 20 when adding more.
 const int c_cycleModCount   = 17;
 const int c_cycleModRows    = 8;   // board columns; YOLO is not on the board
+// Top-left-justified stock core style for the picks panel (a plain label
+// centres vertically, so a short list would float mid-panel).
+const string c_cyclePicksPanelStyle = "HelpWelcomePanelSubText";
 const int c_cyclePhaseCount = 3;
 
 // Indices of the modifiers other files need to name. The older ten are still
@@ -40,7 +43,7 @@ const int c_cycleModYolo         = 16;
 const int c_cycleModFactoryLines = 17;
 
 // Minerals Only: every gas cost becomes minerals at this rate, and gas income is
-// paid out as minerals 1:1 (CycleMod_ConvertGasIncome).
+// paid out as minerals at the same rate (CycleMod_ConvertGasIncome).
 const fixed c_cycleMineralsPerGas = 1.5;
 
 // Auto Refineries: what the drafting side pays for a gas building. A refinery
@@ -262,6 +265,14 @@ bool    g_cycle_delayedApplied = false;          // one-time 3-minute activation
 int    g_cycle_dialog   = c_invalidDialogId;
 int    g_cycle_lblTitle = c_invalidDialogControlId;
 int    g_cycle_lblSub   = c_invalidDialogControlId;
+// Per-player draft only: each side's picks, beside the board. The board shows
+// one owner per card, which can't show a YOLO side's rolls - they come from
+// the whole pool, banned and already-picked cards included.
+int    g_cycle_lblPicksTop    = c_invalidDialogControlId;
+int    g_cycle_lblPicksBottom = c_invalidDialogControlId;
+// Horizontal shift of the two card columns: 0 on the legacy 640-wide board,
+// -150 on the per-player board, which makes room for the picks panel.
+int    g_cycle_boardShift     = 0;
 int    g_cycle_lblLegend = c_invalidDialogControlId; // what the card markers mean
 int[20] g_cycle_btnMod;             // [1..17] modifier buttons (keep > c_cycleModCount)
 trigger g_cycle_draftTrig = null;
@@ -298,31 +309,20 @@ const int c_cycleStateAutoGasLeft  = 9;   // gas building: gas it still holds, o
 // be constants, and the game data holds far fewer weapons than this. It is no
 // longer any kind of limit on units: per-unit state is keyed by unit tag.
 const int c_cycleWeaponLimit       = 2048;
-const int c_cycleSplashEffectCount = 12;
 string[2048] g_cycle_weaponEntry;
 string[2048] g_cycle_weaponFilter;
 int          g_cycle_weaponCount = 0;
 bool         g_cycle_openSkiesEnabled = false;
 
-// Splash/beam searches Open Skies has to patch alongside weapon TargetFilters.
-// Sized with a literal (like g_cycle_weaponEntry above) rather than the constant
-// - keep it >= c_cycleSplashEffectCount when adding entries.
-string[32]   g_cycle_splashEntry;
-string[32]   g_cycle_splashFilter;
-int          g_cycle_splashCount  = 0;
-bool         g_cycle_splashCached = false;
+// Open Skies splash dealt by trigger - see CycleMod_OnOpenSkiesSplash.
+const int    c_cycleOSSplashCount  = 6;
+const string c_cycleOSSplashEffect = "TardigradeMod_OpenSkiesSplash";
+const fixed  c_cycleOSPenalty      = 0.5;   // same cut as the VsAir / VsGround buffs
 
-// The THIRD place SC2 locks a plane, after weapon TargetFilters and effect
-// SearchFilters: a CValidatorUnitFilters in the Validator catalog, hung off a
-// damage effect's ValidatorArray. The effect runs, asks the validator whether
-// the target is Ground, and does nothing when the answer is no - so a weapon
-// Open Skies has opened swings, connects, and deals zero. Same array shape and
-// same string surgery as the splash list above.
-const int    c_cycleGateValidatorCount = 1;
-string[16]   g_cycle_gateEntry;
-string[16]   g_cycle_gateFilter;
-int          g_cycle_gateCount  = 0;
-bool         g_cycle_gateCached = false;
+// The player flag the data half of Open Skies reads (UpgradeData.xml,
+// ValidatorData.xml): owning it lets every plane-opened search and validator
+// through for that player's units.
+const string c_cycleOpenSkiesUpgrade = "TardigradeUpg_OpenSkies";
 
 // Weapons Open Skies must not touch because their owner already reaches both
 // planes - derived from the Unit catalog by CycleMod_EnsureOpenSkiesSkipList.
@@ -446,7 +446,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 12) { return "your opponent gets no unit bans against your roster"; }
     if (idx == 13) { return "anything of yours that dies refunds 25% of its cost"; }
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
-    if (idx == 15) { return "from 0:00: gas costs paid as 1.5x minerals, gas mined = minerals"; }
+    if (idx == 15) { return "from 0:00: gas costs and gas mined both 1.5x minerals"; }
     if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
     if (idx == 17) { return "everything but workers builds, trains and morphs 15% faster"; }
     return "";
@@ -729,8 +729,8 @@ void CycleMod_PlaceBoardButton(int idx) {
     int row;
 
     slot = CycleMod_BoardSlot(idx);
-    if (slot <= c_cycleModRows) { col = -150; row = slot - 1; }
-    else                        { col =  150; row = slot - c_cycleModRows - 1; }
+    if (slot <= c_cycleModRows) { col = -150 + g_cycle_boardShift; row = slot - 1; }
+    else                        { col =  150 + g_cycle_boardShift; row = slot - c_cycleModRows - 1; }
     DialogControlSetSize(g_cycle_btnMod[idx], Tardigrade_Viewers(), 280, 56);
     DialogControlSetPosition(g_cycle_btnMod[idx], Tardigrade_Viewers(),
         c_anchorTop, col, 80 + row * 60);
@@ -976,6 +976,59 @@ bool CycleMod_DraftPickerIsP1() {
 
 void CycleMod_DraftChooseRandom();
 
+// One side's picks for the panel: a heading, then three numbered slots, each a
+// name over its description once filled. A YOLO side's slots fill as its pick
+// turns come up (CycleMod_AdvancePick rolls them), which is the only place a
+// roll of a banned or already-taken modifier can be seen.
+string CycleMod_PicksBlock(bool isP1, string heading, string clr) {
+    string s;
+    int    i;
+    int    idx;
+
+    s = "<c val=\"" + clr + "\">" + heading + "</c>";
+    if (CycleMod_SideIsYolo(isP1)) {
+        s = s + "  <c val=\"FFD700\">YOLO</c> " + DraftStyle_Small("<c val=\"B8A060\">rolled at random</c>");
+    }
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
+        if (idx > 0) {
+            s = s + "\n\n<c val=\"FFFFFF\">" + IntToString(i) + ".  " + CycleMod_Name(idx) + "</c>\n"
+                + DraftStyle_Small("<c val=\"8A9AA6\">" + CycleMod_Desc(idx) + "</c>");
+        } else {
+            s = s + "\n\n<c val=\"555555\">" + IntToString(i) + ".  —</c>";
+        }
+        i = i + 1;
+    }
+    return s;
+}
+
+void CycleMod_UpdatePicksPanel() {
+    playergroup p1Group;
+    playergroup p2Group;
+
+    if (g_cycle_lblPicksTop == c_invalidDialogControlId) { return; }
+    p1Group = PlayerGroupSingle(g_cycle_p1);
+    p2Group = PlayerGroupSingle(g_cycle_p2);
+
+    DialogControlSetPropertyAsText(g_cycle_lblPicksTop, c_triggerControlPropertyText,
+        p1Group, StringToText(CycleMod_PicksBlock(true, "YOUR PICKS", "4ADB92")));
+    DialogControlSetPropertyAsText(g_cycle_lblPicksBottom, c_triggerControlPropertyText,
+        p1Group, StringToText(CycleMod_PicksBlock(false, "OPPONENT", "E8913F")));
+    if (g_cycle_p1 != g_cycle_p2) {
+        DialogControlSetPropertyAsText(g_cycle_lblPicksTop, c_triggerControlPropertyText,
+            p2Group, StringToText(CycleMod_PicksBlock(false, "YOUR PICKS", "4ADB92")));
+        DialogControlSetPropertyAsText(g_cycle_lblPicksBottom, c_triggerControlPropertyText,
+            p2Group, StringToText(CycleMod_PicksBlock(true, "OPPONENT", "E8913F")));
+    }
+    if (Tardigrade_HasAudience()) {
+        DialogControlSetPropertyAsText(g_cycle_lblPicksTop, c_triggerControlPropertyText,
+            Tardigrade_Audience(), StringToText(CycleMod_PicksBlock(true, "PLAYER 1", "4ADB92")));
+        DialogControlSetPropertyAsText(g_cycle_lblPicksBottom, c_triggerControlPropertyText,
+            Tardigrade_Audience(), StringToText(CycleMod_PicksBlock(false, "PLAYER 2", "E8913F")));
+    }
+}
+
 void CycleMod_UpdateDraftUI() {
     int         picker;
     int         waiter;
@@ -1057,8 +1110,12 @@ void CycleMod_UpdateDraftUI() {
         CycleMod_UpdateAudienceUI(isBan);
     }
 
+    // Both sides' picks so far - including any YOLO rolls made on the way here.
+    CycleMod_UpdatePicksPanel();
+
     // A YOLO side's bans are made for it, at random, on the spot. (Its pick
-    // turns never come up at all - CycleMod_AdvancePick skips them.)
+    // turns never come up here - CycleMod_AdvancePick rolls them, and they show
+    // in the picks panel rather than on the board.)
     if (isBan && CycleMod_SideIsYolo(pickerIsP1)) {
         DraftTimer_Disarm();
         CycleMod_DraftChooseRandom();
@@ -1071,6 +1128,8 @@ void CycleMod_UpdateDraftUI() {
 
 void CycleMod_FinishDraftPerPlayer() {
     DraftTimer_Disarm();
+    g_cycle_lblPicksTop    = c_invalidDialogControlId;
+    g_cycle_lblPicksBottom = c_invalidDialogControlId;
     if (g_cycle_draftTrig != null) {
         TriggerDestroy(g_cycle_draftTrig);
         g_cycle_draftTrig = null;
@@ -1238,20 +1297,36 @@ bool CycleMod_DraftAutoAct(bool testConds, bool runActions) {
 void CycleMod_OpenDraftBoard() {
     int i;
 
-    // Dialog: 640 x 600, two columns of eight buttons (YOLO is not on the
-    // board), then the legend. Buttons start at y=80 on a 60px pitch:
-    // 80 + 8*60 = 560, the legend sits at 566, plus a margin.
-    g_cycle_dialog = DialogCreate(640, 600, c_anchorCenter, 0, 0, true);
+    // Dialog: 940 x 600. Left, the board: two columns of eight buttons (YOLO
+    // is not on the board), then the legend. Buttons start at y=80 on a 60px
+    // pitch: 80 + 8*60 = 560, the legend sits at 566, plus a margin. Right,
+    // both sides' picks. With c_anchorTop an x offset places a control's
+    // centre relative to the dialog's (470): the board's columns move from
+    // -150/+150 to -300/0 (g_cycle_boardShift), the panel is left 620, width
+    // 300 -> +300.
+    g_cycle_dialog = DialogCreate(940, 600, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
+    g_cycle_boardShift = -150;
 
     g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_cycle_lblTitle, Tardigrade_Viewers(), 600, 26);
+    DialogControlSetSize(g_cycle_lblTitle, Tardigrade_Viewers(), 900, 26);
     DialogControlSetPosition(g_cycle_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 18);
 
     g_cycle_lblSub = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_cycle_lblSub, Tardigrade_Viewers(), 600, 20);
+    DialogControlSetSize(g_cycle_lblSub, Tardigrade_Viewers(), 900, 20);
     DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 48);
+
+    g_cycle_lblPicksTop = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    g_cycle_lblPicksBottom = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetPropertyAsString(g_cycle_lblPicksTop, c_triggerControlPropertyStyle,
+        Tardigrade_Viewers(), c_cyclePicksPanelStyle);
+    DialogControlSetPropertyAsString(g_cycle_lblPicksBottom, c_triggerControlPropertyStyle,
+        Tardigrade_Viewers(), c_cyclePicksPanelStyle);
+    DialogControlSetSize(g_cycle_lblPicksTop, Tardigrade_Viewers(), 300, 240);
+    DialogControlSetPosition(g_cycle_lblPicksTop, Tardigrade_Viewers(), c_anchorTop, 300, 80);
+    DialogControlSetSize(g_cycle_lblPicksBottom, Tardigrade_Viewers(), 300, 240);
+    DialogControlSetPosition(g_cycle_lblPicksBottom, Tardigrade_Viewers(), c_anchorTop, 300, 330);
 
     i = 1;
     while (i <= c_cycleModCount) {
@@ -1265,7 +1340,7 @@ void CycleMod_OpenDraftBoard() {
     // has to say what the markers on them mean.
     g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
-    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 566);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, g_cycle_boardShift, 566);
     DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
         Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
 
@@ -1578,6 +1653,7 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     }
 
     // Dialog: 640 x 600, two columns of eight buttons, then the legend.
+    g_cycle_boardShift = 0;
     g_cycle_dialog = DialogCreate(640, 600, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
@@ -2022,165 +2098,241 @@ void CycleMod_EnsureWeaponCache() {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Open Skies, part two: splash and beam searches.
+// Open Skies, part three: splash, dealt by trigger.
 //
-// Patching weapon TargetFilters only decides whether a unit may *target* the
-// other plane. The damage a splash or beam weapon spreads around that target is
-// applied by a separate effect search with its own SearchFilters, in a different
-// catalog, and those stay plane-locked unless patched as well. Without this a
-// Siege Tank with Open Skies can shoot a Mutalisk but its three blast rings
-// never find air units, and a Thor's AA missiles never splash onto ground.
+// Five weapons spread their splash from a CEffectDamage with its own AreaArray:
+// Siege Tank, Ultralisk, Baneling, Planetary Fortress, Liberator AA. The
+// plane lock is in that effect's SearchFilters, and the data half can't reach
+// it - a damage effect's validators only see the main target, so there is no
+// per-victim hook to gate. Rewriting SearchFilters per player from here was
+// tried and did nothing in play.
 //
-// This is a curated list, not a sweep of the effect catalog. 97 effects in the
-// Blizzard data carry plane tokens in SearchFilters, and most of them are
-// campaign/co-op units, destructible-rock rubble, or abilities that use the
-// plane deliberately (ForceField placement, Blinding Cloud) - stripping those
-// would change things Open Skies has no business touching. Every entry below was
-// traced from a melee unit's weapon through to the effect carrying the search.
+// So the engine is left alone - these still splash only their own plane - and
+// the other plane's splash is dealt here instead. When one of these effects
+// runs for a player who owns TardigradeUpg_OpenSkies, the trigger finds that
+// player's other-plane victims inside Blizzard's rings and hits them with
+// TardigradeMod_OpenSkiesSplash. Amount and attribute bonuses are read live
+// from the player's catalog, so attack upgrades (which edit exactly those
+// fields) carry through. The main target is not touched: all of these except
+// the Baneling hit it directly (ExcludeArray Target), and the Baneling's
+// direct hit on an air target is opened in the data.
 //
-// Deliberately absent: Liberator AG (design call - stays ground-only, and its
-// zone gate is a ValidatorArray that filter rewriting cannot fix anyway) and
-// Broodlord, which has no splash search - its plane lock is a validator on the
-// damage effect instead, handled by CycleMod_GateValidator. Phoenix
-// (IonCannonsULeft/URight), Battlecruiser (BattlecruiserAntiAirSearch) and
-// Disruptor (PurificationNova*) are plane-locked too but were left out as
-// unverified - confirm the melee weapon actually reaches them before adding.
-string CycleMod_SplashEffect(int idx) {
-    // Ground-locked: these would never splash onto air.
-    if (idx == 1)  { return "CrucioShockCannonBlast"; }          // Siege Tank (sieged)
-    if (idx == 2)  { return "CrucioShockCannonDirected"; }       // Siege Tank (sieged)
-    if (idx == 3)  { return "KaiserBladesSearch"; }              // Ultralisk cleave
-    if (idx == 4)  { return "KaiserBladesDamage"; }              // Ultralisk cleave
-    if (idx == 5)  { return "ThermalLancesE"; }                  // Colossus beam
-    if (idx == 6)  { return "ThermalLancesEReverse"; }           // Colossus beam
-    if (idx == 7)  { return "LurkerMPSearch"; }                  // Lurker spines
-    if (idx == 8)  { return "InfernalFlameThrowerE"; }           // Hellion flame line
-    if (idx == 9)  { return "HellionTankSearch"; }               // Hellbat flame line
-    if (idx == 10) { return "VolatileBurstU"; }                  // Baneling explosion
-    if (idx == 11) { return "VolatileBurstU2"; }                 // Baneling explosion
-    // Air-locked: these would never splash onto ground.
-    if (idx == 12) { return "LiberatorMissileDamage"; }          // Liberator AA
-    // Deliberately gone: JavelinMissileLaunchersDamage and
-    // LanceMissileLaunchersDamage (Thor / Thor High Impact AA). Both Thor
-    // weapons are now skipped by CycleMod_OpenSkiesSkipsWeapon, so their
-    // missiles never target ground in the first place - and leaving the
-    // searches open would have let the AA splash spill onto ground units
-    // standing under an air target, which is not something Open Skies should
-    // be doing to a unit it no longer touches.
+// Worse than the engine doing it, but it can't silently not happen.
+//
+// Not here: CrucioShockCannonDirected (no AreaArray, single target) and
+// KaiserBladesSearch (no longer on the Ultralisk's weapon, which now runs
+// KaiserBladesDamage directly). Phoenix IonCannonsU* has no AreaArray. Thor AA
+// is out because both Thor weapons are skipped by CycleMod_OpenSkiesSkipsWeapon.
+string CycleMod_OSSplashEffect(int idx) {
+    if (idx == 1) { return "CrucioShockCannonBlast"; }   // Siege Tank (sieged)
+    if (idx == 2) { return "KaiserBladesDamage"; }       // Ultralisk cleave
+    if (idx == 3) { return "VolatileBurstU"; }           // Baneling vs units
+    if (idx == 4) { return "VolatileBurstU2"; }          // Baneling vs structures
+    if (idx == 5) { return "TwinIbiksCannon"; }          // Planetary Fortress
+    if (idx == 6) { return "LiberatorMissileDamage"; }   // Liberator AA
     return "";
 }
 
-// Cache the shipped SearchFilters so phase mode can restore them on toggle off.
-// Entries that don't resolve (a data patch renames or drops one) are skipped
-// rather than assumed - CatalogFieldValueSet on a bad id is a silent no-op, and
-// a silently missing splash fix is exactly the class of bug this whole pass is
-// fixing. g_cycle_splashCached guards the build separately from the count, so a
-// list that legitimately resolves to nothing isn't rescanned on every call.
-void CycleMod_EnsureSplashCache() {
+int CycleMod_OSSplashIndex(string effect) {
     int i;
-    string effect;
-    string filters;
-
-    if (g_cycle_splashCached) { return; }
     i = 1;
-    while (i <= c_cycleSplashEffectCount) {
-        effect = CycleMod_SplashEffect(i);
-        if (effect != "" && CatalogEntryIsValid(c_gameCatalogEffect, effect)) {
-            filters = CatalogFieldValueGet(c_gameCatalogEffect, effect, "SearchFilters", 1);
-            if (filters != "") {
-                g_cycle_splashEntry[g_cycle_splashCount]  = effect;
-                g_cycle_splashFilter[g_cycle_splashCount] = filters;
-                g_cycle_splashCount = g_cycle_splashCount + 1;
-            }
-        }
+    while (i <= c_cycleOSSplashCount) {
+        if (CycleMod_OSSplashEffect(i) == effect) { return i; }
         i = i + 1;
     }
-    g_cycle_splashCached = true;
+    return 0;
 }
 
-// Plane-locked validators that gate a damage effect Open Skies has opened the
-// weapon for. Curated like CycleMod_SplashEffect, and for the same reason: 14
-// CValidatorUnitFilters in the Blizzard data carry plane tokens, and all but
-// this one belong to campaign units or to abilities that use the plane
-// deliberately (void's AirUnitFilter / GroundUnitFilter), which Open Skies has
-// no business rewriting.
-//
-// BroodlingEscortFilters is the one that matters, and the Brood Lord is
-// uniquely exposed to it: BroodlingStrike is <Effect value=""/>, a pure
-// targeting shell, so every point of the unit's damage goes through the single
-// validated effect BroodlingEscortDamageUnit (20). Opening the weapon alone let
-// a Brood Lord attack a Battlecruiser and deal literally nothing - it acquired,
-// launched, impacted, and the validator threw the damage away.
-//
-// The broodlings that BroodlingEscortImpactA spawns are NOT gated and keep
-// landing on the ground under an air target, where they flail and expire. That
-// is left as it is: against air the Brood Lord is the 20 and nothing else.
-string CycleMod_GateValidator(int idx) {
-    if (idx == 1) { return "BroodlingEscortFilters"; }   // Brood Lord damage effect
-    return "";
+// Rings, copied from each effect's merged AreaArray (Radius, Fraction). A victim
+// takes the fraction of the innermost ring it falls in.
+fixed CycleMod_OSRingRadius(int idx, int ring) {
+    if (idx == 1) {
+        if (ring == 1) { return 0.4687; }
+        if (ring == 2) { return 0.7812; }
+        if (ring == 3) { return 1.25; }
+    }
+    if (idx == 2 && ring == 1) { return 2.0; }
+    if ((idx == 3 || idx == 4) && ring == 1) { return 2.2; }
+    if (idx == 5) {
+        if (ring == 1) { return 0.5; }
+        if (ring == 2) { return 0.8; }
+        if (ring == 3) { return 1.25; }
+    }
+    if (idx == 6 && ring == 1) { return 1.5; }
+    return 0.0;
 }
 
-// Cache the shipped validator Filters, exactly as CycleMod_EnsureSplashCache
-// does for searches - including skipping ids that no longer resolve, since
-// CatalogFieldValueSet on a bad id is a silent no-op.
-void CycleMod_EnsureGateCache() {
-    int i;
-    string validator;
-    string filters;
+fixed CycleMod_OSRingFraction(int idx, int ring) {
+    if (idx == 1) {
+        if (ring == 1) { return 1.0; }
+        if (ring == 2) { return 0.5; }
+        return 0.25;
+    }
+    if (idx == 2) { return 0.33; }
+    if (idx == 5) {
+        if (ring == 1) { return 1.0; }
+        if (ring == 2) { return 0.75; }
+        return 0.375;
+    }
+    return 1.0;
+}
 
-    if (g_cycle_gateCached) { return; }
+// The Liberator's AA is the one that is air-locked; its extra plane is ground.
+bool CycleMod_OSSplashHitsAir(int idx) {
+    return idx != 6;
+}
+
+// Does this victim pass the effect's own SearchFilters, minus the plane? Mirrors
+// the excluded lists in the data: the tank blast only spares itself (it hits
+// your own units too), the Ultralisk spares neutrals as well as friends,
+// VolatileBurstU skips structures and VolatileBurstU2 hits only structures.
+bool CycleMod_OSSplashAccepts(int idx, unit caster, int player, unit victim) {
+    int  owner;
+    bool isStructure;
+
+    owner = UnitGetOwner(victim);
+    isStructure = UnitTypeTestAttribute(UnitGetType(victim), c_unitAttributeStructure);
+    if (victim == caster) { return false; }
+    if (idx == 3 && isStructure)  { return false; }
+    if (idx == 4 && !isStructure) { return false; }
+    if (idx == 1) { return true; }
+    if (owner == player) { return false; }
+    if (PlayerGroupHasPlayer(g_draft_team1, player) && PlayerGroupHasPlayer(g_draft_team1, owner)) { return false; }
+    if (PlayerGroupHasPlayer(g_draft_team2, player) && PlayerGroupHasPlayer(g_draft_team2, owner)) { return false; }
+    if (idx == 2 && (owner == 0 || owner == 15)) { return false; }   // neutral, hostile-neutral
+    return true;
+}
+
+// One attribute's bonus from the player's copy of the effect, if the victim has
+// the attribute. A field the effect doesn't carry reads back empty, i.e. 0.
+fixed CycleMod_OSAttrBonus(string effect, int player, unit victim, string attrName, int attr) {
+    if (!UnitTypeTestAttribute(UnitGetType(victim), attr)) { return 0.0; }
+    return StringToFixed(CatalogFieldValueGet(c_gameCatalogEffect, effect,
+        "AttributeBonus[" + attrName + "]", player));
+}
+
+fixed CycleMod_OSDamageFor(string effect, int player, unit victim) {
+    fixed amount;
+    amount = StringToFixed(CatalogFieldValueGet(c_gameCatalogEffect, effect, "Amount", player));
+    amount = amount + CycleMod_OSAttrBonus(effect, player, victim, "Light",      c_unitAttributeLight);
+    amount = amount + CycleMod_OSAttrBonus(effect, player, victim, "Armored",    c_unitAttributeArmored);
+    amount = amount + CycleMod_OSAttrBonus(effect, player, victim, "Biological", c_unitAttributeBiological);
+    amount = amount + CycleMod_OSAttrBonus(effect, player, victim, "Mechanical", c_unitAttributeMechanical);
+    amount = amount + CycleMod_OSAttrBonus(effect, player, victim, "Psionic",    c_unitAttributePsionic);
+    amount = amount + CycleMod_OSAttrBonus(effect, player, victim, "Massive",    c_unitAttributeMassive);
+    amount = amount + CycleMod_OSAttrBonus(effect, player, victim, "Structure",  c_unitAttributeStructure);
+    return amount;
+}
+
+bool CycleMod_OnOpenSkiesSplash(bool testConds, bool runActions) {
+    int       player;
+    int       idx;
+    string    effect;
+    unit      caster;
+    unit      target;
+    unit      attacker;
+    unit      victim;
+    point     center;
+    unitgroup found;
+    int       count;
+    int       i;
+    int       ring;
+    int       inRing;
+    fixed     dist;
+    fixed     outer;
+    fixed     angleDiff;
+    fixed     amount;
+    int       planeFlag;
+
+    if (!runActions) { return true; }
+    player = EventPlayer();
+    if (TechTreeUpgradeCount(player, c_cycleOpenSkiesUpgrade, c_techCountCompleteOnly) == 0) {
+        return true;
+    }
+    effect = EventPlayerEffectUsed();
+    idx = CycleMod_OSSplashIndex(effect);
+    if (idx == 0) { return true; }
+
+    caster = EventPlayerEffectUsedUnit(c_effectUnitCaster);
+    target = EventPlayerEffectUsedUnit(c_effectUnitTarget);
+    // The Baneling's blast is centred on the Baneling (ImpactLocation
+    // CasterUnit); everything else on the point it hit.
+    if (idx == 3 || idx == 4) {
+        center = EventPlayerEffectUsedPoint(c_effectLocationCasterPoint);
+    } else {
+        center = EventPlayerEffectUsedPoint(c_effectLocationTargetPoint);
+    }
+    if (center == null) { return true; }
+
+    // A Baneling is dead by the time this runs, and a dead unit can't author
+    // damage (see the Overwatch notes) - the hit then comes from no one.
+    if (caster != null && UnitIsAlive(caster)) { attacker = caster; }
+    else                                       { attacker = null; }
+
+    outer = CycleMod_OSRingRadius(idx, 1);
+    ring = 2;
+    while (CycleMod_OSRingRadius(idx, ring) > 0.0) {
+        outer = CycleMod_OSRingRadius(idx, ring);
+        ring = ring + 1;
+    }
+
+    if (CycleMod_OSSplashHitsAir(idx)) { planeFlag = (1 << c_targetFilterAir); }
+    else                               { planeFlag = (1 << c_targetFilterGround); }
+    found = UnitGroup(null, c_playerAny, RegionCircle(center, outer),
+        UnitFilter(planeFlag, 0, (1 << c_targetFilterMissile),
+            (1 << (c_targetFilterStasis - 32)) | (1 << (c_targetFilterDead - 32))
+            | (1 << (c_targetFilterHidden - 32)) | (1 << (c_targetFilterInvulnerable - 32))), 0);
+
+    count = UnitGroupCount(found, c_unitCountAll);
     i = 1;
-    while (i <= c_cycleGateValidatorCount) {
-        validator = CycleMod_GateValidator(i);
-        if (validator != "" && CatalogEntryIsValid(c_gameCatalogValidator, validator)) {
-            filters = CatalogFieldValueGet(c_gameCatalogValidator, validator, "Filters", 1);
-            if (filters != "") {
-                g_cycle_gateEntry[g_cycle_gateCount]  = validator;
-                g_cycle_gateFilter[g_cycle_gateCount] = filters;
-                g_cycle_gateCount = g_cycle_gateCount + 1;
-            }
-        }
+    while (i <= count) {
+        victim = UnitGroupUnit(found, i);
         i = i + 1;
+        // The main target is hit directly by the effect itself.
+        if (victim == target && idx != 3 && idx != 4) { continue; }
+        if (!CycleMod_OSSplashAccepts(idx, caster, player, victim)) { continue; }
+
+        // Ultralisk cleave is a 180 degree arc in front of the Ultralisk.
+        if (idx == 2 && caster != null) {
+            angleDiff = AngleBetweenPoints(UnitGetPosition(caster), UnitGetPosition(victim))
+                - UnitGetFacing(caster);
+            while (angleDiff > 180.0)  { angleDiff = angleDiff - 360.0; }
+            while (angleDiff < -180.0) { angleDiff = angleDiff + 360.0; }
+            if (AbsF(angleDiff) > 90.0) { continue; }
+        }
+
+        dist = DistanceBetweenPoints(center, UnitGetPosition(victim));
+        inRing = 0;
+        ring = 1;
+        while (inRing == 0 && CycleMod_OSRingRadius(idx, ring) > 0.0) {
+            if (dist <= CycleMod_OSRingRadius(idx, ring)) { inRing = ring; }
+            ring = ring + 1;
+        }
+        if (inRing == 0) { continue; }
+
+        // The cross-plane penalty is applied here rather than by the VsAir /
+        // VsGround buffs: a dead Baneling carries no buff, so the buffs
+        // exclude this effect and every victim - all of them in the unit's new
+        // plane by construction - gets the same cut.
+        amount = CycleMod_OSDamageFor(effect, player, victim)
+            * CycleMod_OSRingFraction(idx, inRing) * c_cycleOSPenalty;
+        if (amount > 0.0) {
+            UnitDamage(attacker, c_cycleOSSplashEffect, victim, amount);
+        }
     }
-    g_cycle_gateCached = true;
+    return true;
 }
 
-// Apply (or restore) the gate validators for one player.
-void CycleMod_GateFiltersForPlayer(int player, bool enabled) {
-    int i;
-    string filters;
-
-    CycleMod_EnsureGateCache();
-    i = 0;
-    while (i < g_cycle_gateCount) {
-        if (enabled) {
-            filters = CycleMod_OpenSkiesFilters(g_cycle_gateFilter[i]);
-        } else {
-            filters = g_cycle_gateFilter[i];
-        }
-        CatalogFieldValueSet(c_gameCatalogValidator, g_cycle_gateEntry[i],
-            "Filters", player, filters);
-        i = i + 1;
-    }
-}
-
-// Apply (or restore) the splash searches for one player. Same string surgery as
-// the weapon pass: split on ';', drop Ground/Air from both halves.
-void CycleMod_SplashFiltersForPlayer(int player, bool enabled) {
-    int i;
-    string filters;
-
-    CycleMod_EnsureSplashCache();
-    i = 0;
-    while (i < g_cycle_splashCount) {
-        if (enabled) {
-            filters = CycleMod_OpenSkiesFilters(g_cycle_splashFilter[i]);
-        } else {
-            filters = g_cycle_splashFilter[i];
-        }
-        CatalogFieldValueSet(c_gameCatalogEffect, g_cycle_splashEntry[i],
-            "SearchFilters", player, filters);
-        i = i + 1;
+// Give or take the player flag the data half reads. Guarded both ways so a
+// repeat call (testing mode toggles, phase mode rotations) can't stack it or
+// take it below zero.
+void CycleMod_SetOpenSkiesFlag(int player, bool enabled) {
+    int have;
+    have = TechTreeUpgradeCount(player, c_cycleOpenSkiesUpgrade, c_techCountCompleteOnly);
+    if (enabled && have == 0) {
+        TechTreeUpgradeAddLevel(player, c_cycleOpenSkiesUpgrade, 1);
+    } else if (!enabled && have > 0) {
+        TechTreeUpgradeAddLevel(player, c_cycleOpenSkiesUpgrade, -have);
     }
 }
 
@@ -2212,8 +2364,7 @@ void CycleMod_SetOpenSkies(bool enabled) {
 
     player = 1;
     while (player <= 16) {
-        CycleMod_SplashFiltersForPlayer(player, enabled);
-        CycleMod_GateFiltersForPlayer(player, enabled);
+        CycleMod_SetOpenSkiesFlag(player, enabled);
         player = player + 1;
     }
     g_cycle_openSkiesEnabled = enabled;
@@ -2233,15 +2384,19 @@ void CycleMod_OpenSkiesForPlayer(int player) {
         CatalogFieldValueSet(c_gameCatalogWeapon, weapon, "TargetFilters", player, filters);
         i = i + 1;
     }
-    // Targeting the other plane is only half of it - splash and beam damage is
-    // spread by effect searches with their own plane locks, and a few damage
-    // effects are gated by a plane-locked validator on top of that.
-    CycleMod_SplashFiltersForPlayer(player, true);
-    CycleMod_GateFiltersForPlayer(player, true);
+    // Targeting the other plane is only half of it. Splash and damage gates
+    // past the weapon read this flag: the data half (ValidatorData.xml) and the
+    // splash trigger (CycleMod_OnOpenSkiesSplash).
+    CycleMod_SetOpenSkiesFlag(player, true);
+
+    // Solo test only - Debug_Log is silent otherwise.
+    Debug_Log("Open Skies P" + IntToString(player) + ": flag="
+        + IntToString(TechTreeUpgradeCount(player, c_cycleOpenSkiesUpgrade, c_techCountCompleteOnly)));
 }
 
-// Testing mode: put one player's weapons, splash searches and gate validators
-// back as shipped (the caches hold the shipped filters).
+// Testing mode: put one player's weapons back as shipped (the cache holds the
+// shipped filters) and take the flag away, which switches off the data half and
+// the splash trigger for them.
 void CycleMod_RevertOpenSkiesForPlayer(int player) {
     int i;
 
@@ -2252,8 +2407,7 @@ void CycleMod_RevertOpenSkiesForPlayer(int player) {
             player, g_cycle_weaponFilter[i]);
         i = i + 1;
     }
-    CycleMod_SplashFiltersForPlayer(player, false);
-    CycleMod_GateFiltersForPlayer(player, false);
+    CycleMod_SetOpenSkiesFlag(player, false);
 }
 
 void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
@@ -2510,8 +2664,8 @@ void CycleMod_RevertArcaneSurgeForPlayer(int player) {
 //--------------------------------------------------------------------------------------------------
 // Minerals Only (modifier 15): nothing costs gas. Every gas cost is folded into
 // the mineral cost at c_cycleMineralsPerGas (a 100/100 upgrade becomes 250/0),
-// and every point of gas that reaches the bank is paid out as a mineral
-// (CycleMod_ConvertGasIncome, from the scan). Live from 0:00.
+// and every point of gas that reaches the bank is paid out as minerals at the
+// same rate (CycleMod_ConvertGasIncome, from the scan). Live from 0:00.
 //
 // Costs live in three places in the melee data, and all three are covered:
 //   - CUnit CostResource: everything trained, built, warped or morphed. Zerg
@@ -2707,14 +2861,21 @@ void CycleMod_MineralsOnlyForPlayer(int player, bool on) {
 }
 
 // Gas that reaches the bank - mined, auto-refined, refunded - is paid out as
-// minerals, 1:1. Run from the scan, so the bank shows gas for at most half a
-// second. The engine's "vespene collected" total is left as it is: the gas
-// was mined, and the income stats should say so.
+// minerals at c_cycleMineralsPerGas, the same rate gas costs were folded in
+// at, so a refinery is worth what it was before. Run from the scan, so the bank
+// shows gas for at most half a second. A 4-gas trip pays 6 exactly; an odd
+// amount (Refund, Auto Refineries) leaves a fraction, carried per player in
+// g_cycle_gasCarry rather than rounded away. The engine's "vespene collected"
+// total is left as it is: the gas was mined, and the income stats should say so.
+fixed[16] g_cycle_gasCarry;
+
 void CycleMod_ConvertGasIncome(playergroup team) {
-    int n;
-    int i;
-    int p;
-    int gas;
+    int   n;
+    int   i;
+    int   p;
+    int   gas;
+    int   whole;
+    fixed pay;
 
     n = PlayerGroupCount(team);
     i = 1;
@@ -2722,7 +2883,10 @@ void CycleMod_ConvertGasIncome(playergroup team) {
         p = PlayerGroupPlayer(team, i);
         gas = PlayerGetPropertyInt(p, c_playerPropVespene);
         if (gas > 0) {
-            PlayerModifyPropertyInt(p, c_playerPropMinerals, c_playerPropOperAdd, gas);
+            pay   = IntToFixed(gas) * c_cycleMineralsPerGas + g_cycle_gasCarry[p];
+            whole = FixedToInt(pay);
+            g_cycle_gasCarry[p] = pay - IntToFixed(whole);
+            PlayerModifyPropertyInt(p, c_playerPropMinerals, c_playerPropOperAdd, whole);
             PlayerModifyPropertyInt(p, c_playerPropVespene, c_playerPropOperSetTo, 0);
         }
         i = i + 1;
@@ -4651,6 +4815,8 @@ void CycleMod_InitDraftPanel() {
 // Public: start the in-game cycle (called at game start, after the draft).
 //--------------------------------------------------------------------------------------------------
 void CycleMod_StartCycle() {
+    trigger tOSSplash;
+    int     osIdx;
     trigger tScan;
     trigger tPhase;
     trigger tEconomicEgg;
@@ -4697,6 +4863,15 @@ void CycleMod_StartCycle() {
     // everyone else - the handler bails unless the target is an automatic
     // refinery, which only exists for the side that has the modifier (live
     // from 0:00, see CycleMod_ModActiveFromStart).
+    // Open Skies splash on the other plane. Registered unconditionally: the
+    // handler bails for any player without TardigradeUpg_OpenSkies.
+    tOSSplash = TriggerCreate("CycleMod_OnOpenSkiesSplash");
+    osIdx = 1;
+    while (osIdx <= c_cycleOSSplashCount) {
+        TriggerAddEventPlayerEffectUsed(tOSSplash, c_playerAny, CycleMod_OSSplashEffect(osIdx));
+        osIdx = osIdx + 1;
+    }
+
     // Veteran Forces: catch every unit creation, to link spawned units
     // (Interceptors, Locusts, Broodlings, Auto-Turrets) to their spawner.
     tSpawned = TriggerCreate("CycleMod_OnUnitSpawned");

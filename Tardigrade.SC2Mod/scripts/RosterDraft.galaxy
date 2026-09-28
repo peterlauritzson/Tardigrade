@@ -70,7 +70,14 @@ int       g_roster_lblPoolHdr = c_invalidDialogControlId;   // "YOUR POOL" / "TH
 int[19]   g_roster_btnPool;                                // [1..18] unit pool buttons
 int[8]    g_roster_lblSlot;                                // [1..7] your roster slots
 int[8]    g_roster_lblOppSlot;                             // [1..7] opponent roster slots
+int       g_roster_lblBan    = c_invalidDialogControlId;   // units banned from your pool
+int       g_roster_lblOppBan = c_invalidDialogControlId;   // units banned from theirs
 trigger   g_roster_trigger     = null;
+
+// Left-hand panel: the style its two modifier blocks use. A stock core style
+// (FontStyles.SC2Style) chosen because it is top- and left-justified - a
+// plain label centres vertically, so a short list would float mid-panel.
+const string c_rosterModPanelStyle = "HelpWelcomePanelSubText";
 
 // In-game roster HUD (top-left toggle that expands to your 6 drafted units +
 // your opponent's 6). One dialog PER PLAYER, not one shared dialog: neither
@@ -346,6 +353,76 @@ string RosterDraft_CyclePhaseText(int phase) {
         + "</c>   <c val=\"888888\">- " + CycleMod_Desc(modIdx) + "</c>";
 }
 
+// One side's modifiers for the left-hand panel: a heading line, then each pick
+// as its name over its one-line description. Fixed for the whole screen - the
+// modifier draft is over before this one starts.
+string RosterDraft_ModBlock(bool isP1, string heading, string clr) {
+    string s;
+    int    i;
+    int    idx;
+    int    shown;
+    int    race;
+
+    if (isP1) { race = g_roster_p1Race; } else { race = g_roster_p2Race; }
+    s = "<c val=\"" + clr + "\">" + heading + "</c>  <c val=\"777777\">" + RaceName(race) + "</c>";
+    if (CycleMod_SideIsYolo(isP1)) { s = s + "  <c val=\"FFD700\">YOLO</c>"; }
+
+    shown = 0;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
+        if (idx > 0) {
+            s = s + "\n\n<c val=\"FFFFFF\">" + CycleMod_Name(idx) + "</c>\n"
+                + DraftStyle_Small("<c val=\"8A9AA6\">" + CycleMod_Desc(idx) + "</c>");
+            shown = shown + 1;
+        }
+        i = i + 1;
+    }
+    if (shown == 0) { s = s + "\n\n<c val=\"555555\">no modifiers</c>"; }
+    return s;
+}
+
+// The legacy rotating-phase cycle has no per-side picks: one shared list.
+string RosterDraft_PhaseBlock() {
+    return "<c val=\"555555\">BATTLE CYCLE  (rotates all game)</c>\n\n"
+        + RosterDraft_CyclePhaseText(1) + "\n" + RosterDraft_CyclePhaseText(2)
+        + "\n" + RosterDraft_CyclePhaseText(3);
+}
+
+// The line under a roster naming what was banned from that pool, so a ban
+// doesn't vanish from view once the ban phase moves on. When a pool can't be
+// banned from at all, it says why instead of showing an empty list.
+string RosterDraft_BanText(bool poolIsP1) {
+    string s;
+    int    race;
+    int    i;
+    bool   banned;
+
+    if (poolIsP1) { race = g_roster_p1Race; } else { race = g_roster_p2Race; }
+    s = "";
+    i = 1;
+    while (i <= GetRosterPoolCount(race)) {
+        if (poolIsP1) { banned = g_roster_p1Banned[i]; } else { banned = g_roster_p2Banned[i]; }
+        if (banned) {
+            if (s != "") { s = s + "  " + c_draftDot + "  "; }
+            s = s + RosterUnitDisplayName(GetRosterPoolUnit(race, i));
+        }
+        i = i + 1;
+    }
+    if (s == "") {
+        if ((poolIsP1 && CycleMod_P1HasModIdx(c_cycleModNoBans))
+            || (!poolIsP1 && CycleMod_P2HasModIdx(c_cycleModNoBans))) {
+            s = "none - No Bans";
+        } else if (RosterDraft_IsYolo(poolIsP1)) {
+            s = "none - YOLO";
+        } else {
+            s = "—";
+        }
+    }
+    return DraftStyle_Small("<c val=\"C08888\">" + c_draftGlyphBanned + " BANNED</c>   <c val=\"D9A0A0\">"
+        + s + "</c>");
+}
+
 void RosterDraft_UpdateRosterPanel() {
     int         i;
     playergroup p1Group;
@@ -382,6 +459,24 @@ void RosterDraft_UpdateRosterPanel() {
                 aud, StringToText(RosterDraft_SlotText(g_roster_p2Units[i], i, false)));
         }
         i = i + 1;
+    }
+
+    // Banned lines, same viewer split as the slots above.
+    DialogControlSetPropertyAsText(g_roster_lblBan, c_triggerControlPropertyText,
+        p1Group, StringToText(RosterDraft_BanText(true)));
+    DialogControlSetPropertyAsText(g_roster_lblOppBan, c_triggerControlPropertyText,
+        p1Group, StringToText(RosterDraft_BanText(false)));
+    if (g_roster_p1 != g_roster_p2) {
+        DialogControlSetPropertyAsText(g_roster_lblBan, c_triggerControlPropertyText,
+            p2Group, StringToText(RosterDraft_BanText(false)));
+        DialogControlSetPropertyAsText(g_roster_lblOppBan, c_triggerControlPropertyText,
+            p2Group, StringToText(RosterDraft_BanText(true)));
+    }
+    if (hasAud) {
+        DialogControlSetPropertyAsText(g_roster_lblBan, c_triggerControlPropertyText,
+            aud, StringToText(RosterDraft_BanText(true)));
+        DialogControlSetPropertyAsText(g_roster_lblOppBan, c_triggerControlPropertyText,
+            aud, StringToText(RosterDraft_BanText(false)));
     }
 }
 
@@ -890,26 +985,19 @@ void RosterDraft_SchedulePick(int picker, bool pickerIsP1, bool opening) {
 //   p1Race   — race of p1 (g_draft_p1Race)
 //   p2Race   — race of p2 (g_draft_p2Race)
 //
-// Dialog layout (860 × 560):
+// Dialog layout (1140 x 600):
 //
-//   ┌──────────────────────────────────────────────────┬────────────────────┐
-//   │  ROSTER DRAFT  ·  Pick N of 8                   │                    │
-//   │  YOUR TURN / Opponent is drafting...            │                    │
-//   ├─ AVAILABLE UNITS ───────────────────────────────┼─ YOUR ROSTER ──────┤
-//   │ [Col A btn 1]   [Col B btn 7]                   │ [Core slot 1]      │
-//   │ [Col A btn 2]   [Col B btn 8]                   │ [Core slot 2]      │
-//   │ [Col A btn 3]   [Col B btn 9]                   │ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
-//   │ [Col A btn 4]   [Col B btn 10]                  │ [Draft slot 1]     │
-//   │ [Col A btn 5]   [Col B btn 11]                  │ [Draft slot 2]     │
-//   │ [Col A btn 6]   [Col B btn 12]                  │ [Draft slot 3]     │
-//   │                                                 │ [Draft slot 4]     │
-//   └─────────────────────────────────────────────────┴────────────────────┘
+//   +--------------+-------------------------------+-----------------+
+//   |  title  /  YOUR TURN or waiting                                 |
+//   +- MODIFIERS --+- UNIT POOL --------------------+- YOUR ROSTER ---+
+//   | YOURS  race  | [pool 1]      [pool 10]       | 1..6 (or 7)     |
+//   |  name        | [pool 2]      [pool 11]       | [X] BANNED ...  |
+//   |  description | ...           ...             +- OPPONENT ------+
+//   | OPPONENT     | [pool 9]      [pool 18]       | 1..6 (or 7)     |
+//   |  ...         |                               | [X] BANNED ...  |
+//   +--------------+-------------------------------+-----------------+
 //
-// Anchor math (c_anchorTop = control centered horizontally at dialogCenter+xOffset):
-//   dialogCenter = 430  (dialog width 860)
-//   Col A  center=140 → xOffset=-290   (left=20,  width=238)
-//   Col B  center=392 → xOffset=-38    (left=273, width=238)
-//   Right  center=690 → xOffset=+260   (left=560, width=260)
+// Anchor math: see the offsets at the top of the body.
 //--------------------------------------------------------------------------------------------------
 void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race) {
     int i;
@@ -917,6 +1005,11 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     int lblSection;
     int rows;
     int pitch;
+    int y;
+    int modTop;
+    int modBottom;
+    playergroup p1Group;
+    playergroup p2Group;
 
     g_roster_callback  = callback;
     g_roster_p1        = p1;
@@ -987,38 +1080,116 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     Debug_Log("RosterDraft: P2=" + IntToString(p2) + " race=" + GetRaceConfigId(p2Race)
         + " poolCount=" + IntToString(GetRosterPoolCount(p2Race)));
 
-    // ── Build Dialog: 860 × 600 ───────────────────────────────────────
-    g_roster_dialog = DialogCreate(860, 600, c_anchorCenter, 0, 0, true);
+    // ── Build Dialog: 1140 × 600, three columns ──────────────────────
+    // With c_anchorTop an x offset places a control's CENTRE relative to the
+    // dialog's centre (570), so offset = left + width/2 - 570.
+    //   modifiers  left  20, width 270  ->  -415
+    //   pool A     left 305, width 238  ->  -146
+    //   pool B     left 555, width 238  ->  +104
+    //   rosters    left 815, width 290  ->  +390
+    // The modifiers used to be a strip along the bottom, under the pool - where
+    // the 17-unit Protoss pool's 9th row already sat, so the two overlapped.
+    g_roster_dialog = DialogCreate(1140, 600, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_roster_dialog);
     DialogSetVisible(g_roster_dialog, Tardigrade_Viewers(), true);
 
     // Title label — centered, top
     g_roster_lblTitle = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_roster_lblTitle, Tardigrade_Viewers(), 820, 28);
+    DialogControlSetSize(g_roster_lblTitle, Tardigrade_Viewers(), 1100, 28);
     DialogControlSetPosition(g_roster_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 16);
 
     // Subtitle label — centered, below title (YOUR TURN / waiting)
     g_roster_lblSubtitle = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_roster_lblSubtitle, Tardigrade_Viewers(), 820, 20);
+    DialogControlSetSize(g_roster_lblSubtitle, Tardigrade_Viewers(), 1100, 20);
     DialogControlSetPosition(g_roster_lblSubtitle, Tardigrade_Viewers(), c_anchorTop, 0, 46);
 
-    // Section header: the unit pool (over left panel)
-    // center=270, xOffset=270-430=-160
+    // ── Left column: both sides' modifiers ───────────────────────────────────
+    lblSection = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 270, 14);
+    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, -415, 68);
+    DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
+        Tardigrade_Viewers(),
+        StringToText(DraftStyle_Small("<c val=\"555555\">MODIFIERS  (per player) ──────────</c>")));
+
+    // Two blocks: yours on top, your opponent's below (P1 / P2 for spectators).
+    modTop = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
+    modBottom = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
+    DialogControlSetPropertyAsString(modTop, c_triggerControlPropertyStyle,
+        Tardigrade_Viewers(), c_rosterModPanelStyle);
+    DialogControlSetPropertyAsString(modBottom, c_triggerControlPropertyStyle,
+        Tardigrade_Viewers(), c_rosterModPanelStyle);
+    DialogControlSetSize(modTop, Tardigrade_Viewers(), 270, 236);
+    DialogControlSetPosition(modTop, Tardigrade_Viewers(), c_anchorTop, -415, 88);
+    DialogControlSetSize(modBottom, Tardigrade_Viewers(), 270, 236);
+    DialogControlSetPosition(modBottom, Tardigrade_Viewers(), c_anchorTop, -415, 336);
+
+    p1Group = PlayerGroupSingle(p1);
+    p2Group = PlayerGroupSingle(p2);
+    if (c_cyclePhaseMode) {
+        DialogControlSetPropertyAsText(modTop, c_triggerControlPropertyText,
+            Tardigrade_Viewers(), StringToText(RosterDraft_PhaseBlock()));
+    } else {
+        DialogControlSetPropertyAsText(modTop, c_triggerControlPropertyText,
+            p1Group, StringToText(RosterDraft_ModBlock(true, "YOURS", "4ADB92")));
+        DialogControlSetPropertyAsText(modBottom, c_triggerControlPropertyText,
+            p1Group, StringToText(RosterDraft_ModBlock(false, "OPPONENT", "E8913F")));
+        if (p1 != p2) {
+            DialogControlSetPropertyAsText(modTop, c_triggerControlPropertyText,
+                p2Group, StringToText(RosterDraft_ModBlock(false, "YOURS", "4ADB92")));
+            DialogControlSetPropertyAsText(modBottom, c_triggerControlPropertyText,
+                p2Group, StringToText(RosterDraft_ModBlock(true, "OPPONENT", "E8913F")));
+        }
+        if (Tardigrade_HasAudience()) {
+            DialogControlSetPropertyAsText(modTop, c_triggerControlPropertyText,
+                Tardigrade_Audience(), StringToText(RosterDraft_ModBlock(true, "PLAYER 1", "4ADB92")));
+            DialogControlSetPropertyAsText(modBottom, c_triggerControlPropertyText,
+                Tardigrade_Audience(), StringToText(RosterDraft_ModBlock(false, "PLAYER 2", "E8913F")));
+        }
+    }
+
+    // ── Middle column: the unit pool ─────────────────────────────────────────
     // Kept in a global: RosterDraft_UpdateUI rewrites it per viewer each turn to
     // say whose pool is on screen (during bans it is the opponent's).
     g_roster_lblPoolHdr = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
     lblSection = g_roster_lblPoolHdr;
-    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 520, 14);
-    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, -150, 68);
+    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 490, 14);
+    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, -21, 68);
     DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
         Tardigrade_Viewers(),
         StringToText("<c val=\"555555\">UNIT POOL</c>"));
 
-    // Section header: YOUR ROSTER (over right panel)
-    // center=690, xOffset=690-430=+260
+    // Two columns of up to 9 (c_rosterPoolMax = 18), 238 × 48 cards on a 54px
+    // step from y=84, so the 9th row ends at 564.
+    i = 1;
+    while (i <= c_rosterPoolMax) {
+        g_roster_btnPool[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_roster_btnPool[i], Tardigrade_Viewers());
+        DialogControlSetSize(g_roster_btnPool[i], Tardigrade_Viewers(), 238, 48);
+        if (i <= 9) {
+            row = i - 1;
+            DialogControlSetPosition(g_roster_btnPool[i], Tardigrade_Viewers(),
+                c_anchorTop, -146, 84 + row * 54);
+        } else {
+            row = i - 10;
+            DialogControlSetPosition(g_roster_btnPool[i], Tardigrade_Viewers(),
+                c_anchorTop, 104, 84 + row * 54);
+        }
+        // Hidden initially; UpdateUI shows every slot the pool actually has
+        DialogControlSetVisible(g_roster_btnPool[i], Tardigrade_Viewers(), false);
+        i = i + 1;
+    }
+
+    // ── Right column: YOUR ROSTER + its bans, then OPPONENT + theirs ─────────
+    // The opponent's live picks are shown so players can counter-draft, and
+    // the bans stay listed after the ban phase so they remain in view.
+    // 32px rows for a 6-unit roster, 28px when a YOLO roster makes it 7.
+    rows = RosterDraft_Rows();
+    if (rows > c_rosterRosterSize) { pitch = 28; }
+    else                           { pitch = 32; }
+
     lblSection = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 260, 14);
-    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, +260, 68);
+    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 290, 14);
+    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, 390, 68);
     DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
         Tardigrade_Viewers(),
         StringToText("<c val=\"555555\">YOUR ROSTER ─────────────────</c>"));
@@ -1028,50 +1199,24 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
             StringToText("<c val=\"555555\">PLAYER 1 ROSTER ────────────</c>"));
     }
 
-    // ── Unit pool buttons [1..12] — two columns of 6 ─────────────────────────
-    // Button size: 238 × 56  (2 lines: name + role)
-    // Col A (1..6):  xOffset=-290  →  left≈20
-    // Col B (7..12): xOffset=-38   →  left≈273
-    // Row step: 54px, starting at y=84.  Two columns of up to 8 buttons each.
-    i = 1;
-    while (i <= c_rosterPoolMax) {
-        g_roster_btnPool[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeButton);
-        DraftStyle_InitButton(g_roster_btnPool[i], Tardigrade_Viewers());
-        DialogControlSetSize(g_roster_btnPool[i], Tardigrade_Viewers(), 238, 48);
-        if (i <= 8) {
-            row = i - 1;
-            DialogControlSetPosition(g_roster_btnPool[i], Tardigrade_Viewers(),
-                c_anchorTop, -290, 84 + row * 54);
-        } else {
-            row = i - 9;
-            DialogControlSetPosition(g_roster_btnPool[i], Tardigrade_Viewers(),
-                c_anchorTop, -38, 84 + row * 54);
-        }
-        // Hidden initially; UpdateUI shows every slot the pool actually has
-        DialogControlSetVisible(g_roster_btnPool[i], Tardigrade_Viewers(), false);
-        i = i + 1;
-    }
-
-    // ── Roster panels — right column: YOUR ROSTER (top) + OPPONENT (below) ─────
-    // Compact 36px rows so both 6-unit rosters fit - 30px when a YOLO roster
-    // makes it 7; the opponent's live picks are shown so players can
-    // counter-draft.
-    rows = RosterDraft_Rows();
-    if (rows > c_rosterRosterSize) { pitch = 30; }
-    else                           { pitch = 36; }
+    y = 88;
     i = 1;
     while (i <= rows) {
         g_roster_lblSlot[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-        DialogControlSetSize(g_roster_lblSlot[i], Tardigrade_Viewers(), 260, pitch - 4);
+        DialogControlSetSize(g_roster_lblSlot[i], Tardigrade_Viewers(), 290, pitch - 4);
         DialogControlSetPosition(g_roster_lblSlot[i], Tardigrade_Viewers(),
-            c_anchorTop, +260, 88 + (i - 1) * pitch);
+            c_anchorTop, 390, y);
+        y = y + pitch;
         i = i + 1;
     }
+    g_roster_lblBan = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_roster_lblBan, Tardigrade_Viewers(), 290, 18);
+    DialogControlSetPosition(g_roster_lblBan, Tardigrade_Viewers(), c_anchorTop, 390, y);
+    y = y + 28;
 
-    // OPPONENT section header
     lblSection = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 260, 14);
-    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, +260, 92 + rows * pitch);
+    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 290, 14);
+    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, 390, y);
     DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
         Tardigrade_Viewers(),
         StringToText("<c val=\"555555\">OPPONENT ────────────────────</c>"));
@@ -1080,40 +1225,20 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
             Tardigrade_Audience(),
             StringToText("<c val=\"555555\">PLAYER 2 ROSTER ────────────</c>"));
     }
+    y = y + 20;
 
-    // Opponent roster slots
     i = 1;
     while (i <= rows) {
         g_roster_lblOppSlot[i] = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-        DialogControlSetSize(g_roster_lblOppSlot[i], Tardigrade_Viewers(), 260, pitch - 4);
+        DialogControlSetSize(g_roster_lblOppSlot[i], Tardigrade_Viewers(), 290, pitch - 4);
         DialogControlSetPosition(g_roster_lblOppSlot[i], Tardigrade_Viewers(),
-            c_anchorTop, +260, 112 + rows * pitch + (i - 1) * pitch);
+            c_anchorTop, 390, y);
+        y = y + pitch;
         i = i + 1;
     }
-
-    // ── Modifier strip (bottom-left): the modifiers drafted earlier ─
-    lblSection = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 500, 14);
-    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, -160, 516);
-    if (c_cyclePhaseMode) {
-        DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
-            Tardigrade_Viewers(),
-            StringToText("<c val=\"555555\">BATTLE CYCLE  (rotates all game) ───────────────</c>"));
-    } else {
-        DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
-            Tardigrade_Viewers(),
-            StringToText("<c val=\"555555\">MODIFIERS  (always active, per player) ──────────</c>"));
-    }
-
-    i = 1;
-    while (i <= 3) {
-        lblSection = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
-        DialogControlSetSize(lblSection, Tardigrade_Viewers(), 500, 20);
-        DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, -160, 534 + (i - 1) * 22);
-        DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
-            Tardigrade_Viewers(), StringToText(RosterDraft_CyclePhaseText(i)));
-        i = i + 1;
-    }
+    g_roster_lblOppBan = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_roster_lblOppBan, Tardigrade_Viewers(), 290, 18);
+    DialogControlSetPosition(g_roster_lblOppBan, Tardigrade_Viewers(), c_anchorTop, 390, y);
 
     // Register click trigger for all pool buttons
     g_roster_trigger = TriggerCreate("RosterDraft_OnClicked");

@@ -157,6 +157,7 @@
             <TargetFilters value="Air;-"/>
             <Kind index="Spell" value="0"/>
             <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeMod_OpenSkiesSplash"/>
         </DamageResponse>
     </CBehaviorBuff>
     <CBehaviorBuff id="TardigradeMod_OpenSkiesVsGround">
@@ -168,6 +169,7 @@
             <TargetFilters value="Ground;-"/>
             <Kind index="Spell" value="0"/>
             <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeMod_OpenSkiesSplash"/>
         </DamageResponse>
     </CBehaviorBuff>
 

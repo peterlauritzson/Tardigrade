@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Catalog>
+    <!-- Open Skies, as a player flag the data can read. CycleMod_OpenSkiesForPlayer
+         grants one level of this when the modifier goes live for a player (and
+         testing mode takes it away again); TardigradeVal_OpenSkies checks it.
+         It carries no effects of its own and never appears on a command card.
+
+         Why a flag at all: Open Skies used to rewrite effect SearchFilters and
+         validator Filters per player with CatalogFieldValueSet, the way it
+         rewrites weapon TargetFilters. The weapon half works - units target
+         the other plane - but the effect and validator half did nothing in
+         play: Brood Lords hit Banshees for 0 and Lurker spines passed through
+         air. So the plane locks in those catalogs are now opened in the data
+         for everyone, and a validator puts them back for any player who does
+         not own this upgrade. -->
+    <CUpgrade id="TardigradeUpg_OpenSkies">
+        <EditorCategories value="Race:Neutral,UpgradeType:Talents"/>
+        <Icon value="Assets\Textures\btn-upgrade-zerg-flyerattacks-level0.dds"/>
+        <MaxLevel value="1"/>
+    </CUpgrade>
+</Catalog>

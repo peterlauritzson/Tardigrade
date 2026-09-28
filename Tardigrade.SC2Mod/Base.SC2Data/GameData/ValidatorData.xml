@@ -1,3 +1,71 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
+    <!-- ====================================================================
+         OPEN SKIES, THE DATA HALF
+
+         Open Skies opens weapon TargetFilters per player from the script, and
+         that works. Past the weapon, SC2 locks a plane in two more places: an
+         area search's SearchFilters and a CValidatorUnitFilters on a damage
+         effect. Rewriting those per player from the script did nothing in
+         play (Brood Lords hit Banshees for 0, Lurker spines passed through air),
+         so they are handled here instead:
+
+           1. The plane token is removed from the search or validator, for
+              everyone.
+           2. The damage effect that each victim runs gets
+              TardigradeVal_GroundOrOpenSkies, which restores "ground only"
+              for every player who does not own TardigradeUpg_OpenSkies.
+
+         Without Open Skies nothing changes: a victim still has to be on the
+         ground. With it, the plane check passes. This only works where each
+         victim runs its own damage effect. A CEffectDamage with its own
+         AreaArray (Siege Tank, Baneling, Planetary Fortress, Liberator AA,
+         Ultralisk cleave) checks its validators against the main target only
+         - Blizzard's own TargetRadiusSmall on the Siege Tank blast shows it -
+         so those stay on the script's per-player pass (CycleMod_SplashEffect).
+    ===================================================================== -->
+
+    <!-- Does the player behind this effect own Open Skies? "Caster" is the
+         unit whose weapon started the effect tree (a Lurker, a Brood Lord's
+         escort broodling); only its owner matters. -->
+    <CValidatorPlayerRequirement id="TardigradeVal_OpenSkies">
+        <WhichPlayer Value="Caster"/>
+        <Find value="1"/>
+        <Value value="TardigradeReq_OpenSkies"/>
+    </CValidatorPlayerRequirement>
+
+    <CValidatorUnitFilters id="TardigradeVal_TargetGround">
+        <Filters value="Ground;-"/>
+    </CValidatorUnitFilters>
+
+    <!-- CValidatorCombine defaults to Or (core ValidatorData.xml). -->
+    <CValidatorCombine id="TardigradeVal_GroundOrOpenSkies">
+        <Type value="Or"/>
+        <CombineArray value="TardigradeVal_TargetGround"/>
+        <CombineArray value="TardigradeVal_OpenSkies"/>
+    </CValidatorCombine>
+
+    <!-- The plane-locked validators, opened. Each effect that uses one also
+         gets TardigradeVal_GroundOrOpenSkies in EffectData.xml. -->
+
+    <!-- Brood Lord: every point of its damage goes through
+         BroodlingEscortDamageUnit, gated by this. -->
+    <CValidatorUnitFilters id="BroodlingEscortFilters">
+        <Filters value="Visible;Missile,Stasis,Dead,Hidden,Invulnerable"/>
+    </CValidatorUnitFilters>
+
+    <!-- Zealot (PsiBlades), Reaper (P38ScytheGuassPistol), Queen (Talons,
+         TalonsMissileDamage), Colossus (ThermalLancesMU and both friendly-fire
+         copies) and Thor's Hammer. -->
+    <CValidatorUnitFilters id="MultipleHitGroundOnlyAttackTargetFilter">
+        <Filters value="-;Stasis,Hidden,Invulnerable"/>
+    </CValidatorUnitFilters>
+
+    <!-- Baneling direct hit, used when the blast search finds nothing. -->
+    <CValidatorUnitFilters id="VolatileBurstFallbackEnemyNeutralUnit">
+        <Filters value="-;Player,Ally,Structure,Missile,Stasis,Dead,Hidden,Invulnerable"/>
+    </CValidatorUnitFilters>
+    <CValidatorUnitFilters id="VolatileBurstFallbackEnemyNeutralBuilding">
+        <Filters value="Structure;Self,Player,Ally,Missile,Stasis,Dead,Hidden,Invulnerable"/>
+    </CValidatorUnitFilters>
 </Catalog>
