@@ -28,21 +28,30 @@ below).
 
 ## The three drafts
 
-The drafts run in sequence on map init, while the game is paused. A 3-2-1
-countdown follows, then workers spawn and the game begins.
+The drafts run in sequence on map init, while the game is paused. A summary
+screen follows (both sides' race, modifiers and units) with a 10-second
+countdown, then workers spawn and the game begins. Draft progress is shown
+on the draft screens only; nothing is posted to chat.
 
 ```
-Mode → Race Draft → Modifier Draft → Unit Draft → 3-2-1 → Game
+Mode → YOLO? → Race Draft → Modifier Draft → Unit Draft → Summary (10s) → Game
 ```
 
 Throughout, **P1** is the player who bans first and **P2** is the player who
 picks first. Referees and spectators see every draft screen read-only.
+
+### 0. YOLO?
+
+Before any draft, each player secretly chooses to **draft normally** or **go
+YOLO** (fully random — see modifier 16). The choices are revealed together.
 
 ### 1. Race Draft
 
 - **P1 bans** one of the three races.
 - **P2 picks** their race from the remaining two.
 - **P1** is assigned the last remaining race.
+
+A YOLO side's ban or pick is made at random, so its race is chance too.
 
 In team games (2v2, 3v3, …) each team plays a **single shared race** — the whole
 team is set to the drafted race. Starting workers, town hall and supply spawn
@@ -51,8 +60,7 @@ rather than hardcoded, so it tracks whatever the current patch uses.
 
 ### 2. Modifier Draft
 
-It opens with the **YOLO?** screen (see modifier 16): each player secretly
-chooses to draft normally or go fully random. Then the board: **16
+The board holds **16
 battlefield modifiers** (YOLO isn't one of the cards). This is a **per-player**
 draft — there is no rotation and no shared phase:
 
@@ -98,7 +106,7 @@ data files store game seconds, which tick 1.4× quicker.
 | 13 | Refund | Any unit or building of yours that dies pays back 25% of its cost (a Marine returns 12.5 minerals), whoever killed it - a detonating Baneling counts. Workers are excluded, like every other modifier. Things that vanish without dying pay nothing: morphs (Zergling into Baneling), Archon merges, cancelled buildings, eggs and cocoons, units timing out |
 | 14 | Shared Damage | Every hit on one of your units (after armor): it keeps half, rounded up, and the other half is dealt out in whole points — at least 1 each — to as many of your other units within 3 range as it stretches to. Alone, or with nothing left over, it takes the full hit |
 | 15 | Minerals Only | **Live from 0:00.** Nothing you buy costs gas: every gas cost is added to the mineral cost at 1.5× and set to 0 (a 100/100 upgrade costs 250/0, a Stalker 125/50 costs 200/0). Units, structures, morphs and upgrades are all converted. Any gas you mine (or get from Auto Refineries or Refund) is turned into minerals 1:1 |
-| 16 | YOLO | **Not on the board — a choice made on its own "YOLO?" screen before the modifier bans.** Each player picks *Draft normally* or *Go YOLO*; the choice is hidden until both have locked in, and both may go YOLO. Going YOLO makes your whole draft chance: **3 random modifiers** rolled from the whole pool (bans and your opponent's picks don't matter; No Bans excluded), your modifier bans made at random, and no unit draft — your roster is **7 units** at random from your race's pool (instead of 6), with nothing guaranteed. Against a normal drafter everything is revealed at the normal draft's pace: each of your pick turns rolls one modifier or one unit on the spot (your 6th unit turn rolls the 7th too). Your opponent can't ban from your unit pool, and your unit bans are random too. If both go YOLO the modifier board is skipped entirely and everything is rolled at once. In Tournament mode the screen has the usual 10s; undecided = draft normally |
+| 16 | YOLO | **Not on the board — a choice made on its own "YOLO?" screen before the race draft.** Each player picks *Draft normally* or *Go YOLO*; the choice is hidden until both have locked in, and both may go YOLO. Going YOLO makes your whole draft chance: your **race ban or pick** is made at random, **3 random modifiers** rolled from the whole pool (bans and your opponent's picks don't matter; No Bans excluded), your modifier bans made at random, and no unit draft — your roster is **7 units** at random from your race's pool (instead of 6), with nothing guaranteed. Against a normal drafter everything is revealed at the normal draft's pace: each of your pick turns rolls one modifier or one unit on the spot (your 6th unit turn rolls the 7th too). Your opponent can't ban from your unit pool, and your unit bans are random too. If both go YOLO the modifier board is skipped entirely and everything is rolled at once. In Tournament mode the screen has the usual 10s; undecided = draft normally |
 | 17 | Factory Lines | Everything you build, train, warp in or morph into is 15% faster: structures, add-ons, units, warp gate recharge, and upgrades like Orbital, Lair or Baneling. Not workers, and not research |
 
 **No modifier grants a clickable ability.** Every pick is either always-on or

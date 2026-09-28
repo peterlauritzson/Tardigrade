@@ -709,7 +709,7 @@ bool CycleMod_DraftPickerIsP1();
 
 // Is this modifier a card on the draft board? Everything but YOLO: YOLO is not
 // a modifier but a choice about HOW a side drafts, so it is made on its own
-// screen before the bans (CycleMod_YoloChoiceStart) - it can't be banned, and
+// screen before the race draft (CycleMod_YoloChoice) - it can't be banned, and
 // taking it can't come after a hand-made pick. Its button exists (the arrays
 // are indexed by modifier) but is never shown.
 bool CycleMod_OnBoard(int idx) {
@@ -1061,8 +1061,6 @@ void CycleMod_UpdateDraftUI() {
     // turns never come up at all - CycleMod_AdvancePick skips them.)
     if (isBan && CycleMod_SideIsYolo(pickerIsP1)) {
         DraftTimer_Disarm();
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"FFD54A\">YOLO</c> <c val=\"AAAAAA\">- a random ban:</c>"));
         CycleMod_DraftChooseRandom();
         return;
     }
@@ -1085,24 +1083,15 @@ void CycleMod_FinishDraftPerPlayer() {
     Debug_Log("Modifier Draft: P1=" + CycleMod_ModNamesJoined(true)
         + " | P2=" + CycleMod_ModNamesJoined(false));
 
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"FFD54A\">MODIFIERS</c>  <c val=\"AAAAAA\">- always active, per player:</c>"));
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"7FD0FF\">  P1 (" + RaceName(g_draft_p1Race) + "):</c>  "
-        + CycleMod_ModNamesJoined(true)));
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"FF9F7F\">  P2 (" + RaceName(g_draft_p2Race) + "):</c>  "
-        + CycleMod_ModNamesJoined(false)));
-
     if (g_cycle_callback != null) {
         TriggerExecute(g_cycle_callback, false, false);
     }
 }
 
-void CycleMod_YoloRollPick(bool isP1);
+int CycleMod_YoloRollOne(bool isP1);
 
 // Move on from a finished pick step. A YOLO side's pick turns are rolled for
-// it on the spot (CycleMod_YoloRollPick), so its modifiers come out one at a
+// it on the spot (CycleMod_YoloRollOne), so its modifiers come out one at a
 // time in the normal pick order rather than all at once.
 void CycleMod_AdvancePick() {
     bool isP1;
@@ -1111,7 +1100,7 @@ void CycleMod_AdvancePick() {
     while (g_cycle_stepIndex <= c_cyclePickTotal) {
         isP1 = g_cycle_pickIsP1[g_cycle_stepIndex];
         if (!CycleMod_SideIsYolo(isP1)) { break; }
-        CycleMod_YoloRollPick(isP1);
+        CycleMod_YoloRollOne(isP1);
         g_cycle_stepIndex = g_cycle_stepIndex + 1;
     }
     if (g_cycle_stepIndex > c_cyclePickTotal) {
@@ -1144,47 +1133,26 @@ int CycleMod_YoloRollOne(bool isP1) {
     return 0;
 }
 
-// A YOLO side's pick turn: rolled and announced like a pick.
-void CycleMod_YoloRollPick(bool isP1) {
-    int    idx;
-    string side;
-
-    idx = CycleMod_YoloRollOne(isP1);
-    if (idx == 0) { return; }
-    if (isP1) { side = "<c val=\"7FD0FF\">P1</c> "; }
-    else      { side = "<c val=\"FF9F7F\">P2</c> "; }
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        side + "<c val=\"FFD54A\">YOLO rolled:</c> " + CycleMod_Name(idx)
-        + "  (" + CycleMod_Desc(idx) + ")"));
-}
-
-// A side went YOLO (CycleMod_YoloResolve, before any ban). Against a normal
+// A side went YOLO (CycleMod_YoloResolve, before the race draft). Its race
+// ban or pick is made at random (RaceDraft_UpdateUI). Against a normal
 // drafter its modifiers are rolled one per pick turn (CycleMod_AdvancePick)
 // and its bans made at random (CycleMod_UpdateDraftUI), so they come out at
-// the normal draft's pace. When both sides went YOLO there is no board to
-// pace them by, so all three are rolled here. Its units are dealt by the
-// roster draft (RosterDraft_Start).
-void CycleMod_TakeYolo(bool isP1, string side, bool rollNow) {
+// the normal draft's pace; when both sides went YOLO there is no board to
+// pace them by, so all three are rolled at once (CycleMod_YoloRollAll). Its
+// units are dealt by the roster draft (RosterDraft_Start).
+void CycleMod_TakeYolo(bool isP1) {
     if (isP1) { g_cycle_p1Yolo = true; } else { g_cycle_p2Yolo = true; }
+}
 
-    if (!rollNow) {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            side + "<c val=\"FFD54A\">went YOLO!</c> <c val=\"AAAAAA\">Random modifiers and"
-            + " units, revealed as the draft goes.</c>"));
-        return;
-    }
+// Both sides went YOLO: no modifier board, so a side's three are rolled here.
+void CycleMod_YoloRollAll(bool isP1) {
     while (CycleMod_YoloRollOne(isP1) != 0) { }
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        side + "<c val=\"FFD54A\">went YOLO!</c> <c val=\"AAAAAA\">Random modifiers:</c> "
-        + CycleMod_ModNamesJoined(isP1) + "  <c val=\"AAAAAA\">- and random units.</c>"));
 }
 
 // Ban or pick modifier idx for whoever is up. Shared by the click handler
 // (which has already checked it is that player clicking) and the Tournament
 // auto-pick.
 void CycleMod_DraftChoose(int idx) {
-    string side;
-
     if (idx <= 0 || idx > c_cycleModCount || g_cycle_taken[idx]) { return; }
     if (!CycleMod_OnBoard(idx)) { return; }
 
@@ -1197,14 +1165,7 @@ void CycleMod_DraftChoose(int idx) {
         g_cycle_modState[idx] = c_cycleSlotP2;
     }
 
-    // Name the side on every ban and pick. Players know which one they are, but
-    // a spectator following along in chat has no other way to tell who did what.
-    if (CycleMod_DraftPickerIsP1()) { side = "<c val=\"7FD0FF\">P1</c> "; }
-    else                            { side = "<c val=\"FF9F7F\">P2</c> "; }
-
     if (g_cycle_draftPhase == 0) {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            side + "<c val=\"FF6060\">banned:</c> " + CycleMod_Name(idx)));
         g_cycle_stepIndex = g_cycle_stepIndex + 1;
         if (g_cycle_stepIndex > c_cycleBanTotal) {
             // Into the picks, through AdvancePick so a YOLO side's turns are
@@ -1217,8 +1178,6 @@ void CycleMod_DraftChoose(int idx) {
         CycleMod_UpdateDraftUI();
     } else {
         CycleMod_SetSideMod(CycleMod_DraftPickerIsP1(), idx, true);
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            side + "<c val=\"00FF88\">picked:</c> " + CycleMod_Name(idx) + "  (" + CycleMod_Desc(idx) + ")"));
         CycleMod_AdvancePick();
     }
 }
@@ -1269,8 +1228,6 @@ void CycleMod_DraftChooseRandom() {
 
 // Tournament: the clock ran out.
 bool CycleMod_DraftAutoAct(bool testConds, bool runActions) {
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"AAAAAA\">Time's up - a random choice is made.</c>"));
     CycleMod_DraftChooseRandom();
     return true;
 }
@@ -1324,16 +1281,17 @@ void CycleMod_OpenDraftBoard() {
 }
 
 //==================================================================================================
-// YOLO? - the choice before the modifier draft
+// YOLO? - the choice before the race draft
 //
-// Each side decides, before any ban, whether to draft at all. Going YOLO makes
-// the side's whole draft chance (CycleMod_TakeYolo), which is why this is its
-// own screen rather than a card: it can't be banned, and it can't come after
-// a hand-made pick. The choice is simultaneous and hidden - each player locks
-// in without seeing the other's, and both are revealed together - so neither
-// side gets to react. When one human decides for both sides (PvAI), P1 is
-// decided first, then P2. Tournament mode puts the screen on the clock; an
-// undecided side drafts normally.
+// Each side decides, before the race draft, whether to draft at all. Going
+// YOLO makes the side's whole draft chance - race, modifiers and units
+// (CycleMod_TakeYolo) - which is why this is its own screen rather than a
+// card: it can't be banned, and it can't come after a hand-made pick. The
+// choice is simultaneous and hidden - each player locks in without seeing the
+// other's, and both are revealed together - so neither side gets to react.
+// When one human decides for both sides (PvAI), P1 is decided first, then P2.
+// Tournament mode puts the screen on the clock; an undecided side drafts
+// normally. Public entry: CycleMod_YoloChoice.
 //==================================================================================================
 int     g_cycle_yoloDlg    = c_invalidDialogId;
 int     g_cycle_yoloLblSub = c_invalidDialogControlId;
@@ -1341,6 +1299,7 @@ int     g_cycle_yoloBtnNo  = c_invalidDialogControlId;
 int     g_cycle_yoloBtnYes = c_invalidDialogControlId;
 trigger g_cycle_yoloTrig   = null;
 trigger g_cycle_yoloAuto   = null;
+trigger g_cycle_yoloCallback = null;
 bool    g_cycle_yoloDoneP1 = false;
 bool    g_cycle_yoloDoneP2 = false;
 bool    g_cycle_yoloWantP1 = false;
@@ -1349,10 +1308,10 @@ bool    g_cycle_yoloWantP2 = false;
 string CycleMod_YoloCard(bool yes, int state, string tag) {
     if (yes) {
         return DraftStyle_Card(state, tag, "Go YOLO",
-            "3 random modifiers + 7 random units, random bans");
+            "random race, 3 random modifiers, 7 random units");
     }
     return DraftStyle_Card(state, tag, "Draft normally",
-        "ban and pick your modifiers and units yourself");
+        "ban and pick your race, modifiers and units yourself");
 }
 
 // One viewer's copy of the screen. decided / want: what the side this viewer
@@ -1411,11 +1370,9 @@ void CycleMod_YoloRefresh() {
     }
 }
 
-// Both sides have decided: reveal, roll the YOLO sides, open the board - or,
-// if both went YOLO, skip it (nothing is left to ban or pick by hand).
+// Both sides have decided: reveal, flag the YOLO sides, move on to the race
+// draft. Nothing is rolled yet - each draft rolls a YOLO side's share itself.
 void CycleMod_YoloResolve() {
-    bool bothYolo;
-
     DraftTimer_Disarm();
     if (g_cycle_yoloTrig != null) { TriggerDestroy(g_cycle_yoloTrig); g_cycle_yoloTrig = null; }
     if (g_cycle_yoloDlg != c_invalidDialogId) {
@@ -1423,23 +1380,12 @@ void CycleMod_YoloResolve() {
         g_cycle_yoloDlg = c_invalidDialogId;
     }
 
-    bothYolo = g_cycle_yoloWantP1 && g_cycle_yoloWantP2;
-    if (g_cycle_yoloWantP1) { CycleMod_TakeYolo(true, "<c val=\"7FD0FF\">P1</c> ", bothYolo); }
-    else {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"7FD0FF\">P1</c> <c val=\"AAAAAA\">drafts normally.</c>"));
-    }
-    if (g_cycle_yoloWantP2) { CycleMod_TakeYolo(false, "<c val=\"FF9F7F\">P2</c> ", bothYolo); }
-    else {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"FF9F7F\">P2</c> <c val=\"AAAAAA\">drafts normally.</c>"));
-    }
+    if (g_cycle_yoloWantP1) { CycleMod_TakeYolo(true); }
+    if (g_cycle_yoloWantP2) { CycleMod_TakeYolo(false); }
 
-    if (bothYolo) {
-        CycleMod_FinishDraftPerPlayer();
-        return;
+    if (g_cycle_yoloCallback != null) {
+        TriggerExecute(g_cycle_yoloCallback, false, false);
     }
-    CycleMod_OpenDraftBoard();
 }
 
 void CycleMod_YoloDecide(bool isP1, bool want) {
@@ -1481,8 +1427,6 @@ bool CycleMod_OnYoloClicked(bool testConds, bool runActions) {
 
 // Tournament: the clock ran out - whoever hasn't decided drafts normally.
 bool CycleMod_YoloAutoAct(bool testConds, bool runActions) {
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"AAAAAA\">Time's up - drafting normally.</c>"));
     if (g_cycle_p1 == g_cycle_p2) {
         if (!g_cycle_yoloDoneP1) { CycleMod_YoloDecide(true, false); }
         else                     { CycleMod_YoloDecide(false, false); }
@@ -1511,13 +1455,14 @@ void CycleMod_YoloChoiceStart() {
     DialogControlSetSize(lbl, Tardigrade_Viewers(), 560, 26);
     DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 18);
     DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
-        StringToText("<c val=\"FFD54A\">YOLO?</c>   <c val=\"AAAAAA\">— before the modifier draft</c>"));
+        StringToText("<c val=\"FFD54A\">YOLO?</c>   <c val=\"AAAAAA\">— before the draft</c>"));
 
     lbl = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
-    DialogControlSetSize(lbl, Tardigrade_Viewers(), 560, 60);
+    DialogControlSetSize(lbl, Tardigrade_Viewers(), 560, 66);
     DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 50);
     DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
         StringToText(DraftStyle_Small("<c val=\"CCCCCC\">Go YOLO and your whole draft is chance:"
+            + " your race ban or pick made at random,"
             + " 3 modifiers rolled from the full pool (bans and your opponent's picks don't matter),"
             + " your modifier bans made at random, and 7 units at random from your pool - nothing guaranteed."
             + " Both players can go YOLO. No going back.</c>")));
@@ -1546,6 +1491,20 @@ void CycleMod_YoloChoiceStart() {
     DraftTimer_Arm(g_cycle_yoloAuto);
 }
 
+//--------------------------------------------------------------------------------------------------
+// Public: the YOLO? screen, run before the race draft. Sets g_cycle_p1Yolo /
+// g_cycle_p2Yolo, then runs callback.
+//   p1 = the race banner (bans first), p2 = the race picker.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_YoloChoice(trigger callback, int p1, int p2) {
+    g_cycle_yoloCallback = callback;
+    g_cycle_p1     = p1;
+    g_cycle_p2     = p2;
+    g_cycle_p1Yolo = false;
+    g_cycle_p2Yolo = false;
+    CycleMod_YoloChoiceStart();
+}
+
 void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     int i;
 
@@ -1556,8 +1515,8 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     g_cycle_p2Count    = 0;
     g_cycle_draftPhase = 0;
     g_cycle_stepIndex  = 1;
-    g_cycle_p1Yolo     = false;
-    g_cycle_p2Yolo     = false;
+    // g_cycle_p1Yolo / p2Yolo are kept: the YOLO? screen set them before the
+    // race draft (CycleMod_YoloChoice).
     g_cycle_autoTrig   = TriggerCreate("CycleMod_DraftAutoAct");
 
     i = 1;
@@ -1583,9 +1542,15 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     g_cycle_pickOrder[5] = p1; g_cycle_pickIsP1[5] = true;
     g_cycle_pickOrder[6] = p2; g_cycle_pickIsP1[6] = false;
 
-    // Each side decides YOLO or not first; the board opens once both have
-    // (CycleMod_YoloResolve -> CycleMod_OpenDraftBoard).
-    CycleMod_YoloChoiceStart();
+    // Both sides went YOLO: nothing is left to ban or pick by hand, so skip
+    // the board.
+    if (g_cycle_p1Yolo && g_cycle_p2Yolo) {
+        CycleMod_YoloRollAll(true);
+        CycleMod_YoloRollAll(false);
+        CycleMod_FinishDraftPerPlayer();
+        return;
+    }
+    CycleMod_OpenDraftBoard();
 }
 
 //--------------------------------------------------------------------------------------------------

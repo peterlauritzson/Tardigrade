@@ -76,10 +76,6 @@ bool GameMode_OnClicked(bool testConds, bool runActions) {
     DialogDestroy(g_gmode_dialog);
     g_gmode_dialog = c_invalidDialogId;
 
-    UIDisplayMessage(PlayerGroupAll(), c_messageAreaChat, StringToText(
-        "<c val=\"FFD54A\">Game mode: " + GameMode_Name(mode) + "</c>  <c val=\"AAAAAA\">- "
-        + GameMode_Desc(mode) + "</c>"));
-
     if (g_gmode_callback != null) {
         TriggerExecute(g_gmode_callback, false, false);
     }

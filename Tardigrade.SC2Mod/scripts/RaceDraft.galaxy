@@ -450,8 +450,7 @@ void RaceDraft_Finish(int pickedRace) {
     int p1Race;
     int t1Race;
     int t2Race;
-    string msg;
-    
+
     // Determine P1's race (The one that wasn't banned and wasn't picked)
     if (g_draft_bannedRace != c_tardigrade_raceTerran && pickedRace != c_tardigrade_raceTerran) { p1Race = c_tardigrade_raceTerran; }
     else if (g_draft_bannedRace != c_tardigrade_raceProtoss && pickedRace != c_tardigrade_raceProtoss) { p1Race = c_tardigrade_raceProtoss; }
@@ -485,10 +484,6 @@ void RaceDraft_Finish(int pickedRace) {
     if (g_draft_callback != null) {
         TriggerExecute(g_draft_callback, false, false);
     }
-
-    // Announce race outcome
-    msg = "Draft Complete! Team 1: " + RaceName(t1Race) + ", Team 2: " + RaceName(t2Race);
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(msg));
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -553,6 +548,9 @@ void RaceDraft_UpdateAudienceUI() {
     RaceDraft_ShowRaceButtons(aud, g_draft_phase == 0, false);
 }
 
+void RaceDraft_ChooseRandom();
+bool CycleMod_SideIsYolo(bool isP1);   // CycleMod.galaxy, included after this file
+
 void RaceDraft_UpdateUI() {
     if (g_draft_phase == 0) {
         // Ban Phase (P1)
@@ -599,6 +597,14 @@ void RaceDraft_UpdateUI() {
         RaceDraft_UpdateAudienceUI();
     }
 
+    // A YOLO side's ban (P1) or pick (P2) is made for it, at random, on the
+    // spot (the YOLO? screen ran before this draft - CycleMod_YoloChoice).
+    if (CycleMod_SideIsYolo(g_draft_phase == 0)) {
+        DraftTimer_Disarm();
+        RaceDraft_ChooseRandom();
+        return;
+    }
+
     // Tournament: this step is on the clock (no-op in other modes).
     DraftTimer_Arm(g_draft_autoTrig);
 }
@@ -623,21 +629,19 @@ void RaceDraft_Choose(int race) {
     }
 }
 
-// Tournament: the clock ran out - ban or pick a random race that is still legal.
-bool RaceDraft_AutoAct(bool testConds, bool runActions) {
+// Ban or pick a random race that is still legal.
+void RaceDraft_ChooseRandom() {
     int race;
     race = RandomInt(c_tardigrade_raceTerran, c_tardigrade_raceZerg);
     while (race == g_draft_bannedRace) {
         race = RandomInt(c_tardigrade_raceTerran, c_tardigrade_raceZerg);
     }
-    if (g_draft_phase == 0) {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"FF6060\">Time's up - random ban:</c> " + RaceName(race)));
-    } else {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"00FF88\">Time's up - random pick:</c> " + RaceName(race)));
-    }
     RaceDraft_Choose(race);
+}
+
+// Tournament: the clock ran out.
+bool RaceDraft_AutoAct(bool testConds, bool runActions) {
+    RaceDraft_ChooseRandom();
     return true;
 }
 

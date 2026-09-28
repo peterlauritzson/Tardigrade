@@ -32,7 +32,7 @@ Runs on map init while the game is paused. Wired in `TardigradeLogic.galaxy`
 via a callback chain:
 
 ```
-Mode Select → Race Draft → Modifier Draft → Unit (Roster) Draft → 3-2-1 countdown → Game
+Mode Select → YOLO? → Race Draft → Modifier Draft → Unit (Roster) Draft → Summary + 10s countdown → Game
             ↘ (Testing) TestingMode_Start → Game
 ```
 
@@ -40,14 +40,24 @@ Mode Select → Race Draft → Modifier Draft → Unit (Roster) Draft → 3-2-1 
   draft lock, melee workers removed, viewer groups; `false` = no human, skip
   straight to `Tardigrade_OnDraftFinished` as before) → `GameMode_Select`
 - `Tardigrade_OnModeChosen` → `TestingMode_Start` (Testing) or
-  `RaceDraft_ShowDraft` (Casual / Tournament)
+  `CycleMod_YoloChoice` (Casual / Tournament)
+- `Tardigrade_OnYoloChosen` → `RaceDraft_ShowDraft`
 - `Tardigrade_OnDraftFinished` → `CycleMod_StartDraft`
 - `Tardigrade_OnCycleFinished` → `RosterDraft_Start`
 - `Tardigrade_OnRosterFinished` → `Tardigrade_StartGame`
 
 `Tardigrade_StartGame` shuts the Tournament timer down, applies roster
-enforcement, runs the countdown, starts the modifier scan loop, and unpauses
+enforcement, shows `Tardigrade_SummaryCountdown` (one dialog: both sides'
+race / YOLO tag, modifiers with descriptions, units; `c_tardigradeCountdown`
+= 10s real time), starts the modifier scan loop, and unpauses
 (`GameSetMissionTimePaused(false)` + `Tardigrade_DraftLock_Stop()`).
+
+**No draft chat.** Every draft step (game mode, YOLO?, race, modifier and
+roster bans/picks, YOLO rolls, Tournament timeouts, No Bans, the old
+end-of-draft summary) used to be echoed to chat; all of it was removed — the
+draft screens and the summary dialog carry it. What still posts to chat: the
+spectator hint in `RaceDraft_Setup`, Testing mode's toggles, and the in-game
+modifier-activation / Eyes Everywhere notices.
 
 ### 0. Game modes (`GameMode.galaxy`, `TestingMode.galaxy`)
 - `g_game_mode` = `c_gameModeCasual` / `Tournament` / `Testing`, read through
@@ -104,6 +114,10 @@ enforcement, runs the countdown, starts the modifier scan loop, and unpauses
 ### 1. Race Draft (`RaceDraft.galaxy`)
 - P1 (the "banner") bans one race, P2 picks from the remaining two, P1 gets the
   last race. In team games each team plays one shared race.
+- A YOLO side (flag set by the YOLO? screen, which now runs first) has its
+  turn made at random on the spot: `RaceDraft_UpdateUI` checks
+  `CycleMod_SideIsYolo` (forward-declared; CycleMod is included after) and
+  calls `RaceDraft_ChooseRandom`, the same helper the Tournament timeout uses.
 - Worker count mirrors base melee (counted per race before removal, not
   hardcoded). **Only the town hall** is spawned immediately, in
   `SetPlayerRace` (Race Draft finish); workers + the extra unit (e.g.
@@ -168,16 +182,20 @@ enforcement, runs the countdown, starts the modifier scan loop, and unpauses
 
 ### 2. Modifier Draft (`CycleMod.galaxy`)
 The former "cycle" draft. **Per-player draft, no rotation.**
-- **First, the YOLO? screen** (`CycleMod_YoloChoiceStart`, from
-  `CycleMod_StartDraftPerPlayer` after the state reset): each side chooses
+- **The YOLO? screen runs before the race draft** (public entry
+  `CycleMod_YoloChoice(callback, p1, p2)` from `Tardigrade_OnModeChosen`;
+  the dialog lives in `CycleMod.galaxy` because it owns the flags). Each side chooses
   Draft normally / Go YOLO, simultaneously and hidden (`g_cycle_yoloDone*` /
   `g_cycle_yoloWant*`; each player's own view shows `LOCKED IN` + "waiting").
   With one human deciding for both sides it is sequential, P1 then P2.
   Tournament arms the timer once for the simultaneous step (re-armed per
   decision only in the sequential case); timeout = draft normally
   (`CycleMod_YoloAutoAct`). `CycleMod_YoloResolve` reveals, calls
-  `CycleMod_TakeYolo` for each YOLO side, then `CycleMod_OpenDraftBoard` — or
-  goes straight to `CycleMod_FinishDraftPerPlayer` if both went YOLO.
+  `CycleMod_TakeYolo` (sets `g_cycle_p1Yolo`/`p2Yolo`, announces) for each
+  YOLO side, then runs the callback. Nothing is rolled there.
+  `CycleMod_StartDraftPerPlayer` keeps the flags; if both are YOLO it rolls
+  all three each (`CycleMod_YoloRollAll`) and goes straight to
+  `CycleMod_FinishDraftPerPlayer`, else opens the board.
 - Pool of **17 modifiers** (`c_cycleModCount`), **16 on the board**: YOLO (16)
   keeps its index and button but is never shown (`CycleMod_OnBoard`, every
   card-render loop skips it; `CycleMod_DraftChoose` refuses it). Each player
@@ -218,7 +236,7 @@ The former "cycle" draft. **Per-player draft, no rotation.**
 - **YOLO (modifier 16):** 7 random open slots, nothing guaranteed. With
   **one** YOLO side (`RosterDraft_YoloGradual`) its pick steps stay scheduled
   and `RosterDraft_BeginStep` rolls each on the spot (`RosterDraft_YoloPick`:
-  one random slot, announced "YOLO rolled:"; the turn that fills its 6th slot
+  one random slot; the turn that fills its 6th slot
   also takes the 7th), so the roster is revealed at the draft's pace. With
   **both** YOLO the pick steps are not scheduled and `RosterDraft_FillYolo`
   deals both rosters at draft start. Either way bans *against* a YOLO side are
@@ -239,8 +257,8 @@ The former "cycle" draft. **Per-player draft, no rotation.**
   a No Bans side, so the actual count lives in `g_roster_banCount` (the UI's
   "Ban N of M" and the end-of-bans check both read it, not
   `c_rosterBanTotal`). With P1 protected the order is just `P1, P1`.
-  `RosterDraft_AnnounceNoBans` posts it to chat so the unprotected side knows
-  why its turns vanished. A ban count of 0 skips straight to final picks (now
+  (The old chat notice explaining the missing turns is gone with the rest of
+  the draft chat.) A ban count of 0 skips straight to final picks (now
   reachable: YOLO on one side + No Bans on the other leaves no bans at all).
   Pick order (steps 1–12, first 4 are the pre-ban openers):
   `P1 P2 P2 P1 | P2 P1 P1 P2 P2 P1 P1 P2` (all 12 dropped only when both are YOLO).
@@ -557,7 +575,7 @@ catalog is far smaller than 2048).
 | 13 | Refund | Anything of yours that dies pays back 25% of its cost | **No ability, no button.** `CycleMod_PayRefund`, called from `CycleMod_OnUnitDied` with the raw `EventUnitDamageSourceUnit()` — deliberately *before* the last-attacker fallback Veteran Forces uses, since a stale attacker would turn a morph into a paying death. Reads `CostResource[Minerals]` / `[Vespene]` off `c_gameCatalogUnit` for the dead unit's type and pays `c_cycleRefundFraction` (0.25) of each back with `PlayerModifyPropertyFixed`. Paid as **fixed, not rounded** — a Marine is 50/4 = 12.5, and flooring every payout would quietly lose an eighth of the modifier over an army's worth of deaths. Morph costs are cumulative in the data (Lair 475 = Hatchery 325 + 150; Zerg costs include the Drone), so the catalog number is already the right base. **Any real death pays, friendly fire included** (killing your own unit for a quarter back still costs you three quarters). What's gated out is the unit-died event firing for non-deaths: `MorphZerglingToBaneling` is a `CAbilTrain` whose `BanelingCocoon` (CostResource 50/25) is killed by `KillOnFinish`; Templar are used up by the Archon merge; cancelled buildings, Eggs and cocoons die with no source. `CycleMod_RefundCanVanish` lists the types that can go that way (under construction, High/Dark Templar, Egg, the six cocoons); for those only, a null or self damage source pays nothing. Every other type pays on any death. **The Baneling is deliberately not on the list** — its blast ends in core `Suicide` (SourceUnit, Kill, NoKillCredit), which reads as a self-kill exactly like a morph, but detonating is a real loss. Timeouts (MULE, Broodling, Locust, Auto-Turret, shade) are covered by the worker exclusion or a zero catalog cost. **Hallucinations are excluded** for the mirror-image reason: they carry the real unit's type, so `CostResource` would read the real price and a Sentry could print minerals by feeding copies to the enemy. Workers pay nothing, like every other modifier bar Free Labor and Auto Refineries — the blanket rule is worth more than the edge case, and it keeps Refund out of worker trades and harassment. **Was Salvage**, a `CAbilBehavior` toggle granted to 64 structures with computed card slots, a 5s channel and a 75% refund; all of that data is gone |
 | 14 | Shared Damage | Each hit on your unit (after armor): it takes half, the other half is split evenly across your nearby units; alone it takes all | **Absorb and redeal.** `TardigradeMod_SharedDamage` carries `DamageResponse ModifyFraction=0 ModifyMinimumDamage=1` (Blizzard's `DamageTakenNone`), so the hit never lands; `TriggerAddEventUnitDamageAbsorbed` fires `CycleMod_OnSharedDamageAbsorbed`, which computes X (`CycleMod_SharedHitAmount`: absorbed − victim armor × the effect's `ArmorReduction`, rounded half-up to a whole number, floor `c_cycleShareMinTotal` = 1 — responses run before armor, so the absorbed amount is pre-armor; shield armor if shields are up), finds partners (`CycleMod_SharePartners`: allied units within `c_cycleShareRadius` = 3 that carry the behavior, not dead/hidden/stasis/invulnerable) and splits X **in whole points**: the victim takes `ceil(X / 2)` and the remaining `floor(X / 2)` is handed out in chunks of at least `c_cycleShareMinShare` = 1, which caps the number of recipients at `rest / minShare` — so a 4-damage bite reaches exactly two partners for 1 each however many are standing there, instead of giving ten units 0.2 apiece. An uneven division gives one extra point to the first `rest mod taking` of them, so the pieces sum to exactly X. With no partners in range, or nothing left to hand out, the victim takes all of X. Dealt through `TardigradeMod_SharedDamageHit` (Amount 0, ArmorReduction 0, Kind Spell) in the **original attacker's** name. Heal-back after the fact was rejected: the damaged event fires after damage lands, so the lethal hits the mod exists to spread would already have killed. The share effect is in the response's `ExcludeEffectArray` — the only thing stopping infinite re-splitting. Also excluded: the Overwatch bonus (already dealt per share) and ~20 **Kill-flag effects** (Baneling `Suicide`, `KillHallucination`, `MULEFate`, shade end, Bile vs Force Field, …), which would otherwise leave their target alive. `CycleMod_CanShareDamage` keeps structures, hallucinations and `CycleMod_IsShareExemptType` units (larva/eggs/cocoons, MULE, shade, interceptors, locusts, broodlings, changelings, Force Field, Parasitic Bomb dummy, Disruptor ball) from ever carrying it. If the attacker is gone, the victim authors its own shares and `CycleMod_OnUnitDamaged` ignores friendly-authored shares so they can't feed Predator/Overwatch |
 | 15 | Minerals Only | **Live from 0:00.** Every gas cost is added to the mineral cost at 1.5x and set to 0; gas income is paid as minerals 1:1 | Per-player catalog, `CycleMod_MineralsOnlyForPlayer`. Costs live in three places in melee data and all are converted: **`CUnit CostResource`** (trains, builds, warp-ins, morphs — Zerg morph costs are cumulative there, so converting both ends keeps the charged difference converted: Hatchery→Lair is 150/100 → 300/0), **`CAbilResearch InfoArray[ResearchN].Resource`** (curated list `CycleMod_ResearchAbil`, 28 ids = every research ability with a gas cost on any slot in liberty..voidmulti, plus Hatchery/Nexus research for safety) and **`CAbilMorph Cost`** (only `MorphToTransportOverlord`, 25/25). `CycleMod_EnsureGasCostCache` sweeps the unit catalog and the 28×30 research slots once, keeping only entries with gas > 0. New minerals = `round(minerals + 1.5 × gas)`. **Field-path spelling is probed, not assumed** (`CycleMod_ResolveCostPaths`): enum-named `[Vespene]` vs numeric `[1]` against a Marauder's known cost, and `InfoArray[Research1]` vs `InfoArray[0]` against Stimpack; the chosen forms are debug-logged. Income: `CycleMod_ConvertGasIncome`, from the scan every 0.5s, moves the side's whole gas bank into minerals (mined gas, Auto Refineries payouts and Refund gas alike); the engine's "vespene collected" stat is left alone. Refund reads the converted costs automatically (it reads `CostResource` per player). **Unverified:** that per-player `CostResource` / `InfoArray` Resource writes change what the engine actually charges (they are what the tooltips read; this is how arcade maps change prices per player) |
-| 16 | YOLO | Not a board card: chosen on the YOLO? screen before the bans. Hidden, simultaneous; both may take it. A YOLO side gets 3 random modifiers, random modifier bans, no picks, and 7 random units — revealed on its pick turns (7th with the 6th), or all at once if both are YOLO | **Not a modifier in the list.** A per-side flag, `g_cycle_p1Yolo` / `g_cycle_p2Yolo` (`CycleMod_SideIsYolo`), set by `CycleMod_YoloResolve` via `CycleMod_TakeYolo`. Modifiers are rolled one at a time by `CycleMod_YoloRollOne` (from the whole pool, distinct, draft-only entries - No Bans, YOLO - excluded). On the board a YOLO side's **ban** turns are taken at random on the spot (`CycleMod_UpdateDraftUI`), and each of its **pick** turns is rolled and announced by `CycleMod_AdvancePick` -> `CycleMod_YoloRollPick` (the ban->pick transition goes through it too), so its modifiers are revealed at the draft's pace. If both go YOLO, `CycleMod_TakeYolo(..., rollNow)` rolls all three up front and the board is never opened. See the Modifier Draft section for the screen itself. The debug auto-run never rolls YOLO. `CycleMod_ModNamesJoined` prefixes a YOLO side's list with `YOLO ->`. **Unit draft:** acts in `RosterDraft.galaxy` (`RosterDraft_IsYolo` reads the flag; see Unit Draft above). `TardigradeMod_Yolo` is a key/marker only |
+| 16 | YOLO | Not a board card: chosen on the YOLO? screen before the race draft (a YOLO side's race ban/pick is random too). Hidden, simultaneous; both may take it. A YOLO side gets 3 random modifiers, random modifier bans, no picks, and 7 random units — revealed on its pick turns (7th with the 6th), or all at once if both are YOLO | **Not a modifier in the list.** A per-side flag, `g_cycle_p1Yolo` / `g_cycle_p2Yolo` (`CycleMod_SideIsYolo`), set by `CycleMod_YoloResolve` via `CycleMod_TakeYolo`. Modifiers are rolled one at a time by `CycleMod_YoloRollOne` (from the whole pool, distinct, draft-only entries - No Bans, YOLO - excluded). On the board a YOLO side's **ban** turns are taken at random on the spot (`CycleMod_UpdateDraftUI`), and each of its **pick** turns is rolled and announced by `CycleMod_AdvancePick` -> `CycleMod_YoloRollPick` (the ban->pick transition goes through it too), so its modifiers are revealed at the draft's pace. If both go YOLO, `CycleMod_TakeYolo(..., rollNow)` rolls all three up front and the board is never opened. See the Modifier Draft section for the screen itself. The debug auto-run never rolls YOLO. `CycleMod_ModNamesJoined` prefixes a YOLO side's list with `YOLO ->`. **Unit draft:** acts in `RosterDraft.galaxy` (`RosterDraft_IsYolo` reads the flag; see Unit Draft above). `TardigradeMod_Yolo` is a key/marker only |
 | 17 | Factory Lines | Everything but workers builds, trains, warps in and morphs 15% faster; research not included | Per-player catalog, `CycleMod_FactoryLinesForPlayer`: every time field found by `CycleMod_EnsureProdCache` is set to shipped / 1.15. The cache sweeps `c_gameCatalogAbil` once by `CatalogEntryClass`: `CAbilTrain` / `CAbilBuild` `InfoArray[TrainN/BuildN].Time` (N 1..30), skipping train slots whose `Unit[0]` is SCV/Probe/Drone (plus CommandCenterTrain/NexusTrain/LarvaTrain slot 1 hard-coded); `CAbilWarpTrain` adds `Charge.TimeUse`/`TimeStart` and `Cooldown.TimeUse`; `CAbilMorph` InfoArray entries with `Score` = 1 (production morphs, not Siege/Burrow) get every `SectionArray[].DurationArray[]`. Named-vs-numbered paths are probed (log line "Factory Lines: slots named=…, morph numeric=…, N time fields"). Replaced **Long Reach** (worker build range; SCVs kept walking to the site even with `PeonMaintained` cleared per player, and harvest range was dropped as too strong). **Unverified:** everything — the class ids (12/22/34/37 from core `Abil.galaxy`), the paths, and whether the sweep stays under the trigger op limit. `TardigradeMod_FactoryLines` is a key/marker only |
 
 Notes:
@@ -700,7 +718,9 @@ Notes:
   game mode is picked (Casual or Tournament; Testing has no race draft).
 - `Tardigrade_DebugAutoRun` assigns **6 distinct random modifiers**, 3 per player
   (through `CycleMod_SetSideMod`; YOLO is never rolled, it is a meta pick),
-  **then** the rosters (a YOLO flag, if ever set, deals via `RosterDraft_FillYolo`).
+  **then** the rosters. The YOLO? screen runs before the race draft (where the
+  debug buttons are), so its flags are kept and a YOLO side is dealt 7 units
+  via `RosterDraft_FillYolo`.
 - `Debug_Log(...)` writes to the debug log; viewer-group counts are logged on
   refresh.
 

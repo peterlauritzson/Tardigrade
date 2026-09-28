@@ -296,32 +296,12 @@ void RosterDraft_TakeSlot(bool isP1, int race, int idx) {
 // freshly reset. Also used by the debug auto-run, which skips the draft screens.
 void RosterDraft_FillYolo(bool isP1, int race) {
     int    i;
-    string unitType;
-    string names;
 
     while ((isP1 && g_roster_p1PickCount < c_rosterYoloSize)
         || (!isP1 && g_roster_p2PickCount < c_rosterYoloSize)) {
         i = RosterDraft_RandomOpenSlot(isP1, race);
         if (i == 0) { break; }
         RosterDraft_TakeSlot(isP1, race, i);
-    }
-
-    names = "";
-    i = 1;
-    while (i <= c_rosterYoloSize) {
-        if (isP1) { unitType = g_roster_p1Units[i]; } else { unitType = g_roster_p2Units[i]; }
-        if (unitType != "") {
-            if (names != "") { names = names + ", "; }
-            names = names + RosterUnitDisplayName(unitType);
-        }
-        i = i + 1;
-    }
-    if (isP1) {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"7FD0FF\">P1</c> <c val=\"FFD54A\">YOLO roster:</c> " + names));
-    } else {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"FF9F7F\">P2</c> <c val=\"FFD54A\">YOLO roster:</c> " + names));
     }
 }
 
@@ -676,9 +656,6 @@ void RosterDraft_Finish() {
     }
     Debug_Log(logMsg);
 
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
-        StringToText("Roster Draft Complete! The game begins."));
-
     if (g_roster_callback != null) {
         TriggerExecute(g_roster_callback, false, false);
     }
@@ -702,8 +679,6 @@ bool RosterDraft_Advance() {
         // to ban - an empty ban phase would wait on a click that can't come.
         if (g_roster_banCount > 0) {
             g_roster_phase = 1;
-            UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
-                StringToText("<c val=\"FF4444\">Opening picks done! Ban phase begins.</c>"));
         } else {
             g_roster_phase = 2;
         }
@@ -711,8 +686,6 @@ bool RosterDraft_Advance() {
     if (g_roster_phase == 1 && g_roster_banIndex >= g_roster_banCount) {
         // Bans done -> resume picking (pickIndex continues from the opening picks)
         g_roster_phase = 2;
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
-            StringToText("<c val=\"FFD700\">Bans complete! Final picks begin.</c>"));
     }
     if (g_roster_phase == 2 && g_roster_pickIndex >= g_roster_pickCount) {
         RosterDraft_Finish();
@@ -754,8 +727,6 @@ void RosterDraft_Choose(int poolIndex) {
             g_roster_p1Banned[poolIndex] = true;
             Debug_Log("P2 banned from P1 pool: " + unitType);
         }
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
-            StringToText("<c val=\"FF4444\">BANNED: " + RosterUnitDisplayName(unitType) + "</c>"));
         g_roster_banIndex = g_roster_banIndex + 1;
     } else {
         // ── PICK: from your own pool ─────────────────────────────────────────
@@ -801,39 +772,28 @@ void RosterDraft_ChooseRandom() {
 
 // Tournament: the clock ran out.
 bool RosterDraft_AutoAct(bool testConds, bool runActions) {
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        "<c val=\"AAAAAA\">Time's up - a random choice is made.</c>"));
     RosterDraft_ChooseRandom();
     return true;
 }
 
-// A YOLO side's pick turn: one random unit from its pool, announced. Its 6th
-// turn also deals the 7th, so the last two come out together.
+// A YOLO side's pick turn: one random unit from its pool. Its 6th turn also
+// deals the 7th, so the last two come out together.
 void RosterDraft_YoloPick(bool isP1) {
     int    race;
     int    slot;
     int    count;
-    string names;
-    string side;
 
-    if (isP1) { race = g_roster_p1Race; side = "<c val=\"7FD0FF\">P1</c> "; }
-    else      { race = g_roster_p2Race; side = "<c val=\"FF9F7F\">P2</c> "; }
+    if (isP1) { race = g_roster_p1Race; } else { race = g_roster_p2Race; }
 
     slot = RosterDraft_RandomOpenSlot(isP1, race);
     if (slot == 0) { RosterDraft_SkipStep(); return; }
     RosterDraft_TakeSlot(isP1, race, slot);
-    names = RosterUnitDisplayName(GetRosterPoolUnit(race, slot));
 
     if (isP1) { count = g_roster_p1PickCount; } else { count = g_roster_p2PickCount; }
     if (count == c_rosterRosterSize) {
         slot = RosterDraft_RandomOpenSlot(isP1, race);
-        if (slot != 0) {
-            RosterDraft_TakeSlot(isP1, race, slot);
-            names = names + ", " + RosterUnitDisplayName(GetRosterPoolUnit(race, slot));
-        }
+        if (slot != 0) { RosterDraft_TakeSlot(isP1, race, slot); }
     }
-    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-        side + "<c val=\"FFD54A\">YOLO rolled:</c> " + names));
 
     g_roster_pickIndex = g_roster_pickIndex + 1;
     if (!RosterDraft_Advance()) { RosterDraft_BeginStep(); }
@@ -852,8 +812,6 @@ void RosterDraft_BeginStep() {
     // A YOLO side's ban turns are taken for it, at random, on the spot.
     if (g_roster_phase == 1 && RosterDraft_IsYolo(g_roster_banIsP1[g_roster_banIndex + 1])) {
         DraftTimer_Disarm();
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"FFD54A\">YOLO</c> <c val=\"AAAAAA\">- a random ban:</c>"));
         RosterDraft_ChooseRandom();
         return;
     }
@@ -922,21 +880,6 @@ void RosterDraft_SchedulePick(int picker, bool pickerIsP1, bool opening) {
     g_roster_pickOrder[g_roster_pickCount] = picker;
     g_roster_pickIsP1[g_roster_pickCount]  = pickerIsP1;
     if (opening) { g_roster_openCount = g_roster_openCount + 1; }
-}
-
-// Say so up front: otherwise the protected side's opponent just finds their
-// ban turns missing and has no way to tell why.
-void RosterDraft_AnnounceNoBans() {
-    if (CycleMod_P1HasModIdx(c_cycleModNoBans)) {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"7FD0FF\">P1</c> drafted <c val=\"FFD54A\">No Bans</c>"
-            + " <c val=\"AAAAAA\">- P2 gets no bans against P1's units.</c>"));
-    }
-    if (CycleMod_P2HasModIdx(c_cycleModNoBans)) {
-        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
-            "<c val=\"FF9F7F\">P2</c> drafted <c val=\"FFD54A\">No Bans</c>"
-            + " <c val=\"AAAAAA\">- P1 gets no bans against P2's units.</c>"));
-    }
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -1014,7 +957,6 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     RosterDraft_ScheduleBan(p2, false);
     RosterDraft_ScheduleBan(p1, true);
     RosterDraft_ScheduleBan(p2, false);
-    RosterDraft_AnnounceNoBans();
 
     // Pick order: 2 OPENING picks each (P1 P2 P2 P1) happen BEFORE bans so
     // players can secure key units, then bans, then the remaining FINAL picks.
