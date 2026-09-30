@@ -240,6 +240,11 @@ int     g_cycle_p2Count    = 0;
 // that replaces the side's draft, not a modifier (see CycleMod_TakeYolo).
 bool    g_cycle_p1Yolo     = false;
 bool    g_cycle_p2Yolo     = false;
+// Protect & Ban: a roster drafting style chosen on the same screen as YOLO.
+// The side's race and modifiers are drafted normally; its units come from the
+// points stage in ProtectDraft.galaxy instead of the pick/ban draft.
+bool    g_cycle_p1Protect  = false;
+bool    g_cycle_p2Protect  = false;
 int     g_cycle_draftPhase = 0;     // 0 = ban, 1 = pick
 int     g_cycle_stepIndex  = 1;     // step within the current phase order
 int[5]  g_cycle_banOrder;           // [1..4] picker per ban step
@@ -443,7 +448,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 9)  { return "units at 30% health blink away from their attacker"; }
     if (idx == 10) { return "kills: permanent +3% to all speeds and regen, stacks to 15"; }
     if (idx == 11) { return "from 0:00: gas buildings mine themselves, cost 200 minerals"; }
-    if (idx == 12) { return "your opponent gets no unit bans against your roster"; }
+    if (idx == 12) { return "no unit bans against you; YOLO: +2 units; Protect: +4 points"; }
     if (idx == 13) { return "anything of yours that dies refunds 25% of its cost"; }
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
     if (idx == 15) { return "from 0:00: gas costs and gas mined both 1.5x minerals"; }
@@ -526,6 +531,11 @@ bool CycleMod_SideHasModIdx(bool isP1, int modIdx) {
 bool CycleMod_SideIsYolo(bool isP1) {
     if (isP1) { return g_cycle_p1Yolo; }
     return g_cycle_p2Yolo;
+}
+
+bool CycleMod_SideIsProtect(bool isP1) {
+    if (isP1) { return g_cycle_p1Protect; }
+    return g_cycle_p2Protect;
 }
 
 // Add or remove one modifier from a side's active list. The draft only ever
@@ -1172,8 +1182,8 @@ void CycleMod_AdvancePick() {
 // One random modifier for a YOLO side, from the whole pool - bans and the
 // opponent's picks don't matter, it is pure chance, and nothing it rolls
 // leaves the board (both sides may hold the same modifier; they are per
-// side). Draft-only entries (No Bans, YOLO itself) are left out: No Bans could
-// only protect a pool nobody bans from anyway. 0 if the side is already full.
+// side). YOLO itself is left out. No Bans can be rolled: for a YOLO side it
+// means 2 more units (RosterDraft_YoloSize). 0 if the side is already full.
 int CycleMod_YoloRollOne(bool isP1) {
     int idx;
     int tries;
@@ -1183,7 +1193,7 @@ int CycleMod_YoloRollOne(bool isP1) {
         if (isP1 && g_cycle_p1Count >= c_cyclePicksEach) { return 0; }
         if (!isP1 && g_cycle_p2Count >= c_cyclePicksEach) { return 0; }
         idx = RandomInt(1, c_cycleModCount);
-        if (!CycleMod_ModIsDraftOnly(idx) && !CycleMod_SideHasModIdx(isP1, idx)) {
+        if (idx != c_cycleModYolo && !CycleMod_SideHasModIdx(isP1, idx)) {
             CycleMod_SetSideMod(isP1, idx, true);
             return idx;
         }
@@ -1356,59 +1366,73 @@ void CycleMod_OpenDraftBoard() {
 }
 
 //==================================================================================================
-// YOLO? - the choice before the race draft
+// DRAFTING STYLE (the "YOLO?" screen) - the choice before the race draft
 //
-// Each side decides, before the race draft, whether to draft at all. Going
-// YOLO makes the side's whole draft chance - race, modifiers and units
-// (CycleMod_TakeYolo) - which is why this is its own screen rather than a
-// card: it can't be banned, and it can't come after a hand-made pick. The
-// choice is simultaneous and hidden - each player locks in without seeing the
-// other's, and both are revealed together - so neither side gets to react.
-// When one human decides for both sides (PvAI), P1 is decided first, then P2.
-// Tournament mode puts the screen on the clock; an undecided side drafts
-// normally. Public entry: CycleMod_YoloChoice.
+// Each side decides, before the race draft, how it drafts:
+//   Draft normally - the usual race, modifier and unit drafts.
+//   Go YOLO        - the side's whole draft is chance - race, modifiers and
+//                    units (CycleMod_TakeYolo).
+//   Protect & Ban  - race and modifiers as normal; the unit draft is replaced
+//                    by the points stage (ProtectDraft.galaxy): the side puts
+//                    points on its units, the opponent bans up to a budget of
+//                    points, and the side keeps whatever is left.
+// This is its own screen rather than a card because none of it can be banned,
+// and YOLO can't come after a hand-made pick. The choice is simultaneous and
+// hidden - each player locks in without seeing the other's, and both are
+// revealed together - so neither side gets to react. When one human decides
+// for both sides (PvAI), P1 is decided first, then P2. Tournament mode puts
+// the screen on the clock; an undecided side drafts normally. Public entry:
+// CycleMod_YoloChoice.
 //==================================================================================================
+const int c_cycleStyleNormal  = 0;
+const int c_cycleStyleYolo    = 1;
+const int c_cycleStyleProtect = 2;
+const int c_cycleStyleCount   = 3;
+
 int     g_cycle_yoloDlg    = c_invalidDialogId;
 int     g_cycle_yoloLblSub = c_invalidDialogControlId;
-int     g_cycle_yoloBtnNo  = c_invalidDialogControlId;
-int     g_cycle_yoloBtnYes = c_invalidDialogControlId;
+int[3]  g_cycle_yoloBtn;            // [c_cycleStyle*] one card per style
 trigger g_cycle_yoloTrig   = null;
 trigger g_cycle_yoloAuto   = null;
 trigger g_cycle_yoloCallback = null;
 bool    g_cycle_yoloDoneP1 = false;
 bool    g_cycle_yoloDoneP2 = false;
-bool    g_cycle_yoloWantP1 = false;
-bool    g_cycle_yoloWantP2 = false;
+int     g_cycle_yoloWantP1 = 0;     // c_cycleStyle*
+int     g_cycle_yoloWantP2 = 0;
 
-string CycleMod_YoloCard(bool yes, int state, string tag) {
-    if (yes) {
+// Forward: the Protect & Ban numbers live with the stage (ProtectDraft.galaxy,
+// included later).
+string ProtectDraft_CardRule();
+string ProtectDraft_ShortRule();
+
+string CycleMod_YoloCard(int style, int state, string tag) {
+    if (style == c_cycleStyleYolo) {
         return DraftStyle_Card(state, tag, "Go YOLO",
             "random race, 3 random modifiers, 7 random units");
     }
+    if (style == c_cycleStyleProtect) {
+        return DraftStyle_Card(state, tag, "Protect and Ban", ProtectDraft_CardRule());
+    }
     return DraftStyle_Card(state, tag, "Draft normally",
-        "ban and pick your race, modifiers and units yourself");
+        "ban and pick your race, modifiers and units");
 }
 
 // One viewer's copy of the screen. decided / want: what the side this viewer
-// speaks for has locked in; the chosen option is marked, both are switched off.
-void CycleMod_YoloShow(playergroup viewer, bool canClick, bool decided, bool want, string sub) {
-    int    stNo;
-    int    stYes;
-    string tagNo;
-    string tagYes;
+// speaks for has locked in; the chosen option is marked, all are switched off.
+void CycleMod_YoloShow(playergroup viewer, bool canClick, bool decided, int want, string sub) {
+    int    style;
+    int    st;
+    string tag;
 
-    stNo   = c_draftStateOpen;
-    stYes  = c_draftStateOpen;
-    tagNo  = "";
-    tagYes = "";
-    if (decided) {
-        if (want) { stYes = c_draftStateMine; tagYes = "LOCKED IN"; }
-        else      { stNo  = c_draftStateMine; tagNo  = "LOCKED IN"; }
+    style = 0;
+    while (style < c_cycleStyleCount) {
+        st  = c_draftStateOpen;
+        tag = "";
+        if (decided && want == style) { st = c_draftStateMine; tag = "LOCKED IN"; }
+        DraftStyle_ApplyCard(g_cycle_yoloBtn[style], viewer, st,
+            CycleMod_YoloCard(style, st, tag), canClick && !decided);
+        style = style + 1;
     }
-    DraftStyle_ApplyCard(g_cycle_yoloBtnNo, viewer, stNo,
-        CycleMod_YoloCard(false, stNo, tagNo), canClick && !decided);
-    DraftStyle_ApplyCard(g_cycle_yoloBtnYes, viewer, stYes,
-        CycleMod_YoloCard(true, stYes, tagYes), canClick && !decided);
     DialogControlSetPropertyAsText(g_cycle_yoloLblSub, c_triggerControlPropertyText,
         viewer, StringToText(sub));
 }
@@ -1416,31 +1440,31 @@ void CycleMod_YoloShow(playergroup viewer, bool canClick, bool decided, bool wan
 void CycleMod_YoloRefresh() {
     if (g_cycle_p1 == g_cycle_p2) {
         if (!g_cycle_yoloDoneP1) {
-            CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, false,
+            CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, 0,
                 "<c val=\"00FF88\">Decide for </c><c val=\"7FD0FF\">P1</c><c val=\"00FF88\"> (you ban first)</c>");
         } else {
-            CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, false,
+            CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, 0,
                 "<c val=\"00FF88\">Now decide for </c><c val=\"FF9F7F\">P2</c>");
         }
         return;
     }
 
     if (!g_cycle_yoloDoneP1) {
-        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, false,
+        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, 0,
             "<c val=\"00FF88\">YOUR CHOICE  —  hidden from your opponent until you both lock in</c>");
     } else {
         CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), false, true, g_cycle_yoloWantP1,
             "<c val=\"888888\">Locked in  —  waiting for your opponent...</c>");
     }
     if (!g_cycle_yoloDoneP2) {
-        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p2), true, false, false,
+        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p2), true, false, 0,
             "<c val=\"00FF88\">YOUR CHOICE  —  hidden from your opponent until you both lock in</c>");
     } else {
         CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p2), false, true, g_cycle_yoloWantP2,
             "<c val=\"888888\">Locked in  —  waiting for your opponent...</c>");
     }
     if (Tardigrade_HasAudience()) {
-        CycleMod_YoloShow(Tardigrade_Audience(), false, false, false,
+        CycleMod_YoloShow(Tardigrade_Audience(), false, false, 0,
             "<c val=\"888888\">Spectating  —  the players are deciding...</c>");
     }
 }
@@ -1455,15 +1479,17 @@ void CycleMod_YoloResolve() {
         g_cycle_yoloDlg = c_invalidDialogId;
     }
 
-    if (g_cycle_yoloWantP1) { CycleMod_TakeYolo(true); }
-    if (g_cycle_yoloWantP2) { CycleMod_TakeYolo(false); }
+    if (g_cycle_yoloWantP1 == c_cycleStyleYolo)    { CycleMod_TakeYolo(true); }
+    if (g_cycle_yoloWantP2 == c_cycleStyleYolo)    { CycleMod_TakeYolo(false); }
+    if (g_cycle_yoloWantP1 == c_cycleStyleProtect) { g_cycle_p1Protect = true; }
+    if (g_cycle_yoloWantP2 == c_cycleStyleProtect) { g_cycle_p2Protect = true; }
 
     if (g_cycle_yoloCallback != null) {
         TriggerExecute(g_cycle_yoloCallback, false, false);
     }
 }
 
-void CycleMod_YoloDecide(bool isP1, bool want) {
+void CycleMod_YoloDecide(bool isP1, int want) {
     if (isP1) { g_cycle_yoloDoneP1 = true; g_cycle_yoloWantP1 = want; }
     else      { g_cycle_yoloDoneP2 = true; g_cycle_yoloWantP2 = want; }
 
@@ -1481,13 +1507,18 @@ void CycleMod_YoloDecide(bool isP1, bool want) {
 bool CycleMod_OnYoloClicked(bool testConds, bool runActions) {
     int  player;
     int  control;
-    bool want;
+    int  want;
+    int  style;
 
     player  = EventPlayer();
     control = EventDialogControl();
-    if (control == g_cycle_yoloBtnYes)     { want = true; }
-    else if (control == g_cycle_yoloBtnNo) { want = false; }
-    else { return true; }
+    want  = -1;
+    style = 0;
+    while (style < c_cycleStyleCount) {
+        if (control == g_cycle_yoloBtn[style]) { want = style; }
+        style = style + 1;
+    }
+    if (want < 0) { return true; }
 
     if (g_cycle_p1 == g_cycle_p2) {
         if (player != g_cycle_p1) { return true; }
@@ -1503,64 +1534,66 @@ bool CycleMod_OnYoloClicked(bool testConds, bool runActions) {
 // Tournament: the clock ran out - whoever hasn't decided drafts normally.
 bool CycleMod_YoloAutoAct(bool testConds, bool runActions) {
     if (g_cycle_p1 == g_cycle_p2) {
-        if (!g_cycle_yoloDoneP1) { CycleMod_YoloDecide(true, false); }
-        else                     { CycleMod_YoloDecide(false, false); }
+        if (!g_cycle_yoloDoneP1) { CycleMod_YoloDecide(true, c_cycleStyleNormal); }
+        else                     { CycleMod_YoloDecide(false, c_cycleStyleNormal); }
         return true;
     }
-    if (!g_cycle_yoloDoneP1) { g_cycle_yoloDoneP1 = true; g_cycle_yoloWantP1 = false; }
-    if (!g_cycle_yoloDoneP2) { g_cycle_yoloDoneP2 = true; g_cycle_yoloWantP2 = false; }
+    if (!g_cycle_yoloDoneP1) { g_cycle_yoloDoneP1 = true; g_cycle_yoloWantP1 = c_cycleStyleNormal; }
+    if (!g_cycle_yoloDoneP2) { g_cycle_yoloDoneP2 = true; g_cycle_yoloWantP2 = c_cycleStyleNormal; }
     CycleMod_YoloResolve();
     return true;
 }
 
 void CycleMod_YoloChoiceStart() {
     int lbl;
+    int style;
 
     g_cycle_yoloDoneP1 = false;
     g_cycle_yoloDoneP2 = false;
-    g_cycle_yoloWantP1 = false;
-    g_cycle_yoloWantP2 = false;
+    g_cycle_yoloWantP1 = c_cycleStyleNormal;
+    g_cycle_yoloWantP2 = c_cycleStyleNormal;
     g_cycle_yoloAuto   = TriggerCreate("CycleMod_YoloAutoAct");
 
-    g_cycle_yoloDlg = DialogCreate(600, 270, c_anchorCenter, 0, 0, true);
+    // Three 290-wide cards on a 300px pitch: -300 / 0 / +300 from the centre.
+    g_cycle_yoloDlg = DialogCreate(940, 300, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_yoloDlg);
     DialogSetVisible(g_cycle_yoloDlg, Tardigrade_Viewers(), true);
 
     lbl = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
-    DialogControlSetSize(lbl, Tardigrade_Viewers(), 560, 26);
+    DialogControlSetSize(lbl, Tardigrade_Viewers(), 900, 26);
     DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 18);
     DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
-        StringToText("<c val=\"FFD54A\">YOLO?</c>   <c val=\"AAAAAA\">— before the draft</c>"));
+        StringToText("<c val=\"FFD54A\">DRAFTING STYLE</c>   <c val=\"AAAAAA\">— before the draft</c>"));
 
     lbl = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
-    DialogControlSetSize(lbl, Tardigrade_Viewers(), 560, 66);
+    DialogControlSetSize(lbl, Tardigrade_Viewers(), 880, 84);
     DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 50);
     DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
         StringToText(DraftStyle_Small("<c val=\"CCCCCC\">Go YOLO and your whole draft is chance:"
             + " your race ban or pick made at random,"
             + " 3 modifiers rolled from the full pool (bans and your opponent's picks don't matter),"
             + " your modifier bans made at random, and 7 units at random from your pool - nothing guaranteed."
-            + " Both players can go YOLO. No going back.</c>")));
+            + " You can reroll the units on the summary screen, one unit fewer each time.</c>"
+            + "\n<c val=\"CCCCCC\">Protect and Ban drafts your race and modifiers normally, then replaces your unit draft: "
+            + ProtectDraft_ShortRule() + ". Units left at 0 points are banned for free.</c>"
+            + "\n<c val=\"AAAAAA\">Each player chooses for themselves. No going back.</c>")));
 
     g_cycle_yoloLblSub = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_cycle_yoloLblSub, Tardigrade_Viewers(), 560, 20);
-    DialogControlSetPosition(g_cycle_yoloLblSub, Tardigrade_Viewers(), c_anchorTop, 0, 118);
-
-    g_cycle_yoloBtnNo = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeButton);
-    DraftStyle_InitButton(g_cycle_yoloBtnNo, Tardigrade_Viewers());
-    DialogControlSetSize(g_cycle_yoloBtnNo, Tardigrade_Viewers(), 270, 56);
-    DialogControlSetPosition(g_cycle_yoloBtnNo, Tardigrade_Viewers(), c_anchorTop, -140, 160);
-
-    g_cycle_yoloBtnYes = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeButton);
-    DraftStyle_InitButton(g_cycle_yoloBtnYes, Tardigrade_Viewers());
-    DialogControlSetSize(g_cycle_yoloBtnYes, Tardigrade_Viewers(), 270, 56);
-    DialogControlSetPosition(g_cycle_yoloBtnYes, Tardigrade_Viewers(), c_anchorTop, 140, 160);
+    DialogControlSetSize(g_cycle_yoloLblSub, Tardigrade_Viewers(), 880, 20);
+    DialogControlSetPosition(g_cycle_yoloLblSub, Tardigrade_Viewers(), c_anchorTop, 0, 146);
 
     g_cycle_yoloTrig = TriggerCreate("CycleMod_OnYoloClicked");
-    TriggerAddEventDialogControl(g_cycle_yoloTrig, c_playerAny, g_cycle_yoloBtnNo,
-        c_triggerControlEventTypeClick);
-    TriggerAddEventDialogControl(g_cycle_yoloTrig, c_playerAny, g_cycle_yoloBtnYes,
-        c_triggerControlEventTypeClick);
+    style = 0;
+    while (style < c_cycleStyleCount) {
+        g_cycle_yoloBtn[style] = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_cycle_yoloBtn[style], Tardigrade_Viewers());
+        DialogControlSetSize(g_cycle_yoloBtn[style], Tardigrade_Viewers(), 290, 56);
+        DialogControlSetPosition(g_cycle_yoloBtn[style], Tardigrade_Viewers(),
+            c_anchorTop, (style - 1) * 300, 190);
+        TriggerAddEventDialogControl(g_cycle_yoloTrig, c_playerAny, g_cycle_yoloBtn[style],
+            c_triggerControlEventTypeClick);
+        style = style + 1;
+    }
 
     CycleMod_YoloRefresh();
     DraftTimer_Arm(g_cycle_yoloAuto);
@@ -1575,8 +1608,10 @@ void CycleMod_YoloChoice(trigger callback, int p1, int p2) {
     g_cycle_yoloCallback = callback;
     g_cycle_p1     = p1;
     g_cycle_p2     = p2;
-    g_cycle_p1Yolo = false;
-    g_cycle_p2Yolo = false;
+    g_cycle_p1Yolo    = false;
+    g_cycle_p2Yolo    = false;
+    g_cycle_p1Protect = false;
+    g_cycle_p2Protect = false;
     CycleMod_YoloChoiceStart();
 }
 
@@ -2718,7 +2753,7 @@ string CycleMod_ResearchAbil(int i) {
 
 // Field-path spellings. Blizzard's own scripts only ever index catalog arrays
 // by number, and it is not certain the engine accepts enum NAMES in a field
-// path for these arrays (the same doubt as CycleMod_BlockGasHarvest). Rather
+// path for these arrays. Rather
 // than write both and hope, probe once against values the melee data is known
 // to hold, and use whichever form reads back.
 bool   g_cycle_pathsResolved = false;
@@ -3321,46 +3356,6 @@ bool CycleMod_OnWorkerGatherOrder(bool testConds, bool runActions) {
     return true;
 }
 
-// A data-level block, kept alongside CycleMod_OnWorkerGatherOrder above. NOTE:
-// playtest round 2 still saw workers go in for one trip with this in place, so
-// it is apparently not taking effect - either the field path is refused or a
-// per-player ability edit doesn't reach live workers. Its debug-log line says
-// which. Intercepting gather orders from the scan turned out
-// not to stop workers in playtest - they still went in and mined. So the
-// drafting side's worker harvest abilities are simply not allowed to take gas:
-// ResourceAllowed[Vespene] = 0 on SCVHarvest / ProbeHarvest / DroneHarvest,
-// set per player through the catalog, which is exactly how Blizzard makes the
-// MULE minerals-only (MULEGather). A right-click on the refinery can no longer
-// become a harvest order at all; the redirect above stays as a clean-up for
-// workers already mid-trip when this switches on at 3:00.
-//
-// Blizzard's scripts only ever index catalog arrays numerically, so it isn't
-// certain whether this enum-indexed array takes the name or the number in a
-// field path. BOTH are written, unconditionally. The previous version wrote the
-// name form and only fell back to the index form if the value read back wrong -
-// which it never does: a per-player override reads back whatever was written to
-// it, real field path or not, so the fallback could never fire. Writing to a
-// path the engine doesn't recognise is a no-op, so writing both costs nothing.
-void CycleMod_BlockGasHarvest(int player, string harvestAbil) {
-    string byName;
-    string byIndex;
-
-    byName  = "ResourceAllowed[" + c_resourceTypeVespeneName + "]";
-    byIndex = "ResourceAllowed[" + IntToString(c_resourceTypeVespene) + "]";
-    CycleMod_CatalogSet(c_gameCatalogAbil, harvestAbil, byName, player, "0");
-    CycleMod_CatalogSet(c_gameCatalogAbil, harvestAbil, byIndex, player, "0");
-    Debug_Log("Auto Refineries: " + harvestAbil + " P" + IntToString(player)
-        + " vespene allowed byName=" + CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byName, player)
-        + " byIndex=" + CatalogFieldValueGet(c_gameCatalogAbil, harvestAbil, byIndex, player));
-}
-
-void CycleMod_UnblockGasHarvest(int player, string harvestAbil) {
-    CycleMod_CatalogRestore(c_gameCatalogAbil, harvestAbil,
-        "ResourceAllowed[" + c_resourceTypeVespeneName + "]", player);
-    CycleMod_CatalogRestore(c_gameCatalogAbil, harvestAbil,
-        "ResourceAllowed[" + IntToString(c_resourceTypeVespene) + "]", player);
-}
-
 // The six gas buildings, for the Auto Refineries price.
 string CycleMod_GasBuildingType(int i) {
     if (i == 1) { return "Refinery"; }
@@ -3373,10 +3368,12 @@ string CycleMod_GasBuildingType(int i) {
 }
 
 // Auto Refineries' catalog half, for one player: the gas buildings cost
-// c_cycleAutoRefineryCost minerals, and the worker harvest abilities are
-// barred from gas. Switched off (testing mode), both go back as shipped.
-// Buildings already stripped of their resource behavior stay stripped - see
-// CycleMod_MakeUnharvestable.
+// c_cycleAutoRefineryCost minerals. Switched off (testing mode), the price goes
+// back as shipped. Buildings already stripped of their resource behavior stay
+// stripped - see CycleMod_MakeUnharvestable, which is what keeps workers out.
+// (The ResourceAllowed[Vespene] write on the harvest abilities is gone: the
+// engine refuses that field at runtime - "access denied" - so it never did
+// anything but log an error.)
 void CycleMod_AutoRefineryForPlayer(int player, bool on) {
     int i;
 
@@ -3390,12 +3387,6 @@ void CycleMod_AutoRefineryForPlayer(int player, bool on) {
             CycleMod_CatalogRestore(c_gameCatalogUnit, CycleMod_GasBuildingType(i),
                 "CostResource" + g_cycle_resMin, player);
         }
-        i = i + 1;
-    }
-    i = 1;
-    while (i <= 3) {
-        if (on) { CycleMod_BlockGasHarvest(player, CycleMod_WorkerGatherAbil(i)); }
-        else    { CycleMod_UnblockGasHarvest(player, CycleMod_WorkerGatherAbil(i)); }
         i = i + 1;
     }
 }

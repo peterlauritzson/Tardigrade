@@ -155,6 +155,7 @@ bool    g_dtimer_running = false;
 bool    g_dtimer_armed   = false;
 fixed   g_dtimer_left    = 0.0;
 trigger g_dtimer_expire  = null;
+string  g_dtimer_note    = "";       // what happens at zero, shown after the seconds
 int     g_dtimer_dialog  = c_invalidDialogId;
 int     g_dtimer_label   = c_invalidDialogControlId;
 
@@ -183,7 +184,7 @@ bool DraftTimer_Run(bool testConds, bool runActions) {
                 DialogControlSetPropertyAsText(g_dtimer_label, c_triggerControlPropertyText,
                     PlayerGroupAll(), StringToText("<c val=\"FFD54A\">TOURNAMENT</c>   "
                         + "<c val=\"FFFFFF\">" + IntToString(secs) + "s</c>"
-                        + "  <c val=\"AAAAAA\">left - then a random pick</c>"));
+                        + "  <c val=\"AAAAAA\">left - " + g_dtimer_note + "</c>"));
                 g_dtimer_left = g_dtimer_left - 0.25;
             }
         }
@@ -192,9 +193,10 @@ bool DraftTimer_Run(bool testConds, bool runActions) {
     return true;
 }
 
-// Start (or restart) the countdown for the step that is now up. No-op outside
-// Tournament mode, so every draft screen can call it unconditionally.
-void DraftTimer_Arm(trigger onExpire) {
+// Start (or restart) the countdown for the step that is now up, with its own
+// length and a note on what happens at zero. No-op outside Tournament mode, so
+// every draft screen can call it unconditionally.
+void DraftTimer_ArmFor(trigger onExpire, int seconds, string note) {
     if (!GameMode_IsTournament()) { return; }
 
     if (g_dtimer_dialog == c_invalidDialogId) {
@@ -207,7 +209,8 @@ void DraftTimer_Arm(trigger onExpire) {
     }
 
     g_dtimer_expire = onExpire;
-    g_dtimer_left   = IntToFixed(c_tournamentStepSeconds);
+    g_dtimer_left   = IntToFixed(seconds);
+    g_dtimer_note   = note;
     g_dtimer_armed  = true;
     DraftTimer_Show(true);
 
@@ -215,6 +218,11 @@ void DraftTimer_Arm(trigger onExpire) {
         g_dtimer_running = true;
         TriggerExecute(TriggerCreate("DraftTimer_Run"), false, false);
     }
+}
+
+// The usual draft step: c_tournamentStepSeconds, then a random pick.
+void DraftTimer_Arm(trigger onExpire) {
+    DraftTimer_ArmFor(onExpire, c_tournamentStepSeconds, "then a random pick");
 }
 
 // Stop counting (a step finished some other way, e.g. the debug auto-run).

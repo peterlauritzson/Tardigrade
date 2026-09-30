@@ -8,7 +8,9 @@
 //
 // The schedule is built per game in RosterDraft_Start, not fixed, because two
 // modifiers drafted just before this remove steps from it:
-//   No Bans (12) - the opponent's bans against that side are dropped.
+//   No Bans (12) - the opponent's bans against that side are dropped. On a
+//                  YOLO side it is +2 units instead (RosterDraft_YoloSize), on
+//                  a Protect and Ban side +4 points (ProtectDraft_Points).
 //   YOLO    (16) - that side does not draft at all: 7 units at random from
 //                  its race's pool, nothing guaranteed. Against a normal
 //                  drafter each of its pick turns is rolled on the spot, the
@@ -29,7 +31,11 @@ const int c_rosterPickTotal  = 12; // total snake picks (6 per player), before s
 const int c_rosterPreBanPicks = 4; // opening picks made BEFORE bans (2 per player)
 const int c_rosterRosterSize = 6;  // drafted units per player (no protected core)
 const int c_rosterYoloSize   = 7;  // a YOLO roster: 7 random units
-// Roster arrays are sized with the literal 8 - keep > c_rosterYoloSize.
+const int c_rosterYoloNoBansBonus = 2; // ...plus these with No Bans
+// Largest roster any style can produce: a Protect and Ban side keeps every
+// unit it put points on that wasn't banned, which can be most of its pool.
+// Roster arrays are sized with the literal 19 - keep > c_rosterMaxSize.
+const int c_rosterMaxSize    = 18;
 
 // State
 trigger g_roster_callback    = null;
@@ -38,10 +44,11 @@ int     g_roster_p2;
 int     g_roster_p1Race;
 int     g_roster_p2Race;
 
-// Roster results — index 1..6, or 1..7 for a YOLO side; unused slots are "".
+// Roster results — index 1..6, 1..7 for a YOLO side, up to c_rosterMaxSize for
+// a Protect and Ban side; unused slots are "". Filled densely from 1.
 // Accessible globally for later systems (roster enforcement, etc.)
-string[8] g_roster_p1Units;
-string[8] g_roster_p2Units;
+string[19] g_roster_p1Units;
+string[19] g_roster_p2Units;
 
 // Draft tracking
 int       g_roster_phase       = 0;   // 0 = opening picks, 1 = bans, 2 = final picks
@@ -68,8 +75,8 @@ int       g_roster_lblTitle    = c_invalidDialogControlId;
 int       g_roster_lblSubtitle = c_invalidDialogControlId; // "YOUR TURN" or "waiting..."
 int       g_roster_lblPoolHdr = c_invalidDialogControlId;   // "YOUR POOL" / "THEIR POOL"
 int[19]   g_roster_btnPool;                                // [1..18] unit pool buttons
-int[8]    g_roster_lblSlot;                                // [1..7] your roster slots
-int[8]    g_roster_lblOppSlot;                             // [1..7] opponent roster slots
+int[19]   g_roster_lblSlot;                                // [1..rows] your roster slots
+int[19]   g_roster_lblOppSlot;                             // [1..rows] opponent roster slots
 int       g_roster_lblBan    = c_invalidDialogControlId;   // units banned from your pool
 int       g_roster_lblOppBan = c_invalidDialogControlId;   // units banned from theirs
 trigger   g_roster_trigger     = null;
@@ -90,12 +97,12 @@ int[16]    g_rhud_dialog;
 int[16]    g_rhud_btn;
 int[16]    g_rhud_hdrMine;
 int[16]    g_rhud_hdrOpp;
-int[16][8] g_rhud_lblMine;
-int[16][8] g_rhud_lblOpp;
+int[16][19] g_rhud_lblMine;
+int[16][19] g_rhud_lblOpp;
 bool[16]   g_rhud_expanded;
 int    g_rhud_audDialog = c_invalidDialogId;
 int    g_rhud_audTitle  = c_invalidDialogControlId;
-int[8] g_rhud_audRow;
+int[19] g_rhud_audRow;
 
 //--------------------------------------------------------------------------------------------------
 // Data Helpers
@@ -235,18 +242,48 @@ bool RosterDraft_IsYolo(bool isP1) {
     return CycleMod_SideIsYolo(isP1);
 }
 
-// Exactly one side is YOLO: its roster is rolled pick by pick alongside the
-// other side's draft. With both YOLO there is nothing to pace it by, and both
-// rosters are dealt at the start.
-bool RosterDraft_YoloGradual() {
-    return RosterDraft_IsYolo(true) != RosterDraft_IsYolo(false);
+// A YOLO side's roster size: 7, or 9 with No Bans (nobody bans from a YOLO
+// pool, so No Bans pays out in units instead). The modifier draft is over
+// before any roster is dealt.
+int RosterDraft_YoloSize(bool isP1) {
+    if (CycleMod_SideHasModIdx(isP1, c_cycleModNoBans)) {
+        return c_rosterYoloSize + c_rosterYoloNoBansBonus;
+    }
+    return c_rosterYoloSize;
 }
 
-// Rows every roster list shows: 7 when a YOLO roster is in the game, so both
-// columns line up; 6 otherwise.
+// Protect and Ban: the side's roster comes from the points stage
+// (ProtectDraft.galaxy), which runs before the pick/ban draft.
+bool RosterDraft_IsProtect(bool isP1) {
+    return CycleMod_SideIsProtect(isP1);
+}
+
+// Exactly one side is YOLO and the other drafts normally: its roster is
+// rolled pick by pick alongside the other side's draft. With both YOLO, or
+// YOLO against Protect and Ban, there is no draft to pace it by, and it is
+// dealt at the start.
+bool RosterDraft_YoloGradual() {
+    if (RosterDraft_IsYolo(true) && !RosterDraft_IsYolo(false)) {
+        return !RosterDraft_IsProtect(false);
+    }
+    if (RosterDraft_IsYolo(false) && !RosterDraft_IsYolo(true)) {
+        return !RosterDraft_IsProtect(true);
+    }
+    return false;
+}
+
+// Rows every roster list shows, so both columns line up: 6, a YOLO roster's
+// size (7, or 9 with No Bans), or a Protect and Ban roster's size if larger. The
+// Protect stage runs before any roster panel is built, and a YOLO reroll only
+// shrinks a roster, so this never grows once a panel exists.
 int RosterDraft_Rows() {
-    if (RosterDraft_IsYolo(true) || RosterDraft_IsYolo(false)) { return c_rosterYoloSize; }
-    return c_rosterRosterSize;
+    int rows;
+    rows = c_rosterRosterSize;
+    if (RosterDraft_IsYolo(true)  && RosterDraft_YoloSize(true)  > rows) { rows = RosterDraft_YoloSize(true); }
+    if (RosterDraft_IsYolo(false) && RosterDraft_YoloSize(false) > rows) { rows = RosterDraft_YoloSize(false); }
+    if (RosterDraft_IsProtect(true)  && g_roster_p1PickCount > rows) { rows = g_roster_p1PickCount; }
+    if (RosterDraft_IsProtect(false) && g_roster_p2PickCount > rows) { rows = g_roster_p2PickCount; }
+    return rows;
 }
 
 // A random slot of this pool that is neither banned nor picked, or 0.
@@ -301,15 +338,54 @@ void RosterDraft_TakeSlot(bool isP1, int race, int idx) {
 // Deal a YOLO side its whole roster: 7 units at random from the race's pool,
 // nothing guaranteed. Expects the side's picked flags and pick count to be
 // freshly reset. Also used by the debug auto-run, which skips the draft screens.
-void RosterDraft_FillYolo(bool isP1, int race) {
+void RosterDraft_DealRandom(bool isP1, int race, int size) {
     int    i;
 
-    while ((isP1 && g_roster_p1PickCount < c_rosterYoloSize)
-        || (!isP1 && g_roster_p2PickCount < c_rosterYoloSize)) {
+    while ((isP1 && g_roster_p1PickCount < size)
+        || (!isP1 && g_roster_p2PickCount < size)) {
         i = RosterDraft_RandomOpenSlot(isP1, race);
         if (i == 0) { break; }
         RosterDraft_TakeSlot(isP1, race, i);
     }
+}
+
+void RosterDraft_FillYolo(bool isP1, int race) {
+    RosterDraft_DealRandom(isP1, race, RosterDraft_YoloSize(isP1));
+}
+
+// Units in a side's roster right now.
+int RosterDraft_Count(bool isP1) {
+    if (isP1) { return g_roster_p1PickCount; }
+    return g_roster_p2PickCount;
+}
+
+// Summary screen: a YOLO side throws its roster away and is dealt a new one,
+// one unit smaller, from its whole pool (the old units can come back). Never
+// below one unit. Returns false when there was nothing to do.
+bool RosterDraft_RerollYolo(bool isP1) {
+    int race;
+    int size;
+    int i;
+
+    if (!RosterDraft_IsYolo(isP1)) { return false; }
+    size = RosterDraft_Count(isP1) - 1;
+    if (size < 1) { return false; }
+
+    if (isP1) { race = g_roster_p1Race; } else { race = g_roster_p2Race; }
+    i = 1;
+    while (i <= c_rosterPoolMax) {
+        if (isP1) { g_roster_p1Picked[i] = false; } else { g_roster_p2Picked[i] = false; }
+        i = i + 1;
+    }
+    i = 1;
+    while (i <= c_rosterMaxSize) {
+        if (isP1) { g_roster_p1Units[i] = ""; } else { g_roster_p2Units[i] = ""; }
+        i = i + 1;
+    }
+    if (isP1) { g_roster_p1PickCount = 0; } else { g_roster_p2PickCount = 0; }
+
+    RosterDraft_DealRandom(isP1, race, size);
+    return true;
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -366,6 +442,7 @@ string RosterDraft_ModBlock(bool isP1, string heading, string clr) {
     if (isP1) { race = g_roster_p1Race; } else { race = g_roster_p2Race; }
     s = "<c val=\"" + clr + "\">" + heading + "</c>  <c val=\"777777\">" + RaceName(race) + "</c>";
     if (CycleMod_SideIsYolo(isP1)) { s = s + "  <c val=\"FFD700\">YOLO</c>"; }
+    if (CycleMod_SideIsProtect(isP1)) { s = s + "  <c val=\"FFD700\">PROTECT</c>"; }
 
     shown = 0;
     i = 1;
@@ -410,11 +487,13 @@ string RosterDraft_BanText(bool poolIsP1) {
         i = i + 1;
     }
     if (s == "") {
-        if ((poolIsP1 && CycleMod_P1HasModIdx(c_cycleModNoBans))
+        if (RosterDraft_IsYolo(poolIsP1)) {
+            s = "none - YOLO";
+        } else if (RosterDraft_IsProtect(poolIsP1)) {
+            s = "none - Protect and Ban";
+        } else if ((poolIsP1 && CycleMod_P1HasModIdx(c_cycleModNoBans))
             || (!poolIsP1 && CycleMod_P2HasModIdx(c_cycleModNoBans))) {
             s = "none - No Bans";
-        } else if (RosterDraft_IsYolo(poolIsP1)) {
-            s = "none - YOLO";
         } else {
             s = "—";
         }
@@ -731,7 +810,11 @@ void RosterDraft_Finish() {
         TriggerDestroy(g_roster_trigger);
         g_roster_trigger = null;
     }
-    DialogDestroy(g_roster_dialog);
+    // No dialog when nothing was left to draft (RosterDraft_Continue).
+    if (g_roster_dialog != c_invalidDialogId) {
+        DialogDestroy(g_roster_dialog);
+        g_roster_dialog = c_invalidDialogId;
+    }
 
     // NOTE: Do NOT unpause here. Tardigrade_StartGame() unpauses once the
     // final Cycle-modifier draft completes.
@@ -739,13 +822,13 @@ void RosterDraft_Finish() {
     // Debug log
     logMsg = "=== Roster Draft Complete ===\nP1 Roster:";
     i = 1;
-    while (i <= c_rosterYoloSize) {
+    while (i <= c_rosterMaxSize) {
         if (g_roster_p1Units[i] != "") { logMsg = logMsg + " " + g_roster_p1Units[i]; }
         i = i + 1;
     }
     logMsg = logMsg + "\nP2 Roster:";
     i = 1;
-    while (i <= c_rosterYoloSize) {
+    while (i <= c_rosterMaxSize) {
         if (g_roster_p2Units[i] != "") { logMsg = logMsg + " " + g_roster_p2Units[i]; }
         i = i + 1;
     }
@@ -872,7 +955,7 @@ bool RosterDraft_AutoAct(bool testConds, bool runActions) {
 }
 
 // A YOLO side's pick turn: one random unit from its pool. Its 6th turn also
-// deals the 7th, so the last two come out together.
+// deals the rest (the 7th, or 7th-9th with No Bans), so they come out together.
 void RosterDraft_YoloPick(bool isP1) {
     int    race;
     int    slot;
@@ -886,8 +969,7 @@ void RosterDraft_YoloPick(bool isP1) {
 
     if (isP1) { count = g_roster_p1PickCount; } else { count = g_roster_p2PickCount; }
     if (count == c_rosterRosterSize) {
-        slot = RosterDraft_RandomOpenSlot(isP1, race);
-        if (slot != 0) { RosterDraft_TakeSlot(isP1, race, slot); }
+        RosterDraft_DealRandom(isP1, race, RosterDraft_YoloSize(isP1));
     }
 
     g_roster_pickIndex = g_roster_pickIndex + 1;
@@ -957,10 +1039,13 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
 // Append a ban step for this banner unless their target pool is protected.
 // bannerIsP1 = true means P1 bans from P2's pool, so P2's No Bans cancels it.
 // A YOLO pool is skipped too: its roster is chance, not the opponent's to shape.
+// So is a Protect and Ban pool: the opponent already banned from it, with
+// points, in the Protect stage.
 void RosterDraft_ScheduleBan(int banner, bool bannerIsP1) {
     if (bannerIsP1 && CycleMod_P2HasModIdx(c_cycleModNoBans)) { return; }
     if (!bannerIsP1 && CycleMod_P1HasModIdx(c_cycleModNoBans)) { return; }
     if (RosterDraft_IsYolo(!bannerIsP1)) { return; }
+    if (RosterDraft_IsProtect(!bannerIsP1)) { return; }
     g_roster_banCount = g_roster_banCount + 1;
     g_roster_banOrder[g_roster_banCount] = banner;
     g_roster_banIsP1[g_roster_banCount]  = bannerIsP1;
@@ -968,9 +1053,11 @@ void RosterDraft_ScheduleBan(int banner, bool bannerIsP1) {
 
 // Append a pick step, unless both sides are YOLO (both rosters are dealt at
 // the start). A lone YOLO side keeps its steps; they are rolled for it
-// (RosterDraft_YoloPick). opening = before the bans.
+// (RosterDraft_YoloPick). A Protect and Ban side has its roster already.
+// opening = before the bans.
 void RosterDraft_SchedulePick(int picker, bool pickerIsP1, bool opening) {
     if (RosterDraft_IsYolo(pickerIsP1) && !RosterDraft_YoloGradual()) { return; }
+    if (RosterDraft_IsProtect(pickerIsP1)) { return; }
     g_roster_pickCount = g_roster_pickCount + 1;
     g_roster_pickOrder[g_roster_pickCount] = picker;
     g_roster_pickIsP1[g_roster_pickCount]  = pickerIsP1;
@@ -998,18 +1085,21 @@ void RosterDraft_SchedulePick(int picker, bool pickerIsP1, bool opening) {
 //   +--------------+-------------------------------+-----------------+
 //
 // Anchor math: see the offsets at the top of the body.
+//
+// A Protect and Ban side's roster comes first, from its own screen
+// (ProtectDraft_Start); the pick/ban draft below then runs for whatever is
+// left to draft (RosterDraft_Continue).
 //--------------------------------------------------------------------------------------------------
+void ProtectDraft_Start(trigger callback);   // ProtectDraft.galaxy, included after
+void RosterDraft_Continue();
+
+bool RosterDraft_OnProtectDone(bool testConds, bool runActions) {
+    RosterDraft_Continue();
+    return true;
+}
+
 void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race) {
     int i;
-    int row;
-    int lblSection;
-    int rows;
-    int pitch;
-    int y;
-    int modTop;
-    int modBottom;
-    playergroup p1Group;
-    playergroup p2Group;
 
     g_roster_callback  = callback;
     g_roster_p1        = p1;
@@ -1035,11 +1125,43 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
 
     // All roster slots start empty (no protected core units).
     i = 1;
-    while (i <= c_rosterYoloSize) {
+    while (i <= c_rosterMaxSize) {
         g_roster_p1Units[i] = "";
         g_roster_p2Units[i] = "";
         i = i + 1;
     }
+    g_roster_dialog  = c_invalidDialogId;
+    g_roster_trigger = null;
+
+    if (RosterDraft_IsProtect(true) || RosterDraft_IsProtect(false)) {
+        ProtectDraft_Start(TriggerCreate("RosterDraft_OnProtectDone"));
+        return;
+    }
+    RosterDraft_Continue();
+}
+
+// The pick/ban draft, for the sides that still need a roster. Everything it
+// needs is in the g_roster_* globals RosterDraft_Start set.
+void RosterDraft_Continue() {
+    int i;
+    int row;
+    int lblSection;
+    int rows;
+    int pitch;
+    int y;
+    int modTop;
+    int modBottom;
+    int p1;
+    int p2;
+    int p1Race;
+    int p2Race;
+    playergroup p1Group;
+    playergroup p2Group;
+
+    p1     = g_roster_p1;
+    p2     = g_roster_p2;
+    p1Race = g_roster_p1Race;
+    p2Race = g_roster_p2Race;
 
     // Ban order: P1 bans from P2's pool, P2 bans from P1's pool, repeat x2
     // (banIsP1 = true means P1 is the one banning, targeting P2's pool).
@@ -1069,10 +1191,17 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     RosterDraft_SchedulePick(p1, true,  false);
     RosterDraft_SchedulePick(p2, false, false);
 
-    // Both YOLO: deal both rosters now. (A lone YOLO side is rolled pick by pick.)
+    // Both YOLO, or YOLO against Protect and Ban: deal the YOLO roster now.
+    // (A lone YOLO side against a normal drafter is rolled pick by pick.)
     if (!RosterDraft_YoloGradual()) {
         if (RosterDraft_IsYolo(true))  { RosterDraft_FillYolo(true,  p1Race); }
         if (RosterDraft_IsYolo(false)) { RosterDraft_FillYolo(false, p2Race); }
+    }
+
+    // Nothing left to draft (no side drafts normally): no screen at all.
+    if (g_roster_pickCount == 0 && g_roster_banCount == 0) {
+        RosterDraft_Finish();
+        return;
     }
 
     Debug_Log("RosterDraft: P1=" + IntToString(p1) + " race=" + GetRaceConfigId(p1Race)
@@ -1182,10 +1311,13 @@ void RosterDraft_Start(trigger callback, int p1, int p2, int p1Race, int p2Race)
     // ── Right column: YOUR ROSTER + its bans, then OPPONENT + theirs ─────────
     // The opponent's live picks are shown so players can counter-draft, and
     // the bans stay listed after the ban phase so they remain in view.
-    // 32px rows for a 6-unit roster, 28px when a YOLO roster makes it 7.
+    // 32px rows for a 6-unit roster, 28px when a YOLO roster makes it 7, and
+    // whatever fits the 446px left for two lists when a Protect and Ban
+    // roster is longer (22px at 10 rows).
     rows = RosterDraft_Rows();
-    if (rows > c_rosterRosterSize) { pitch = 28; }
-    else                           { pitch = 32; }
+    if (rows > c_rosterYoloSize)        { pitch = 446 / (2 * rows); }
+    else if (rows > c_rosterRosterSize) { pitch = 28; }
+    else                                { pitch = 32; }
 
     lblSection = DialogControlCreate(g_roster_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(lblSection, Tardigrade_Viewers(), 290, 14);

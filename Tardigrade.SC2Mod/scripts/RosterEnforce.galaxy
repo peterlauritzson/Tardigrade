@@ -61,8 +61,8 @@ void RosterEnforce_InitLists() {
 bool RosterEnforce_InRoster(int whichRoster, string unitType) {
     int i;
     i = 1;
-    // Up to 7: a YOLO roster has one more; unused slots are "" and match nothing.
-    while (i <= c_rosterYoloSize) {
+    // Rosters hold up to c_rosterMaxSize units; unused slots are "" and match nothing.
+    while (i <= c_rosterMaxSize) {
         if (whichRoster == 1) {
             if (g_roster_p1Units[i] == unitType) { return true; }
         } else {
