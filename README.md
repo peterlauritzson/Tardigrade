@@ -147,7 +147,7 @@ A side that chose **Protect and Ban** doesn't pick either. Before the unit
 draft it places **20 points** on units of its pool (click a unit: +1, `-1`
 next to it: take one back) and locks in once all 20 are placed; the opponent
 can't see them yet. The opponent then bans from that pool: a ban costs the
-unit's points, up to **7 points** in total, and can be undone until they click
+unit's points, up to **8 points** in total, and can be undone until they click
 **Ban complete**. Units left at 0 points are banned for free. The side keeps
 every unit with points that wasn't banned — stack points to make a unit
 unbannable, or spread them for more units that are each cheap to ban. Normal

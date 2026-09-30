@@ -270,9 +270,11 @@ markup.
   step on each Protect side's pool. Points: `c_protectPoints` = 20, card click
   +1, `-1` button beside it, "Lock in" only with 0 left; hidden from the
   opponent (they see plain cards). Bans: cost = the unit's points, total ≤
-  `c_protectBanBudget` = 7, click again to undo, "Ban complete" ends it;
+  `c_protectBanBudget` = 8, click again to undo, "Ban complete" ends it;
   0-point units render as `[X] AUTO-BAN`, unaffordable as `[=] SAFE`. A YOLO
-  banner bans at random on the spot (`ProtectDraft_RandomBans`).
+  banner bans on the spot (`ProtectDraft_RandomBans`): a random set of bans that
+  spends the most budget possible (subset-sum over the shuffled affordable
+  units; ties between equal totals are random).
 - Tournament: `c_protectStepSeconds` = 30 per step; timeout puts unplaced
   points on random units (`ProtectDraft_RandomPoints`) / keeps the bans.
 - Finish: each Protect side `RosterDraft_TakeSlot`s every slot with points

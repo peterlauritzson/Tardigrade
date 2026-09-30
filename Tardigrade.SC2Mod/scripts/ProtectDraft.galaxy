@@ -32,7 +32,7 @@
 
 const int c_protectPoints      = 20; // points a protector places
 const int c_protectNoBansBonus = 4;  // ...plus these with No Bans
-const int c_protectBanBudget   = 7;  // points' worth the opponent may ban
+const int c_protectBanBudget   = 8;  // points' worth the opponent may ban
 const int c_protectStepSeconds = 30; // Tournament: per points step and per ban step
 
 const int c_protectStepPoints = 1;
@@ -188,33 +188,96 @@ void ProtectDraft_RandomPoints(bool poolIsP1) {
     }
 }
 
-// A YOLO banner: random affordable bans until nothing affordable is left.
+// A YOLO banner: a random set of bans that spends as much of the budget as
+// the pool allows (all of it whenever some combination adds up exactly).
+// Picking one random affordable unit at a time wasted budget - a 5 taken first
+// leaves 2, and if nothing costs 2 or less the rest is lost.
+//
+// A small subset-sum: the candidates (affordable, not yet banned) are
+// shuffled, g_prot_reach[k][s] says whether candidates k..n can add up to
+// exactly s, the target is the largest reachable s within the budget, and the
+// walk takes each candidate that still leaves the target reachable - or, when
+// skipping it would too, takes it on a coin flip. Budget is capped at 63 by the
+// array size.
+int[19]      g_prot_cand;             // [1..n] candidate pool slots, shuffled
+bool[20][64] g_prot_reach;            // [k][s]: candidates k..n can sum to exactly s
+
 void ProtectDraft_RandomBans(bool poolIsP1) {
-    int open;
     int n;
     int i;
+    int j;
+    int k;
+    int s;
+    int pts;
+    int budget;
+    int target;
+    bool take;
 
-    while (true) {
-        open = 0;
-        i = 1;
-        while (i <= ProtectDraft_PoolCount(poolIsP1)) {
-            if (ProtectDraft_CanBan(poolIsP1, i)) { open = open + 1; }
-            i = i + 1;
+    budget = ProtectDraft_BudgetLeft(poolIsP1);
+    if (budget > 63) { budget = 63; }
+    if (budget <= 0) { return; }
+
+    // Candidates, then a Fisher-Yates shuffle so ties between equal-sum sets
+    // come out at random.
+    n = 0;
+    i = 1;
+    while (i <= ProtectDraft_PoolCount(poolIsP1)) {
+        if (ProtectDraft_CanBan(poolIsP1, i)) {
+            n = n + 1;
+            g_prot_cand[n] = i;
         }
-        if (open == 0) { return; }
+        i = i + 1;
+    }
+    if (n == 0) { return; }
+    i = n;
+    while (i > 1) {
+        j = RandomInt(1, i);
+        k = g_prot_cand[i];
+        g_prot_cand[i] = g_prot_cand[j];
+        g_prot_cand[j] = k;
+        i = i - 1;
+    }
 
-        n = RandomInt(1, open);
-        i = 1;
-        while (i <= ProtectDraft_PoolCount(poolIsP1)) {
-            if (ProtectDraft_CanBan(poolIsP1, i)) {
-                n = n - 1;
-                if (n == 0) {
-                    ProtectDraft_SetBanned(poolIsP1, i, true);
-                    break;
-                }
+    // Reachability, built backwards from the empty tail (only 0 reachable).
+    s = 0;
+    while (s <= budget) {
+        g_prot_reach[n + 1][s] = (s == 0);
+        s = s + 1;
+    }
+    k = n;
+    while (k >= 1) {
+        pts = ProtectDraft_Pts(poolIsP1, g_prot_cand[k]);
+        s = 0;
+        while (s <= budget) {
+            g_prot_reach[k][s] = g_prot_reach[k + 1][s];
+            if (s >= pts) {
+                if (g_prot_reach[k + 1][s - pts]) { g_prot_reach[k][s] = true; }
             }
-            i = i + 1;
+            s = s + 1;
         }
+        k = k - 1;
+    }
+
+    target = budget;
+    while (target > 0 && !g_prot_reach[1][target]) { target = target - 1; }
+
+    // Walk the shuffled candidates, keeping the target reachable.
+    k = 1;
+    while (k <= n && target > 0) {
+        pts  = ProtectDraft_Pts(poolIsP1, g_prot_cand[k]);
+        take = false;
+        if (pts <= target) {
+            if (g_prot_reach[k + 1][target - pts]) {
+                take = true;
+                // Skipping would also work: leave it to chance.
+                if (g_prot_reach[k + 1][target]) { take = (RandomInt(0, 1) == 1); }
+            }
+        }
+        if (take) {
+            ProtectDraft_SetBanned(poolIsP1, g_prot_cand[k], true);
+            target = target - pts;
+        }
+        k = k + 1;
     }
 }
 
