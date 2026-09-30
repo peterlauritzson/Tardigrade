@@ -18,10 +18,13 @@
 // picks for it and no bans against it. Its own ban turns against a normal
 // drafter stay.
 //
-// Steps run one at a time: every protector places its points (P1 first), then
-// every protector's pool is banned from. A YOLO banner bans at random, on the
-// spot. Tournament: c_protectStepSeconds per step; at zero, points still
-// unplaced land on random units, or the bans made so far stand.
+// Points first, then bans. When both sides are Protect and two humans decide
+// them, both place points at the same time and then both ban at the same time
+// (each on their own screen, one clock); otherwise the tasks run one at a
+// time, P1 first. A YOLO banner bans on the spot (ProtectDraft_RandomBans).
+// Tournament: c_protectStepSeconds per step; at zero, points still unplaced
+// land on random units, or the bans made so far stand. A modifier panel on the
+// left shows both sides' picks, as on the unit draft screen.
 //
 // No Bans can't stop these bans (they are the whole style); on a Protect
 // side it is worth c_protectNoBansBonus extra points instead.
@@ -32,8 +35,9 @@
 
 const int c_protectPoints      = 20; // points a protector places
 const int c_protectNoBansBonus = 4;  // ...plus these with No Bans
-const int c_protectBanBudget   = 8;  // points' worth the opponent may ban
+const int c_protectBanBudget   = 9;  // points' worth the opponent may ban
 const int c_protectStepSeconds = 30; // Tournament: per points step and per ban step
+const fixed c_protectDoneGrace = 2.0; // real seconds the Done button stays grey at a step's start
 
 const int c_protectStepPoints = 1;
 const int c_protectStepBan    = 2;
@@ -45,7 +49,9 @@ int[19] g_prot_p2Pts;
 int     g_prot_stepCount = 0;
 int     g_prot_stepIndex = 0;       // 1-based; past stepCount = done
 int[5]  g_prot_stepKind;            // c_protectStep*
-bool[5] g_prot_stepPoolIsP1;        // whose pool the step is about
+int[5]  g_prot_stepTasks;           // 1, or 2 when both pools run at once
+bool[5][3] g_prot_taskPoolIsP1;     // [step][task]: whose pool the task is about
+bool[3] g_prot_taskDone;            // [task] of the current step
 trigger g_prot_autoTrig  = null;
 
 // UI
@@ -58,6 +64,9 @@ int[19] g_prot_btnCard;             // [1..18] pool cards
 int[19] g_prot_btnMinus;            // [1..18] "-1" next to each card (points step only)
 int     g_prot_btnDone    = c_invalidDialogControlId;
 trigger g_prot_trigger    = null;
+bool    g_prot_doneLocked = false;  // Done greyed out: the step just started
+int     g_prot_graceToken = 0;      // which step's grace timer is live
+bool[3] g_prot_confirm;             // [task] Ban complete clicked once with budget left
 
 //--------------------------------------------------------------------------------------------------
 // Rules text, shared with the drafting-style screen (CycleMod forward-declares these).
@@ -151,20 +160,30 @@ string ProtectDraft_PtsText(int pts) {
 
 //--------------------------------------------------------------------------------------------------
 // Steps
+//
+// A step is the points phase or the ban phase, and holds one task per pool
+// involved: "place points on pool S" (acted by S) or "ban from pool S" (acted
+// by the other side). When both sides are Protect and two different humans
+// decide them, each phase is ONE step with both tasks running at once - each
+// player works on their own task, one clock for both. Otherwise every task is
+// a step of its own (one Protect side, or one human deciding both sides).
 //--------------------------------------------------------------------------------------------------
 int ProtectDraft_Kind() {
     return g_prot_stepKind[g_prot_stepIndex];
 }
 
-bool ProtectDraft_PoolIsP1() {
-    return g_prot_stepPoolIsP1[g_prot_stepIndex];
+int ProtectDraft_TaskCount() {
+    return g_prot_stepTasks[g_prot_stepIndex];
 }
 
-// The side acting on the current step: the pool's owner places points, the
-// other side bans.
-bool ProtectDraft_ActorIsP1() {
-    if (ProtectDraft_Kind() == c_protectStepPoints) { return ProtectDraft_PoolIsP1(); }
-    return !ProtectDraft_PoolIsP1();
+bool ProtectDraft_TaskPool(int t) {
+    return g_prot_taskPoolIsP1[g_prot_stepIndex][t];
+}
+
+// The side acting on task t: the pool's owner places points, the other side bans.
+bool ProtectDraft_TaskActorIsP1(int t) {
+    if (ProtectDraft_Kind() == c_protectStepPoints) { return ProtectDraft_TaskPool(t); }
+    return !ProtectDraft_TaskPool(t);
 }
 
 int ProtectDraft_Decider(bool isP1) {
@@ -172,10 +191,42 @@ int ProtectDraft_Decider(bool isP1) {
     return g_roster_p2;
 }
 
-void ProtectDraft_AddStep(int kind, bool poolIsP1) {
+// The task this side acts on in the current step, or 0.
+int ProtectDraft_TaskForSide(bool isP1) {
+    int t;
+    t = 1;
+    while (t <= ProtectDraft_TaskCount()) {
+        if (ProtectDraft_TaskActorIsP1(t) == isP1) { return t; }
+        t = t + 1;
+    }
+    return 0;
+}
+
+// The unfinished task this player can act on, or 0. With one human deciding
+// both sides every step has one task, so this is simply that task.
+int ProtectDraft_TaskForPlayer(int player) {
+    int t;
+    t = 1;
+    while (t <= ProtectDraft_TaskCount()) {
+        if (!g_prot_taskDone[t] && ProtectDraft_Decider(ProtectDraft_TaskActorIsP1(t)) == player) {
+            return t;
+        }
+        t = t + 1;
+    }
+    return 0;
+}
+
+// Append a step with one task (pool poolIsP1); with both = true it gets the
+// other pool as a second, simultaneous task.
+void ProtectDraft_AddStep(int kind, bool poolIsP1, bool both) {
     g_prot_stepCount = g_prot_stepCount + 1;
-    g_prot_stepKind[g_prot_stepCount]     = kind;
-    g_prot_stepPoolIsP1[g_prot_stepCount] = poolIsP1;
+    g_prot_stepKind[g_prot_stepCount]  = kind;
+    g_prot_stepTasks[g_prot_stepCount] = 1;
+    g_prot_taskPoolIsP1[g_prot_stepCount][1] = poolIsP1;
+    if (both) {
+        g_prot_stepTasks[g_prot_stepCount] = 2;
+        g_prot_taskPoolIsP1[g_prot_stepCount][2] = !poolIsP1;
+    }
 }
 
 // Tournament timeout on a points step: whatever is still unplaced goes on
@@ -283,12 +334,21 @@ void ProtectDraft_RandomBans(bool poolIsP1) {
 
 //--------------------------------------------------------------------------------------------------
 // UI
+//
+// Every viewer is drawn on its own: with simultaneous tasks the two players
+// are looking at different pools at the same moment, so nothing about the
+// board is shared except the title and the modifier panel.
 //--------------------------------------------------------------------------------------------------
+
+// How a viewer relates to the task on their screen.
+const int c_protViewActor    = 1; // their task, still open: can click
+const int c_protViewLocked   = 2; // their task, done: waiting for the other one
+const int c_protViewWaiter   = 3; // someone else's task (their pool, or hidden points)
+const int c_protViewAudience = 4; // spectators
 
 // One card as one viewer sees it. showPts is false only for the opponent
 // during a points step - the points stay hidden until the bans.
-void ProtectDraft_ApplyCard(int i, playergroup viewer, bool showPts, bool canClick) {
-    bool   poolIsP1;
+void ProtectDraft_ApplyCard(int i, playergroup viewer, bool poolIsP1, bool showPts, bool canClick) {
     int    pts;
     int    state;
     string tag;
@@ -296,7 +356,6 @@ void ProtectDraft_ApplyCard(int i, playergroup viewer, bool showPts, bool canCli
     string unitType;
     bool   enable;
 
-    poolIsP1 = ProtectDraft_PoolIsP1();
     pts      = ProtectDraft_Pts(poolIsP1, i);
     unitType = GetRosterPoolUnit(ProtectDraft_Race(poolIsP1), i);
     tag      = "";
@@ -318,8 +377,8 @@ void ProtectDraft_ApplyCard(int i, playergroup viewer, bool showPts, bool canCli
             state = c_draftStateBanned;
             tag   = "AUTO-BAN";
         } else if (ProtectDraft_Banned(poolIsP1, i)) {
-            state  = c_draftStateBanned;
-            detail = detail + "  -  click to undo";
+            state = c_draftStateBanned;
+            if (canClick) { detail = detail + "  -  click to undo"; }
             enable = canClick;
         } else if (pts > ProtectDraft_BudgetLeft(poolIsP1)) {
             state = c_draftStateTaken;
@@ -328,9 +387,6 @@ void ProtectDraft_ApplyCard(int i, playergroup viewer, bool showPts, bool canCli
             state  = c_draftStateBanTarget;
             enable = canClick;
         }
-        if (!canClick && ProtectDraft_Banned(poolIsP1, i)) {
-            detail = ProtectDraft_PtsText(pts);
-        }
     }
 
     DraftStyle_ApplyCard(g_prot_btnCard[i], viewer, state,
@@ -338,158 +394,188 @@ void ProtectDraft_ApplyCard(int i, playergroup viewer, bool showPts, bool canCli
     DialogControlSetEnabled(g_prot_btnCard[i], viewer, enable);
 }
 
-void ProtectDraft_UpdateUI() {
-    bool        poolIsP1;
-    bool        actorIsP1;
-    bool        isPoints;
-    int         actorPlayer;
-    int         waiter;
-    bool        hasWaiter;
-    playergroup actorGroup;
-    playergroup waitGroup;
-    playergroup aud;
-    bool        hasAud;
-    int         poolCount;
-    int         left;
-    int         i;
-    string      whose;
-    string      side;
-    string      info;
+// One viewer's whole board: task t, seen as role. viewerIsP1 is the side the
+// viewer speaks for (ignored for spectators); oneHuman = a single human
+// decides both sides, so "your" / "opponent's" would mean nothing.
+void ProtectDraft_RenderFor(playergroup viewer, int t, int role, bool viewerIsP1, bool oneHuman) {
+    bool   poolIsP1;
+    bool   isPoints;
+    bool   showPts;
+    int    i;
+    int    left;
+    string side;
+    string whose;
+    string sub;
+    string info;
 
-    poolIsP1  = ProtectDraft_PoolIsP1();
-    actorIsP1 = ProtectDraft_ActorIsP1();
-    isPoints  = (ProtectDraft_Kind() == c_protectStepPoints);
-    actorPlayer = ProtectDraft_Decider(actorIsP1);
-    waiter    = ProtectDraft_Decider(!actorIsP1);
-    hasWaiter = (waiter != actorPlayer);
-    actorGroup = PlayerGroupSingle(actorPlayer);
-    waitGroup  = PlayerGroupSingle(waiter);
-    hasAud    = Tardigrade_HasAudience();
-    aud       = Tardigrade_Audience();
-    poolCount = ProtectDraft_PoolCount(poolIsP1);
+    poolIsP1 = ProtectDraft_TaskPool(t);
+    isPoints = (ProtectDraft_Kind() == c_protectStepPoints);
+    showPts  = !(isPoints && role == c_protViewWaiter);
     if (poolIsP1) { side = "P1"; } else { side = "P2"; }
 
-    // ── Title ────────────────────────────────────────────────────────────
+    // ── Subtitle + info ──────────────────────────────────────────────────
     if (isPoints) {
-        DialogControlSetPropertyAsText(g_prot_lblTitle, c_triggerControlPropertyText,
-            Tardigrade_Viewers(), StringToText("<c val=\"FFD700\">PROTECT AND BAN</c>"
-                + "   —   Place points      <c val=\"888888\">(then: bans)</c>"));
+        left = ProtectDraft_PointsLeft(poolIsP1);
+        if (role == c_protViewActor) {
+            if (oneHuman) {
+                sub = "<c val=\"00FF88\">Put points on the units " + side + " wants to keep</c>";
+            } else {
+                sub = "<c val=\"00FF88\">YOUR TURN  —  Put points on the units you want to keep</c>";
+            }
+            info = "Points left:  <c val=\"FFD54A\">" + IntToString(left) + "</c> of "
+                + IntToString(ProtectDraft_Points(poolIsP1))
+                + "   ·   click a unit: +1,  [-1]: take one back   ·   units at 0 points are banned"
+                + "   ·   your opponent then bans up to " + ProtectDraft_PtsText(c_protectBanBudget) + "' worth";
+        } else if (role == c_protViewLocked) {
+            sub  = "<c val=\"888888\">Points locked in  —  waiting for your opponent...</c>";
+            info = "Your points stay hidden from your opponent until the bans.";
+        } else if (role == c_protViewWaiter) {
+            sub  = "<c val=\"888888\">Opponent is placing points on their units...</c>";
+            info = "They place " + IntToString(ProtectDraft_Points(poolIsP1))
+                + " points, hidden from you. Then you ban up to "
+                + ProtectDraft_PtsText(c_protectBanBudget)
+                + "' worth - a ban costs the unit's points - and units left at 0 are banned for free.";
+        } else {
+            sub  = "<c val=\"888888\">Spectating  —  " + side + " is placing points...</c>";
+            info = side + " points left: " + IntToString(left) + " of "
+                + IntToString(ProtectDraft_Points(poolIsP1));
+        }
+    } else {
+        left = ProtectDraft_BudgetLeft(poolIsP1);
+        info = "Ban budget left:  <c val=\"FF8080\">" + IntToString(left) + "</c> of "
+            + IntToString(c_protectBanBudget)
+            + "   ·   a ban costs the unit's points   ·   [=] SAFE costs more than is left";
+        if (role == c_protViewActor) {
+            if (oneHuman) {
+                sub = "<c val=\"FF6666\">Ban units from " + side + "'s pool, then click Ban complete</c>";
+            } else {
+                sub = "<c val=\"FF6666\">YOUR TURN  —  Ban units from your opponent's pool, then click Ban complete</c>";
+            }
+            info = info + "   ·   click a ban again to undo it";
+        } else if (role == c_protViewLocked) {
+            sub = "<c val=\"888888\">Bans locked in  —  waiting for your opponent...</c>";
+        } else if (role == c_protViewWaiter) {
+            sub = "<c val=\"AA4444\">Opponent is banning from your pool...</c>";
+        } else {
+            sub = "<c val=\"888888\">Spectating  —  " + side + "'s pool is being banned from...</c>";
+        }
+    }
+    DialogControlSetPropertyAsText(g_prot_lblSub, c_triggerControlPropertyText, viewer,
+        StringToText(sub));
+    DialogControlSetPropertyAsText(g_prot_lblInfo, c_triggerControlPropertyText, viewer,
+        StringToText(DraftStyle_Small("<c val=\"CCCCCC\">" + info + "</c>")));
+
+    // ── Pool header ──────────────────────────────────────────────────────
+    if (role == c_protViewAudience || oneHuman) { whose = side + " POOL"; }
+    else if (poolIsP1 == viewerIsP1)            { whose = "YOUR POOL"; }
+    else                                        { whose = "OPPONENT'S POOL"; }
+    DialogControlSetPropertyAsText(g_prot_lblPoolHdr, c_triggerControlPropertyText, viewer,
+        StringToText(RosterDraft_PoolHeader(whose, ProtectDraft_Race(poolIsP1))));
+
+    // ── Cards and [-1] buttons ───────────────────────────────────────────
+    i = 1;
+    while (i <= c_rosterPoolMax) {
+        if (i <= ProtectDraft_PoolCount(poolIsP1)) {
+            ProtectDraft_ApplyCard(i, viewer, poolIsP1, showPts, role == c_protViewActor);
+            DialogControlSetVisible(g_prot_btnMinus[i], viewer, isPoints && role == c_protViewActor);
+            DialogControlSetEnabled(g_prot_btnMinus[i], viewer,
+                isPoints && role == c_protViewActor && ProtectDraft_Pts(poolIsP1, i) > 0);
+        } else {
+            DialogControlSetVisible(g_prot_btnCard[i], viewer, false);
+            DialogControlSetVisible(g_prot_btnMinus[i], viewer, false);
+        }
+        i = i + 1;
+    }
+
+    // ── Done button: only while the viewer's own task is open ────────────
+    // It sits in the same spot for "Lock in points" and "Ban complete", so it
+    // is greyed out for the first c_protectDoneGrace seconds of every step:
+    // a double-click on Lock in used to land its second click on Ban complete.
+    DialogControlSetVisible(g_prot_btnDone, viewer, role == c_protViewActor);
+    if (role != c_protViewActor) { return; }
+    if (g_prot_doneLocked) {
+        DialogControlSetPropertyAsText(g_prot_btnDone, c_triggerControlPropertyText, viewer,
+            StringToText("<c val=\"888888\">...</c>"));
+        DialogControlSetEnabled(g_prot_btnDone, viewer, false);
+        return;
+    }
+    if (isPoints) {
+        if (ProtectDraft_PointsLeft(poolIsP1) == 0) {
+            DialogControlSetPropertyAsText(g_prot_btnDone, c_triggerControlPropertyText, viewer,
+                StringToText("<c val=\"00FF88\">Lock in points</c>"));
+            DialogControlSetEnabled(g_prot_btnDone, viewer, true);
+        } else {
+            DialogControlSetPropertyAsText(g_prot_btnDone, c_triggerControlPropertyText, viewer,
+                StringToText("<c val=\"888888\">Place all points first  ("
+                    + IntToString(ProtectDraft_PointsLeft(poolIsP1)) + " left)</c>"));
+            DialogControlSetEnabled(g_prot_btnDone, viewer, false);
+        }
+    } else if (g_prot_confirm[t]) {
+        DialogControlSetPropertyAsText(g_prot_btnDone, c_triggerControlPropertyText, viewer,
+            StringToText("<c val=\"FFD54A\">" + ProtectDraft_PtsText(ProtectDraft_BudgetLeft(poolIsP1))
+                + " unspent - click again to finish</c>"));
+        DialogControlSetEnabled(g_prot_btnDone, viewer, true);
+    } else {
+        DialogControlSetPropertyAsText(g_prot_btnDone, c_triggerControlPropertyText, viewer,
+            StringToText("<c val=\"FF8080\">Ban complete</c>"));
+        DialogControlSetEnabled(g_prot_btnDone, viewer, true);
+    }
+}
+
+// One side's decider: their own task if they have one this step, else they
+// watch task 1 (in a single-task step, that is their pool or their opponent's
+// hidden points).
+void ProtectDraft_RenderSide(bool isP1) {
+    int t;
+    int role;
+
+    t = ProtectDraft_TaskForSide(isP1);
+    if (t > 0) {
+        if (g_prot_taskDone[t]) { role = c_protViewLocked; } else { role = c_protViewActor; }
+    } else {
+        t    = 1;
+        role = c_protViewWaiter;
+    }
+    ProtectDraft_RenderFor(PlayerGroupSingle(ProtectDraft_Decider(isP1)), t, role, isP1, false);
+}
+
+void ProtectDraft_UpdateUI() {
+    int  t;
+    bool both;
+
+    both = (ProtectDraft_TaskCount() > 1);
+
+    // ── Title ────────────────────────────────────────────────────────────
+    if (ProtectDraft_Kind() == c_protectStepPoints) {
+        if (both) {
+            DialogControlSetPropertyAsText(g_prot_lblTitle, c_triggerControlPropertyText,
+                Tardigrade_Viewers(), StringToText("<c val=\"FFD700\">PROTECT AND BAN</c>"
+                    + "   —   Place points, both players at once      <c val=\"888888\">(then: bans)</c>"));
+        } else {
+            DialogControlSetPropertyAsText(g_prot_lblTitle, c_triggerControlPropertyText,
+                Tardigrade_Viewers(), StringToText("<c val=\"FFD700\">PROTECT AND BAN</c>"
+                    + "   —   Place points      <c val=\"888888\">(then: bans)</c>"));
+        }
     } else {
         DialogControlSetPropertyAsText(g_prot_lblTitle, c_triggerControlPropertyText,
             Tardigrade_Viewers(), StringToText("<c val=\"FF4444\">PROTECT AND BAN  ·  BAN PHASE</c>"
                 + "   —   Ban up to " + ProtectDraft_PtsText(c_protectBanBudget)));
     }
 
-    // ── Subtitle + info, per viewer ──────────────────────────────────────
-    if (isPoints) {
-        left = ProtectDraft_PointsLeft(poolIsP1);
-        if (hasWaiter) {
-            DialogControlSetPropertyAsText(g_prot_lblSub, c_triggerControlPropertyText, actorGroup,
-                StringToText("<c val=\"00FF88\">YOUR TURN  —  Put points on the units you want to keep</c>"));
-        } else {
-            DialogControlSetPropertyAsText(g_prot_lblSub, c_triggerControlPropertyText, actorGroup,
-                StringToText("<c val=\"00FF88\">Put points on the units " + side + " wants to keep</c>"));
-        }
-        info = "Points left:  <c val=\"FFD54A\">" + IntToString(left) + "</c> of "
-            + IntToString(ProtectDraft_Points(poolIsP1))
-            + "   ·   click a unit: +1,  [-1]: take one back   ·   units at 0 points are banned"
-            + "   ·   your opponent then bans up to " + ProtectDraft_PtsText(c_protectBanBudget) + "' worth";
-        DialogControlSetPropertyAsText(g_prot_lblInfo, c_triggerControlPropertyText, actorGroup,
-            StringToText(DraftStyle_Small("<c val=\"CCCCCC\">" + info + "</c>")));
-        if (hasWaiter) {
-            DialogControlSetPropertyAsText(g_prot_lblSub, c_triggerControlPropertyText, waitGroup,
-                StringToText("<c val=\"888888\">Opponent is placing points on their units...</c>"));
-            DialogControlSetPropertyAsText(g_prot_lblInfo, c_triggerControlPropertyText, waitGroup,
-                StringToText(DraftStyle_Small("<c val=\"CCCCCC\">They place "
-                    + IntToString(ProtectDraft_Points(poolIsP1)) + " points, hidden from you. Then you ban up to "
-                    + ProtectDraft_PtsText(c_protectBanBudget)
-                    + "' worth - a ban costs the unit's points - and units left at 0 are banned for free.</c>")));
-        }
-        if (hasAud) {
-            DialogControlSetPropertyAsText(g_prot_lblSub, c_triggerControlPropertyText, aud,
-                StringToText("<c val=\"888888\">Spectating  —  " + side + " is placing points...</c>"));
-            DialogControlSetPropertyAsText(g_prot_lblInfo, c_triggerControlPropertyText, aud,
-                StringToText(DraftStyle_Small("<c val=\"CCCCCC\">Points left: "
-                    + IntToString(left) + " of " + IntToString(ProtectDraft_Points(poolIsP1)) + "</c>")));
-        }
+    // ── Deciders ─────────────────────────────────────────────────────────
+    if (g_roster_p1 == g_roster_p2) {
+        // One human for both sides: steps are one task each, always theirs.
+        t = 1;
+        ProtectDraft_RenderFor(PlayerGroupSingle(g_roster_p1), t, c_protViewActor,
+            ProtectDraft_TaskActorIsP1(t), true);
     } else {
-        left = ProtectDraft_BudgetLeft(poolIsP1);
-        info = "Ban budget left:  <c val=\"FF8080\">" + IntToString(left) + "</c> of "
-            + IntToString(c_protectBanBudget)
-            + "   ·   a ban costs the unit's points   ·   [=] SAFE costs more than you have left";
-        DialogControlSetPropertyAsText(g_prot_lblSub, c_triggerControlPropertyText, actorGroup,
-            StringToText("<c val=\"FF6666\">YOUR TURN  —  Ban units from your opponent's pool, then click Ban complete</c>"));
-        DialogControlSetPropertyAsText(g_prot_lblInfo, c_triggerControlPropertyText, actorGroup,
-            StringToText(DraftStyle_Small("<c val=\"CCCCCC\">" + info
-                + "   ·   click a ban again to undo it</c>")));
-        if (hasWaiter) {
-            DialogControlSetPropertyAsText(g_prot_lblSub, c_triggerControlPropertyText, waitGroup,
-                StringToText("<c val=\"AA4444\">Opponent is banning from your pool...</c>"));
-            DialogControlSetPropertyAsText(g_prot_lblInfo, c_triggerControlPropertyText, waitGroup,
-                StringToText(DraftStyle_Small("<c val=\"CCCCCC\">" + info + "</c>")));
-        }
-        if (hasAud) {
-            DialogControlSetPropertyAsText(g_prot_lblSub, c_triggerControlPropertyText, aud,
-                StringToText("<c val=\"888888\">Spectating  —  " + side + "'s pool is being banned from...</c>"));
-            DialogControlSetPropertyAsText(g_prot_lblInfo, c_triggerControlPropertyText, aud,
-                StringToText(DraftStyle_Small("<c val=\"CCCCCC\">" + info + "</c>")));
-        }
+        ProtectDraft_RenderSide(true);
+        ProtectDraft_RenderSide(false);
     }
 
-    // ── Pool header ──────────────────────────────────────────────────────
-    if (poolIsP1 == actorIsP1) { whose = "YOUR POOL"; } else { whose = "OPPONENT'S POOL"; }
-    if (!hasWaiter) { whose = side + " POOL"; }
-    DialogControlSetPropertyAsText(g_prot_lblPoolHdr, c_triggerControlPropertyText, actorGroup,
-        StringToText(RosterDraft_PoolHeader(whose, ProtectDraft_Race(poolIsP1))));
-    if (hasWaiter) {
-        if (poolIsP1 == actorIsP1) { whose = "OPPONENT'S POOL"; } else { whose = "YOUR POOL"; }
-        DialogControlSetPropertyAsText(g_prot_lblPoolHdr, c_triggerControlPropertyText, waitGroup,
-            StringToText(RosterDraft_PoolHeader(whose, ProtectDraft_Race(poolIsP1))));
-    }
-    if (hasAud) {
-        DialogControlSetPropertyAsText(g_prot_lblPoolHdr, c_triggerControlPropertyText, aud,
-            StringToText(RosterDraft_PoolHeader(side + " POOL", ProtectDraft_Race(poolIsP1))));
-    }
-
-    // ── Cards and [-1] buttons ───────────────────────────────────────────
-    i = 1;
-    while (i <= c_rosterPoolMax) {
-        if (i <= poolCount) {
-            ProtectDraft_ApplyCard(i, actorGroup, true, true);
-            if (hasWaiter) { ProtectDraft_ApplyCard(i, waitGroup, !isPoints, false); }
-            if (hasAud)    { ProtectDraft_ApplyCard(i, aud, true, false); }
-
-            DialogControlSetVisible(g_prot_btnMinus[i], actorGroup, isPoints);
-            DialogControlSetEnabled(g_prot_btnMinus[i], actorGroup,
-                isPoints && ProtectDraft_Pts(poolIsP1, i) > 0);
-        } else {
-            DialogControlSetVisible(g_prot_btnCard[i], Tardigrade_Viewers(), false);
-            DialogControlSetVisible(g_prot_btnMinus[i], actorGroup, false);
-        }
-        if (hasWaiter) { DialogControlSetVisible(g_prot_btnMinus[i], waitGroup, false); }
-        if (hasAud)    { DialogControlSetVisible(g_prot_btnMinus[i], aud, false); }
-        i = i + 1;
-    }
-
-    // ── Done button: the actor's only ────────────────────────────────────
-    DialogControlSetVisible(g_prot_btnDone, actorGroup, true);
-    if (hasWaiter) { DialogControlSetVisible(g_prot_btnDone, waitGroup, false); }
-    if (hasAud)    { DialogControlSetVisible(g_prot_btnDone, aud, false); }
-    if (isPoints) {
-        if (ProtectDraft_PointsLeft(poolIsP1) == 0) {
-            DialogControlSetPropertyAsText(g_prot_btnDone, c_triggerControlPropertyText, actorGroup,
-                StringToText("<c val=\"00FF88\">Lock in points</c>"));
-            DialogControlSetEnabled(g_prot_btnDone, actorGroup, true);
-        } else {
-            DialogControlSetPropertyAsText(g_prot_btnDone, c_triggerControlPropertyText, actorGroup,
-                StringToText("<c val=\"888888\">Place all points first  ("
-                    + IntToString(ProtectDraft_PointsLeft(poolIsP1)) + " left)</c>"));
-            DialogControlSetEnabled(g_prot_btnDone, actorGroup, false);
-        }
-    } else {
-        DialogControlSetPropertyAsText(g_prot_btnDone, c_triggerControlPropertyText, actorGroup,
-            StringToText("<c val=\"FF8080\">Ban complete</c>"));
-        DialogControlSetEnabled(g_prot_btnDone, actorGroup, true);
+    // ── Spectators: task 1 (P1's pool when both run at once) ────────────
+    if (Tardigrade_HasAudience()) {
+        ProtectDraft_RenderFor(Tardigrade_Audience(), 1, c_protViewAudience, true, false);
     }
 }
 
@@ -539,27 +625,82 @@ void ProtectDraft_Finish() {
     }
 }
 
+bool ProtectDraft_AllDone() {
+    int t;
+    t = 1;
+    while (t <= ProtectDraft_TaskCount()) {
+        if (!g_prot_taskDone[t]) { return false; }
+        t = t + 1;
+    }
+    return true;
+}
+
+void ProtectDraft_NextStep();
+
+// Frees the Done button c_protectDoneGrace real seconds into a step, unless
+// the step has moved on meanwhile (a newer token).
+bool ProtectDraft_Grace(bool testConds, bool runActions) {
+    int token;
+    token = g_prot_graceToken;
+    Wait(c_protectDoneGrace, c_timeReal);
+    if (token != g_prot_graceToken) { return true; }
+    if (g_prot_stepIndex < 1 || g_prot_stepIndex > g_prot_stepCount) { return true; }
+    g_prot_doneLocked = false;
+    ProtectDraft_UpdateUI();
+    return true;
+}
+
+// Could this banner still afford another ban on this pool?
+bool ProtectDraft_AnyBanLeft(bool poolIsP1) {
+    int i;
+    i = 1;
+    while (i <= ProtectDraft_PoolCount(poolIsP1)) {
+        if (ProtectDraft_CanBan(poolIsP1, i)) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
 void ProtectDraft_BeginStep() {
-    bool poolIsP1;
+    int t;
 
     if (g_prot_stepIndex > g_prot_stepCount) {
         ProtectDraft_Finish();
         return;
     }
-    poolIsP1 = ProtectDraft_PoolIsP1();
 
     // A YOLO banner's bans are made for it, at random, on the spot.
-    if (ProtectDraft_Kind() == c_protectStepBan && RosterDraft_IsYolo(!poolIsP1)) {
+    t = 1;
+    while (t <= ProtectDraft_TaskCount()) {
+        g_prot_taskDone[t] = false;
+        if (ProtectDraft_Kind() == c_protectStepBan) {
+            if (RosterDraft_IsYolo(ProtectDraft_TaskActorIsP1(t))) {
+                ProtectDraft_RandomBans(ProtectDraft_TaskPool(t));
+                g_prot_taskDone[t] = true;
+            }
+        }
+        t = t + 1;
+    }
+    if (ProtectDraft_AllDone()) {
         DraftTimer_Disarm();
-        ProtectDraft_RandomBans(poolIsP1);
-        g_prot_stepIndex = g_prot_stepIndex + 1;
-        ProtectDraft_BeginStep();
+        ProtectDraft_NextStep();
         return;
     }
 
+    // Done starts greyed out; ProtectDraft_Grace frees it shortly.
+    t = 1;
+    while (t <= ProtectDraft_TaskCount()) {
+        g_prot_confirm[t] = false;
+        t = t + 1;
+    }
+    g_prot_doneLocked = true;
+    g_prot_graceToken = g_prot_graceToken + 1;
+    TriggerExecute(TriggerCreate("ProtectDraft_Grace"), false, false);
+
     ProtectDraft_UpdateUI();
 
-    // Tournament: this step is on the clock (no-op in other modes).
+    // Tournament: one clock for the whole step, even with two tasks running
+    // (no-op in other modes).
     if (ProtectDraft_Kind() == c_protectStepPoints) {
         DraftTimer_ArmFor(g_prot_autoTrig, c_protectStepSeconds, "then the rest land on random units");
     } else {
@@ -572,11 +713,28 @@ void ProtectDraft_NextStep() {
     ProtectDraft_BeginStep();
 }
 
-// Tournament: the clock ran out.
+// A task was finished (Done clicked): the step moves on once every task is.
+void ProtectDraft_TaskDone(int t) {
+    g_prot_taskDone[t] = true;
+    if (ProtectDraft_AllDone()) {
+        ProtectDraft_NextStep();
+    } else {
+        ProtectDraft_UpdateUI();
+    }
+}
+
+// Tournament: the clock ran out - every open task is closed as it stands.
 bool ProtectDraft_AutoAct(bool testConds, bool runActions) {
+    int t;
+
     if (g_prot_stepIndex < 1 || g_prot_stepIndex > g_prot_stepCount) { return true; }
-    if (ProtectDraft_Kind() == c_protectStepPoints) {
-        ProtectDraft_RandomPoints(ProtectDraft_PoolIsP1());
+    t = 1;
+    while (t <= ProtectDraft_TaskCount()) {
+        if (!g_prot_taskDone[t] && ProtectDraft_Kind() == c_protectStepPoints) {
+            ProtectDraft_RandomPoints(ProtectDraft_TaskPool(t));
+        }
+        g_prot_taskDone[t] = true;
+        t = t + 1;
     }
     ProtectDraft_NextStep();
     return true;
@@ -584,7 +742,7 @@ bool ProtectDraft_AutoAct(bool testConds, bool runActions) {
 
 bool ProtectDraft_OnClicked(bool testConds, bool runActions) {
     int  control;
-    int  player;
+    int  t;
     int  i;
     int  pts;
     bool poolIsP1;
@@ -592,17 +750,31 @@ bool ProtectDraft_OnClicked(bool testConds, bool runActions) {
 
     if (g_prot_stepIndex < 1 || g_prot_stepIndex > g_prot_stepCount) { return true; }
     control = EventDialogControl();
-    player  = EventPlayer();
-    if (player != ProtectDraft_Decider(ProtectDraft_ActorIsP1())) { return true; }
+    // Each player's buttons act on their own open task - with two running at
+    // once, the same control means a different pool to each of them.
+    t = ProtectDraft_TaskForPlayer(EventPlayer());
+    if (t == 0) { return true; }
 
-    poolIsP1 = ProtectDraft_PoolIsP1();
+    poolIsP1 = ProtectDraft_TaskPool(t);
     isPoints = (ProtectDraft_Kind() == c_protectStepPoints);
 
     if (control == g_prot_btnDone) {
+        if (g_prot_doneLocked) { return true; }
         if (isPoints && ProtectDraft_PointsLeft(poolIsP1) > 0) { return true; }
-        ProtectDraft_NextStep();
+        // Finishing bans with a ban still affordable takes a second click.
+        if (!isPoints && !g_prot_confirm[t]) {
+            if (ProtectDraft_AnyBanLeft(poolIsP1)) {
+                g_prot_confirm[t] = true;
+                ProtectDraft_UpdateUI();
+                return true;
+            }
+        }
+        ProtectDraft_TaskDone(t);
         return true;
     }
+
+    // Any other click takes back a pending "click again to finish".
+    g_prot_confirm[t] = false;
 
     i = 1;
     while (i <= ProtectDraft_PoolCount(poolIsP1)) {
@@ -634,24 +806,32 @@ bool ProtectDraft_OnClicked(bool testConds, bool runActions) {
 // Start. Called by RosterDraft_Start once its g_roster_* state is reset;
 // callback continues the roster draft.
 //
-// Dialog layout (760 x 660), two columns of up to 9:
+// Dialog layout (1050 x 660): the modifier panel on the left (both sides'
+// picks, as on the unit draft screen), the pool on the right in two columns
+// of up to 9:
 //
-//   +----------------------------------------------------------+
-//   |  title  /  YOUR TURN or waiting  /  points or budget left |
-//   |  [card 1              ][-1]   [card 10             ][-1] |
-//   |  ...                          ...                        |
-//   |  [card 9              ][-1]   [card 18             ][-1] |
-//   |               [ Lock in points / Ban complete ]          |
-//   +----------------------------------------------------------+
+//   +---------------------------------------------------------------------------+
+//   |  title  /  YOUR TURN or waiting  /  points or budget left                  |
+//   | MODIFIERS    |  [card 1              ][-1]   [card 10             ][-1]    |
+//   |  YOURS ...   |  ...                          ...                           |
+//   |  OPPONENT .. |  [card 9              ][-1]   [card 18             ][-1]    |
+//   |              |               [ Lock in points / Ban complete ]            |
+//   +---------------------------------------------------------------------------+
 //
 // With c_anchorTop an x offset places a control's centre relative to the
-// dialog's centre (380): cards are 300 wide at -205 / +155, [-1] is 44 wide
-// at -27 / +333.
+// dialog's centre (525): the modifier panel is 270 wide at -370; the pool area
+// is centred at +135, cards 300 wide at -70 / +290, [-1] 44 wide at +108 / +468.
 //--------------------------------------------------------------------------------------------------
 void ProtectDraft_Start(trigger callback) {
-    int i;
-    int row;
-    int colX;
+    int  i;
+    int  row;
+    int  colX;
+    int  lbl;
+    int  modTop;
+    int  modBottom;
+    bool both;
+    playergroup p1Group;
+    playergroup p2Group;
 
     g_prot_callback = callback;
     g_prot_autoTrig = TriggerCreate("ProtectDraft_AutoAct");
@@ -663,40 +843,85 @@ void ProtectDraft_Start(trigger callback) {
         i = i + 1;
     }
 
-    // Points first (P1 before P2), then the bans.
+    // Points first, then the bans. Both sides Protect with two humans: each
+    // phase is one simultaneous step. Otherwise one task per step, P1 first.
     g_prot_stepCount = 0;
-    if (RosterDraft_IsProtect(true))  { ProtectDraft_AddStep(c_protectStepPoints, true); }
-    if (RosterDraft_IsProtect(false)) { ProtectDraft_AddStep(c_protectStepPoints, false); }
-    if (RosterDraft_IsProtect(true))  { ProtectDraft_AddStep(c_protectStepBan, true); }
-    if (RosterDraft_IsProtect(false)) { ProtectDraft_AddStep(c_protectStepBan, false); }
+    both = RosterDraft_IsProtect(true) && RosterDraft_IsProtect(false) && g_roster_p1 != g_roster_p2;
+    if (both) {
+        ProtectDraft_AddStep(c_protectStepPoints, true, true);
+        ProtectDraft_AddStep(c_protectStepBan, true, true);
+    } else {
+        if (RosterDraft_IsProtect(true))  { ProtectDraft_AddStep(c_protectStepPoints, true, false); }
+        if (RosterDraft_IsProtect(false)) { ProtectDraft_AddStep(c_protectStepPoints, false, false); }
+        if (RosterDraft_IsProtect(true))  { ProtectDraft_AddStep(c_protectStepBan, true, false); }
+        if (RosterDraft_IsProtect(false)) { ProtectDraft_AddStep(c_protectStepBan, false, false); }
+    }
 
-    g_prot_dialog = DialogCreate(760, 660, c_anchorCenter, 0, 0, true);
+    g_prot_dialog = DialogCreate(1050, 660, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_prot_dialog);
     DialogSetVisible(g_prot_dialog, Tardigrade_Viewers(), true);
 
     g_prot_lblTitle = DialogControlCreate(g_prot_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_prot_lblTitle, Tardigrade_Viewers(), 720, 28);
+    DialogControlSetSize(g_prot_lblTitle, Tardigrade_Viewers(), 1010, 28);
     DialogControlSetPosition(g_prot_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 16);
 
     g_prot_lblSub = DialogControlCreate(g_prot_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_prot_lblSub, Tardigrade_Viewers(), 720, 20);
+    DialogControlSetSize(g_prot_lblSub, Tardigrade_Viewers(), 1010, 20);
     DialogControlSetPosition(g_prot_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 46);
 
     g_prot_lblInfo = DialogControlCreate(g_prot_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_prot_lblInfo, Tardigrade_Viewers(), 720, 30);
+    DialogControlSetSize(g_prot_lblInfo, Tardigrade_Viewers(), 1010, 30);
     DialogControlSetPosition(g_prot_lblInfo, Tardigrade_Viewers(), c_anchorTop, 0, 68);
 
+    // ── Left: both sides' modifiers (fixed - the modifier draft is over) ──
+    lbl = DialogControlCreate(g_prot_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(lbl, Tardigrade_Viewers(), 270, 14);
+    DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, -370, 98);
+    DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
+        StringToText(DraftStyle_Small("<c val=\"555555\">MODIFIERS  (per player) ──────────</c>")));
+
+    modTop    = DialogControlCreate(g_prot_dialog, c_triggerControlTypeLabel);
+    modBottom = DialogControlCreate(g_prot_dialog, c_triggerControlTypeLabel);
+    DialogControlSetPropertyAsString(modTop, c_triggerControlPropertyStyle,
+        Tardigrade_Viewers(), c_rosterModPanelStyle);
+    DialogControlSetPropertyAsString(modBottom, c_triggerControlPropertyStyle,
+        Tardigrade_Viewers(), c_rosterModPanelStyle);
+    DialogControlSetSize(modTop, Tardigrade_Viewers(), 270, 236);
+    DialogControlSetPosition(modTop, Tardigrade_Viewers(), c_anchorTop, -370, 118);
+    DialogControlSetSize(modBottom, Tardigrade_Viewers(), 270, 236);
+    DialogControlSetPosition(modBottom, Tardigrade_Viewers(), c_anchorTop, -370, 366);
+
+    p1Group = PlayerGroupSingle(g_roster_p1);
+    p2Group = PlayerGroupSingle(g_roster_p2);
+    DialogControlSetPropertyAsText(modTop, c_triggerControlPropertyText,
+        p1Group, StringToText(RosterDraft_ModBlock(true, "YOURS", "4ADB92")));
+    DialogControlSetPropertyAsText(modBottom, c_triggerControlPropertyText,
+        p1Group, StringToText(RosterDraft_ModBlock(false, "OPPONENT", "E8913F")));
+    if (g_roster_p1 != g_roster_p2) {
+        DialogControlSetPropertyAsText(modTop, c_triggerControlPropertyText,
+            p2Group, StringToText(RosterDraft_ModBlock(false, "YOURS", "4ADB92")));
+        DialogControlSetPropertyAsText(modBottom, c_triggerControlPropertyText,
+            p2Group, StringToText(RosterDraft_ModBlock(true, "OPPONENT", "E8913F")));
+    }
+    if (Tardigrade_HasAudience()) {
+        DialogControlSetPropertyAsText(modTop, c_triggerControlPropertyText,
+            Tardigrade_Audience(), StringToText(RosterDraft_ModBlock(true, "PLAYER 1", "4ADB92")));
+        DialogControlSetPropertyAsText(modBottom, c_triggerControlPropertyText,
+            Tardigrade_Audience(), StringToText(RosterDraft_ModBlock(false, "PLAYER 2", "E8913F")));
+    }
+
+    // ── Right: the pool ──────────────────────────────────────────────────
     g_prot_lblPoolHdr = DialogControlCreate(g_prot_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_prot_lblPoolHdr, Tardigrade_Viewers(), 710, 14);
-    DialogControlSetPosition(g_prot_lblPoolHdr, Tardigrade_Viewers(), c_anchorTop, 0, 98);
+    DialogControlSetPosition(g_prot_lblPoolHdr, Tardigrade_Viewers(), c_anchorTop, 135, 98);
 
     g_prot_trigger = TriggerCreate("ProtectDraft_OnClicked");
 
     // 300 x 48 cards on a 52px step from y=116, so the 9th row ends at 580.
     i = 1;
     while (i <= c_rosterPoolMax) {
-        if (i <= 9) { row = i - 1;  colX = -205; }
-        else        { row = i - 10; colX = 155; }
+        if (i <= 9) { row = i - 1;  colX = -70; }
+        else        { row = i - 10; colX = 290; }
 
         g_prot_btnCard[i] = DialogControlCreate(g_prot_dialog, c_triggerControlTypeButton);
         DraftStyle_InitButton(g_prot_btnCard[i], Tardigrade_Viewers());
@@ -724,7 +949,7 @@ void ProtectDraft_Start(trigger callback) {
     g_prot_btnDone = DialogControlCreate(g_prot_dialog, c_triggerControlTypeButton);
     DraftStyle_InitButton(g_prot_btnDone, Tardigrade_Viewers());
     DialogControlSetSize(g_prot_btnDone, Tardigrade_Viewers(), 300, 44);
-    DialogControlSetPosition(g_prot_btnDone, Tardigrade_Viewers(), c_anchorTop, 0, 596);
+    DialogControlSetPosition(g_prot_btnDone, Tardigrade_Viewers(), c_anchorTop, 135, 596);
     DialogControlSetVisible(g_prot_btnDone, Tardigrade_Viewers(), false);
     TriggerAddEventDialogControl(g_prot_trigger, c_playerAny, g_prot_btnDone,
         c_triggerControlEventTypeClick);

@@ -266,11 +266,23 @@ markup.
   runs `RosterDraft_Continue` (the old body of `RosterDraft_Start`: schedule,
   dialog, first step). If nothing is left to schedule, `Continue` finishes
   straight away with no dialog.
-- Steps, one at a time: points for each Protect side (P1 first), then a ban
+- Steps: points, then bans. Each step holds one task per pool ("place points on
+  S" / "ban from S", `g_prot_taskPoolIsP1[step][task]`). **Both sides Protect
+  with two humans:** each phase is one step with both tasks at once - each
+  player draws their own task (`ProtectDraft_RenderFor` per viewer, roles
+  actor / locked / waiter / audience), clicks route by `ProtectDraft_TaskForPlayer`,
+  one Tournament clock per step; spectators see task 1 (P1's pool). Otherwise
+  one task per step, P1 first: points for each Protect side, then a ban
   step on each Protect side's pool. Points: `c_protectPoints` = 20, card click
   +1, `-1` button beside it, "Lock in" only with 0 left; hidden from the
   opponent (they see plain cards). Bans: cost = the unit's points, total ≤
-  `c_protectBanBudget` = 8, click again to undo, "Ban complete" ends it;
+  `c_protectBanBudget` = 9, click again to undo, "Ban complete" ends it.
+  **Misclick guards:** the Done button (Lock in points / Ban complete, same
+  spot) is greyed out for `c_protectDoneGrace` = 2 real seconds at every step
+  start (`ProtectDraft_Grace`, token-guarded) - a double-click on Lock in used
+  to land on Ban complete with nothing banned. Ban complete with a ban still
+  affordable needs a second click (`g_prot_confirm[task]`, reset by any other
+  click).
   0-point units render as `[X] AUTO-BAN`, unaffordable as `[=] SAFE`. A YOLO
   banner bans on the spot (`ProtectDraft_RandomBans`): a random set of bans that
   spends the most budget possible (subset-sum over the shuffled affordable
@@ -289,7 +301,8 @@ markup.
   `RosterDraft_Rows()` = max(6, 7 if YOLO, Protect roster counts). The draft
   panel's row pitch shrinks past 7 rows (`446 / (2 * rows)`, 22px at 10).
 - **Unverified in-editor**, like the rest of this batch: compile, the 3-card
-  style screen layout, the Protect dialog (760×660, `-1` buttons beside the
+  style screen layout, the Protect dialog (1050×660, modifier panel on the left as on the unit
+  draft screen, `-1` buttons beside the
   cards), per-viewer hiding of points during the points step, and the summary
   READY / REROLL buttons.
 
