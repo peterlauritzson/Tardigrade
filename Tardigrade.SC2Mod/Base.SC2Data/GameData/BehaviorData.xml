@@ -142,7 +142,9 @@
          so it is exact even on a killing blow. TargetFilters is read against
          the other party - Blizzard's FlyerShield puts "Ground;-" on a buff for
          air units to cap damage from ground attackers - so here it names the
-         victim's plane.
+         victim's plane - and excludes the attacker's own plane, so a unit
+         that is in both (the Colossus) takes full damage: a Corruptor could
+         always hit a Colossus, and Open Skies must not halve that.
 
          Spell kind is left out: an ability is not the weapon Open Skies
          opened up, and Corrosive Bile or a Storm always could hit both
@@ -154,7 +156,7 @@
         <MaxStackCount value="1"/>
         <DamageResponse Location="Attacker" ModifyFraction="0.5">
             <Chance value="1"/>
-            <TargetFilters value="Air;-"/>
+            <TargetFilters value="Air;Ground"/>
             <Kind index="Spell" value="0"/>
             <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
             <ExcludeEffectArray value="TardigradeMod_OpenSkiesSplash"/>
@@ -166,7 +168,7 @@
         <MaxStackCount value="1"/>
         <DamageResponse Location="Attacker" ModifyFraction="0.5">
             <Chance value="1"/>
-            <TargetFilters value="Ground;-"/>
+            <TargetFilters value="Ground;Air"/>
             <Kind index="Spell" value="0"/>
             <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
             <ExcludeEffectArray value="TardigradeMod_OpenSkiesSplash"/>
@@ -570,6 +572,20 @@
             <ExcludeEffectArray value="ReleaseInterceptorsRemoveBeacon"/>
             <ExcludeEffectArray value="QueenMPSpawnBroodlingsDamage"/>
         </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- Testing mode: morphs (Orbital, Lair, Warp Gate, siege...) are not queue
+         items, so UnitSetProgressComplete cannot finish them, and larva come
+         from a spawn behavior with its own timer. TestingMode.galaxy's scan
+         puts this on every participant unit instead; same mechanism as Chrono
+         Boost's Morph / Spawn rates, just absurdly large. -->
+    <CBehaviorBuff id="TardigradeTesting_InstantMorph">
+        <InfoFlags index="Hidden" value="1"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <RateMultiplierArray index="Morph" value="10000"/>
+            <RateMultiplierArray index="Spawn" value="10000"/>
+        </Modification>
     </CBehaviorBuff>
 
 </Catalog>

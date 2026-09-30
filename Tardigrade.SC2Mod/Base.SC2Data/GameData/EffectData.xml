@@ -133,4 +133,52 @@
 	<CEffectDamage id="VolatileBurstDirectFallbackEnemyNeutralBuilding"> <!-- Baneling direct hit -->
 		<ValidatorArray value="TardigradeVal_GroundOrOpenSkies"/>
 	</CEffectDamage>
+
+	<!-- ==================================================================
+	     OPEN SKIES: THE BANELING'S AIR SPLASH, IN DATA.
+	     The other AreaArray splashers get their other-plane splash from
+	     CycleMod_OnOpenSkiesSplash, but that trigger runs after the effect
+	     tree, and by then the Baneling has run Suicide: UnitDamage with a
+	     dead (null) source deals nothing, so the Baneling never splashed air.
+	     Instead the blast itself now searches air, per victim, while the
+	     Baneling is still alive: VolatileBurst gets this search at index 5,
+	     where voidmulti had Suicide, and Suicide is appended after it.
+	     Gated once on the Baneling's owner holding Open Skies. The half-damage
+	     cross-plane cut comes from TardigradeMod_OpenSkiesVsAir on the
+	     Baneling, as for every other data-half weapon.
+	=================================================================== -->
+	<CEffectSet id="VolatileBurst">
+		<EffectArray index="5" value="TardigradeOS_BanelingAirSearch"/>
+		<EffectArray value="Suicide"/>
+	</CEffectSet>
+	<CEffectEnumArea id="TardigradeOS_BanelingAirSearch">
+		<ValidatorArray value="TardigradeVal_OpenSkies"/>
+		<ImpactLocation Value="CasterUnit"/>
+		<SearchFilters value="Air;Self,Player,Ally,Missile,Stasis,Dead,Hidden,Invulnerable"/>
+		<AreaArray Radius="2.2" Effect="TardigradeOS_BanelingAirSwitch"/>
+	</CEffectEnumArea>
+	<!-- Lifted Terran buildings take the structure payload, like VolatileBurstU2. -->
+	<CEffectSwitch id="TardigradeOS_BanelingAirSwitch">
+		<CaseArray Validator="IsStructure" Effect="TardigradeOS_BanelingAirBuildingDamage"/>
+		<CaseDefault value="TardigradeOS_BanelingAirUnitDamage"/>
+	</CEffectSwitch>
+	<!-- Single-target copies of the two payloads, shaped like Blizzard's
+	     VolatileBurstFriendly* children: area and search stripped, hit where
+	     the victim stands. Melee upgrades are added in UpgradeData.xml. -->
+	<CEffectDamage id="TardigradeOS_BanelingAirUnitDamage" parent="VolatileBurstU">
+		<AreaArray index="0" removed="1"/>
+		<ExcludeArray index="0" removed="1"/>
+		<ImpactLocation Value="TargetUnit"/>
+		<SearchFilters value="-;-"/>
+		<SearchFlags index="OffsetByUnitRadius" value="0"/>
+		<SearchFlags index="SameCliff" value="0"/>
+	</CEffectDamage>
+	<CEffectDamage id="TardigradeOS_BanelingAirBuildingDamage" parent="VolatileBurstU2">
+		<AreaArray index="0" removed="1"/>
+		<ExcludeArray index="0" removed="1"/>
+		<ImpactLocation Value="TargetUnit"/>
+		<SearchFilters value="-;-"/>
+		<SearchFlags index="OffsetByUnitRadius" value="0"/>
+		<SearchFlags index="SameCliff" value="0"/>
+	</CEffectDamage>
 </Catalog>

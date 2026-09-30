@@ -315,7 +315,7 @@ int          g_cycle_weaponCount = 0;
 bool         g_cycle_openSkiesEnabled = false;
 
 // Open Skies splash dealt by trigger - see CycleMod_OnOpenSkiesSplash.
-const int    c_cycleOSSplashCount  = 6;
+const int    c_cycleOSSplashCount  = 4;
 const string c_cycleOSSplashEffect = "TardigradeMod_OpenSkiesSplash";
 const fixed  c_cycleOSPenalty      = 0.5;   // same cut as the VsAir / VsGround buffs
 
@@ -2113,9 +2113,14 @@ void CycleMod_EnsureWeaponCache() {
 // player's other-plane victims inside Blizzard's rings and hits them with
 // TardigradeMod_OpenSkiesSplash. Amount and attribute bonuses are read live
 // from the player's catalog, so attack upgrades (which edit exactly those
-// fields) carry through. The main target is not touched: all of these except
-// the Baneling hit it directly (ExcludeArray Target), and the Baneling's
-// direct hit on an air target is opened in the data.
+// fields) carry through. The main target is not touched: all of these hit it
+// directly (ExcludeArray Target).
+//
+// The Baneling is NOT here any more. This trigger runs after the effect tree,
+// and by then a Baneling has run Suicide - UnitDamage from a dead (null) source
+// deals nothing, so its air splash silently never happened. Its blast searches
+// air itself now, while it is still alive (TardigradeOS_BanelingAirSearch in
+// EffectData.xml).
 //
 // Worse than the engine doing it, but it can't silently not happen.
 //
@@ -2126,10 +2131,8 @@ void CycleMod_EnsureWeaponCache() {
 string CycleMod_OSSplashEffect(int idx) {
     if (idx == 1) { return "CrucioShockCannonBlast"; }   // Siege Tank (sieged)
     if (idx == 2) { return "KaiserBladesDamage"; }       // Ultralisk cleave
-    if (idx == 3) { return "VolatileBurstU"; }           // Baneling vs units
-    if (idx == 4) { return "VolatileBurstU2"; }          // Baneling vs structures
-    if (idx == 5) { return "TwinIbiksCannon"; }          // Planetary Fortress
-    if (idx == 6) { return "LiberatorMissileDamage"; }   // Liberator AA
+    if (idx == 3) { return "TwinIbiksCannon"; }          // Planetary Fortress
+    if (idx == 4) { return "LiberatorMissileDamage"; }   // Liberator AA
     return "";
 }
 
@@ -2152,13 +2155,12 @@ fixed CycleMod_OSRingRadius(int idx, int ring) {
         if (ring == 3) { return 1.25; }
     }
     if (idx == 2 && ring == 1) { return 2.0; }
-    if ((idx == 3 || idx == 4) && ring == 1) { return 2.2; }
-    if (idx == 5) {
+    if (idx == 3) {
         if (ring == 1) { return 0.5; }
         if (ring == 2) { return 0.8; }
         if (ring == 3) { return 1.25; }
     }
-    if (idx == 6 && ring == 1) { return 1.5; }
+    if (idx == 4 && ring == 1) { return 1.5; }
     return 0.0;
 }
 
@@ -2169,7 +2171,7 @@ fixed CycleMod_OSRingFraction(int idx, int ring) {
         return 0.25;
     }
     if (idx == 2) { return 0.33; }
-    if (idx == 5) {
+    if (idx == 3) {
         if (ring == 1) { return 1.0; }
         if (ring == 2) { return 0.75; }
         return 0.375;
@@ -2179,22 +2181,17 @@ fixed CycleMod_OSRingFraction(int idx, int ring) {
 
 // The Liberator's AA is the one that is air-locked; its extra plane is ground.
 bool CycleMod_OSSplashHitsAir(int idx) {
-    return idx != 6;
+    return idx != 4;
 }
 
 // Does this victim pass the effect's own SearchFilters, minus the plane? Mirrors
 // the excluded lists in the data: the tank blast only spares itself (it hits
-// your own units too), the Ultralisk spares neutrals as well as friends,
-// VolatileBurstU skips structures and VolatileBurstU2 hits only structures.
+// your own units too), the Ultralisk spares neutrals as well as friends.
 bool CycleMod_OSSplashAccepts(int idx, unit caster, int player, unit victim) {
     int  owner;
-    bool isStructure;
 
     owner = UnitGetOwner(victim);
-    isStructure = UnitTypeTestAttribute(UnitGetType(victim), c_unitAttributeStructure);
     if (victim == caster) { return false; }
-    if (idx == 3 && isStructure)  { return false; }
-    if (idx == 4 && !isStructure) { return false; }
     if (idx == 1) { return true; }
     if (owner == player) { return false; }
     if (PlayerGroupHasPlayer(g_draft_team1, player) && PlayerGroupHasPlayer(g_draft_team1, owner)) { return false; }
@@ -2243,6 +2240,7 @@ bool CycleMod_OnOpenSkiesSplash(bool testConds, bool runActions) {
     fixed     angleDiff;
     fixed     amount;
     int       planeFlag;
+    int       ownPlane;
 
     if (!runActions) { return true; }
     player = EventPlayer();
@@ -2253,21 +2251,16 @@ bool CycleMod_OnOpenSkiesSplash(bool testConds, bool runActions) {
     idx = CycleMod_OSSplashIndex(effect);
     if (idx == 0) { return true; }
 
-    caster = EventPlayerEffectUsedUnit(c_effectUnitCaster);
-    target = EventPlayerEffectUsedUnit(c_effectUnitTarget);
-    // The Baneling's blast is centred on the Baneling (ImpactLocation
-    // CasterUnit); everything else on the point it hit.
-    if (idx == 3 || idx == 4) {
-        center = EventPlayerEffectUsedPoint(c_effectLocationCasterPoint);
-    } else {
-        center = EventPlayerEffectUsedPoint(c_effectLocationTargetPoint);
-    }
+    // These take an effect LOCATION (c_effectLocation*), not c_effectUnit*.
+    caster = EventPlayerEffectUsedUnit(c_effectLocationCasterUnit);
+    target = EventPlayerEffectUsedUnit(c_effectLocationTargetUnit);
+    center = EventPlayerEffectUsedPoint(c_effectLocationTargetPoint);
     if (center == null) { return true; }
 
-    // A Baneling is dead by the time this runs, and a dead unit can't author
-    // damage (see the Overwatch notes) - the hit then comes from no one.
-    if (caster != null && UnitIsAlive(caster)) { attacker = caster; }
-    else                                       { attacker = null; }
+    // A dead source deals nothing through UnitDamage. Should the attacker have
+    // died since it fired, its splash is lost - accepted for these five.
+    if (caster == null || !UnitIsAlive(caster)) { return true; }
+    attacker = caster;
 
     outer = CycleMod_OSRingRadius(idx, 1);
     ring = 2;
@@ -2276,10 +2269,17 @@ bool CycleMod_OnOpenSkiesSplash(bool testConds, bool runActions) {
         ring = ring + 1;
     }
 
-    if (CycleMod_OSSplashHitsAir(idx)) { planeFlag = (1 << c_targetFilterAir); }
-    else                               { planeFlag = (1 << c_targetFilterGround); }
+    // Only units NOT in the effect's own plane: a Colossus is in both, and the
+    // engine's own splash has already hit it.
+    if (CycleMod_OSSplashHitsAir(idx)) {
+        planeFlag  = (1 << c_targetFilterAir);
+        ownPlane   = (1 << c_targetFilterGround);
+    } else {
+        planeFlag  = (1 << c_targetFilterGround);
+        ownPlane   = (1 << c_targetFilterAir);
+    }
     found = UnitGroup(null, c_playerAny, RegionCircle(center, outer),
-        UnitFilter(planeFlag, 0, (1 << c_targetFilterMissile),
+        UnitFilter(planeFlag, 0, (1 << c_targetFilterMissile) | ownPlane,
             (1 << (c_targetFilterStasis - 32)) | (1 << (c_targetFilterDead - 32))
             | (1 << (c_targetFilterHidden - 32)) | (1 << (c_targetFilterInvulnerable - 32))), 0);
 
@@ -2289,7 +2289,7 @@ bool CycleMod_OnOpenSkiesSplash(bool testConds, bool runActions) {
         victim = UnitGroupUnit(found, i);
         i = i + 1;
         // The main target is hit directly by the effect itself.
-        if (victim == target && idx != 3 && idx != 4) { continue; }
+        if (victim == target) { continue; }
         if (!CycleMod_OSSplashAccepts(idx, caster, player, victim)) { continue; }
 
         // Ultralisk cleave is a 180 degree arc in front of the Ultralisk.
@@ -2311,9 +2311,8 @@ bool CycleMod_OnOpenSkiesSplash(bool testConds, bool runActions) {
         if (inRing == 0) { continue; }
 
         // The cross-plane penalty is applied here rather than by the VsAir /
-        // VsGround buffs: a dead Baneling carries no buff, so the buffs
-        // exclude this effect and every victim - all of them in the unit's new
-        // plane by construction - gets the same cut.
+        // VsGround buffs, which exclude this effect: every victim is in the
+        // unit's new plane by construction, so all get the same cut.
         amount = CycleMod_OSDamageFor(effect, player, victim)
             * CycleMod_OSRingFraction(idx, inRing) * c_cycleOSPenalty;
         if (amount > 0.0) {
@@ -2443,13 +2442,15 @@ void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
 // Amount, not by editing it, so the upgrade part of a Baneling's damage is not
 // scaled - a +3 Baneling does 52.5 + 3 rather than (35 + 3) x 1.5.
 //--------------------------------------------------------------------------------------------------
-const int c_cycleBaneEffectCount = 4;
+const int c_cycleBaneEffectCount = 6;
 
 string CycleMod_BaneEffect(int i) {
     if (i == 0) { return "VolatileBurstU"; }                                   // enemy units
     if (i == 1) { return "VolatileBurstU2"; }                                  // enemy structures
     if (i == 2) { return "VolatileBurstDirectFallbackEnemyNeutralUnit"; }
     if (i == 3) { return "VolatileBurstDirectFallbackEnemyNeutralBuilding"; }
+    if (i == 4) { return "TardigradeOS_BanelingAirUnitDamage"; }               // Open Skies air splash
+    if (i == 5) { return "TardigradeOS_BanelingAirBuildingDamage"; }
     return "";
 }
 

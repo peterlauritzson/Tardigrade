@@ -5,10 +5,11 @@
 //   - everyone keeps the lobby race's town hall (and the Zerg Overlord) from
 //     the melee start, and gets one SCV, one Probe and one Drone - so all
 //     three races' structures can be built, by anyone;
-//   - c_testingBank minerals and gas;
+//   - c_testingBank minerals and gas, and c_testingSupply supply from the
+//     start (held there by the scan, whatever is built or lost);
 //   - no roster enforcement: every unit is allowed;
-//   - build, train, research and morph times are instant
-//     (TestingMode_BuildLoop);
+//   - build, train, research and morph times are instant, and larva
+//     respawn instantly (TestingMode_BuildLoop);
 //   - a per-player panel switches any modifier on or off for that player's
 //     side (TestingMode_Toggle). There is no activation delay in this mode
 //     (CycleMod_ModsLive), so a switch takes effect on the next scan tick.
@@ -21,7 +22,8 @@
 // Requires: RaceDraft, CycleMod (included before this file).
 //--------------------------------------------------------------------------------------------------
 
-const int c_testingBank = 100000;
+const int c_testingBank   = 100000;
+const int c_testingSupply = 200;
 
 // Per-player panel. Keyed by player slot, like the other per-player dialogs:
 // DialogSetSize takes no playergroup, so a shared dialog cannot be folded for
@@ -42,7 +44,10 @@ trigger      g_test_panelTrig = null;
 // participant's units; the progress-start events below do the same the moment
 // something starts, so most things finish before the scan even gets there.
 // Slots run 1..N; a unit with an empty queue (a structure under construction,
-// an egg) is still probed at slot 1.
+// an egg) is still probed at slot 1. Morphs (Orbital, Lair, Warp Gate...) are
+// not queue items and larva come from a spawn timer, so the scan also gives
+// every unit the TardigradeTesting_InstantMorph buff, which runs morphs and
+// larva spawns ~10000x faster.
 //--------------------------------------------------------------------------------------------------
 void TestingMode_Rush(unit u) {
     int   slots;
@@ -50,6 +55,14 @@ void TestingMode_Rush(unit u) {
     fixed pct;
 
     if (u == null || !UnitIsAlive(u)) { return; }
+    // Morphs and larva spawns never sit in a queue slot; the buff speeds them up.
+    if (UnitBehaviorCount(u, "TardigradeTesting_InstantMorph") == 0) {
+        UnitBehaviorAdd(u, "TardigradeTesting_InstantMorph", u, 1);
+    }
+    // A Brood Lord's queue is its broodling magazine (BroodLordHangar, 2.5s
+    // per broodling), and that build time is what paces its attack. Rushing
+    // it made Brood Lords fire as fast as the weapon cycles.
+    if (UnitGetType(u) == "BroodLord") { return; }
     slots = UnitQueueGetProperty(u, c_unitQueuePropertyUsed);
     if (slots < 1) { slots = 1; }
     s = 1;
@@ -74,6 +87,25 @@ bool TestingMode_OnProgressStarted(bool testConds, bool runActions) {
     return true;
 }
 
+// Supply made is tracked by the engine from supply providers, so it moves when
+// one is built or dies; set it back every scan tick.
+void TestingMode_HoldSupply(playergroup team) {
+    int n;
+    int i;
+    int p;
+
+    n = PlayerGroupCount(team);
+    i = 1;
+    while (i <= n) {
+        p = PlayerGroupPlayer(team, i);
+        PlayerModifyPropertyInt(p, c_playerPropSuppliesLimit, c_playerPropOperSetTo, c_testingSupply);
+        if (PlayerGetPropertyInt(p, c_playerPropSuppliesMade) != c_testingSupply) {
+            PlayerModifyPropertyInt(p, c_playerPropSuppliesMade, c_playerPropOperSetTo, c_testingSupply);
+        }
+        i = i + 1;
+    }
+}
+
 bool TestingMode_BuildLoop(bool testConds, bool runActions) {
     unitgroup ug;
     unit      u;
@@ -81,6 +113,8 @@ bool TestingMode_BuildLoop(bool testConds, bool runActions) {
     int       i;
 
     while (true) {
+        TestingMode_HoldSupply(g_draft_team1);
+        TestingMode_HoldSupply(g_draft_team2);
         ug = UnitGroup(null, c_playerAny, RegionEntireMap(),
             UnitFilter(0, 0, (1 << c_targetFilterMissile), (1 << (c_targetFilterDead - 32))), 0);
         count = UnitGroupCount(ug, c_unitCountAll);
@@ -399,6 +433,7 @@ void TestingMode_Start() {
 
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
         "<c val=\"FFD54A\">TESTING MODE</c>  <c val=\"AAAAAA\">- "
-        + IntToString(c_testingBank) + " minerals and gas, instant builds, every unit allowed."
+        + IntToString(c_testingBank) + " minerals and gas, " + IntToString(c_testingSupply)
+        + " supply, instant builds and larva, every unit allowed."
         + " Switch modifiers for your side from the panel (top right).</c>"));
 }

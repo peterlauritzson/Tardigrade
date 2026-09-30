@@ -18,4 +18,25 @@
         <Icon value="Assets\Textures\btn-upgrade-zerg-flyerattacks-level0.dds"/>
         <MaxLevel value="1"/>
     </CUpgrade>
+
+    <!-- Zerg melee upgrades for the Baneling's Open Skies air splash
+         (EffectData.xml), the same steps Blizzard gives VolatileBurstU / U2:
+         +2 and +2 vs Light per level on units, +5 on structures. Appended per
+         level, not on the ZergMeleeWeapons parent, so they cannot land on an
+         index voidmulti already overrides in the levels. -->
+    <CUpgrade id="ZergMeleeWeaponsLevel1">
+        <EffectArray Operation="Add" Reference="Effect,TardigradeOS_BanelingAirUnitDamage,Amount" Value="2"/>
+        <EffectArray Operation="Add" Reference="Effect,TardigradeOS_BanelingAirUnitDamage,AttributeBonus[Light]" Value="2"/>
+        <EffectArray Operation="Add" Reference="Effect,TardigradeOS_BanelingAirBuildingDamage,Amount" Value="5"/>
+    </CUpgrade>
+    <CUpgrade id="ZergMeleeWeaponsLevel2">
+        <EffectArray Operation="Add" Reference="Effect,TardigradeOS_BanelingAirUnitDamage,Amount" Value="2"/>
+        <EffectArray Operation="Add" Reference="Effect,TardigradeOS_BanelingAirUnitDamage,AttributeBonus[Light]" Value="2"/>
+        <EffectArray Operation="Add" Reference="Effect,TardigradeOS_BanelingAirBuildingDamage,Amount" Value="5"/>
+    </CUpgrade>
+    <CUpgrade id="ZergMeleeWeaponsLevel3">
+        <EffectArray Operation="Add" Reference="Effect,TardigradeOS_BanelingAirUnitDamage,Amount" Value="2"/>
+        <EffectArray Operation="Add" Reference="Effect,TardigradeOS_BanelingAirUnitDamage,AttributeBonus[Light]" Value="2"/>
+        <EffectArray Operation="Add" Reference="Effect,TardigradeOS_BanelingAirBuildingDamage,Amount" Value="5"/>
+    </CUpgrade>
 </Catalog>

@@ -19,7 +19,7 @@ the AI) picks a mode. Everyone else sees the choice being made.
 |---|---|
 | **Casual** | The drafts below with no time limits, then a normal game. |
 | **Tournament** | The same, but every draft step (each race ban/pick, modifier ban/pick, unit pick/ban) has a **10-second** limit, shown at the top of the screen. When it runs out, a random legal option is taken for whoever was up. |
-| **Testing** | No draft. Everyone keeps their lobby race's town hall and gets **one SCV, one Probe and one Drone** (so all three races can be built), **100,000 minerals and gas**, **instant** build/train/research/morph times and **every unit unlocked**. A panel at the top right switches any modifier on or off for your side at will, with no activation delay. |
+| **Testing** | No draft. Everyone keeps their lobby race's town hall and gets **one SCV, one Probe and one Drone** (so all three races can be built), **100,000 minerals and gas**, **200 supply**, **instant** build/train/research/morph times and larva and **every unit unlocked**. A panel at the top right switches any modifier on or off for your side at will, with no activation delay. |
 
 The Testing panel is a dialog rather than command-card buttons: a command card
 would need an ability per modifier placed on every unit, which is the kind of
