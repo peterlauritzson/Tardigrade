@@ -448,7 +448,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 9)  { return "units at 30% health blink away from their attacker"; }
     if (idx == 10) { return "kills: permanent +3% to all speeds and regen, stacks to 15"; }
     if (idx == 11) { return "from 0:00: gas buildings mine themselves, cost 200 minerals"; }
-    if (idx == 12) { return "no unit bans against you; YOLO: +2 units; Protect: +4 points"; }
+    if (idx == 12) { return "no unit bans against you; YOLO: +1 unit; Protect: +4 points"; }
     if (idx == 13) { return "anything of yours that dies refunds 25% of its cost"; }
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
     if (idx == 15) { return "from 0:00: gas costs and gas mined both 1.5x minerals"; }

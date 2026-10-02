@@ -9,7 +9,7 @@
 // The schedule is built per game in RosterDraft_Start, not fixed, because two
 // modifiers drafted just before this remove steps from it:
 //   No Bans (12) - the opponent's bans against that side are dropped. On a
-//                  YOLO side it is +2 units instead (RosterDraft_YoloSize), on
+//                  YOLO side it is +1 unit instead (RosterDraft_YoloSize), on
 //                  a Protect and Ban side +4 points (ProtectDraft_Points).
 //   YOLO    (16) - that side does not draft at all: 7 units at random from
 //                  its race's pool, nothing guaranteed. Against a normal
@@ -31,7 +31,7 @@ const int c_rosterPickTotal  = 12; // total snake picks (6 per player), before s
 const int c_rosterPreBanPicks = 4; // opening picks made BEFORE bans (2 per player)
 const int c_rosterRosterSize = 6;  // drafted units per player (no protected core)
 const int c_rosterYoloSize   = 7;  // a YOLO roster: 7 random units
-const int c_rosterYoloNoBansBonus = 2; // ...plus these with No Bans
+const int c_rosterYoloNoBansBonus = 1; // ...plus these with No Bans
 // Largest roster any style can produce: a Protect and Ban side keeps every
 // unit it put points on that wasn't banned, which can be most of its pool.
 // Roster arrays are sized with the literal 19 - keep > c_rosterMaxSize.
@@ -242,7 +242,7 @@ bool RosterDraft_IsYolo(bool isP1) {
     return CycleMod_SideIsYolo(isP1);
 }
 
-// A YOLO side's roster size: 7, or 9 with No Bans (nobody bans from a YOLO
+// A YOLO side's roster size: 7, or 8 with No Bans (nobody bans from a YOLO
 // pool, so No Bans pays out in units instead). The modifier draft is over
 // before any roster is dealt.
 int RosterDraft_YoloSize(bool isP1) {
@@ -273,7 +273,7 @@ bool RosterDraft_YoloGradual() {
 }
 
 // Rows every roster list shows, so both columns line up: 6, a YOLO roster's
-// size (7, or 9 with No Bans), or a Protect and Ban roster's size if larger. The
+// size (7, or 8 with No Bans), or a Protect and Ban roster's size if larger. The
 // Protect stage runs before any roster panel is built, and a YOLO reroll only
 // shrinks a roster, so this never grows once a panel exists.
 int RosterDraft_Rows() {
@@ -955,7 +955,7 @@ bool RosterDraft_AutoAct(bool testConds, bool runActions) {
 }
 
 // A YOLO side's pick turn: one random unit from its pool. Its 6th turn also
-// deals the rest (the 7th, or 7th-9th with No Bans), so they come out together.
+// deals the rest (the 7th, or 7th-8th with No Bans), so they come out together.
 void RosterDraft_YoloPick(bool isP1) {
     int    race;
     int    slot;
