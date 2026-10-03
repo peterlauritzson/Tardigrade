@@ -497,11 +497,34 @@
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
 
+    <!-- 18: Adrenaline. The pick is this empty marker (only legacy phase mode
+         ever adds it); the effect is TardigradeMod_AdrenalineRush below. -->
+    <CBehaviorBuff id="TardigradeMod_Adrenaline">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <!-- The rush itself: +50% move speed. CycleMod_TryAdrenaline re-adds it on
+         every hostile hit, which refreshes the Duration, so it lasts 3 real
+         seconds from the LAST hit. 4.2 game seconds is 3 real on Faster.
+         Global clock, like the other bonus windows (OverwatchFiring,
+         Entrenched): Veteran Forces' TimeScale must not shorten it. -->
+    <CBehaviorBuff id="TardigradeMod_AdrenalineRush">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <TimeScaleSource Value="Global"/>
+        <Duration value="4.2"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="1.5"/>
+    </CBehaviorBuff>
+
     <!-- Battle Blink's cooldown. CycleMod_TryBattleBlink adds this the moment
          it teleports a unit and refuses to fire again while it is up, so the
          engine expiring the buff IS the cooldown - there is no timer to keep
          per unit. Duration is in game seconds, so 17 is about 12 real seconds
-         on Faster. -->
+         on Faster. It is one of two gates: the unit must ALSO have climbed
+         back to 65% (c_cycleStateBlinkSpent in CycleMod.galaxy). -->
     <CBehaviorBuff id="TardigradeMod_BlinkCooldown">
         <InfoFlags index="Hidden" value="1"/>
         <Alignment value="Neutral"/>

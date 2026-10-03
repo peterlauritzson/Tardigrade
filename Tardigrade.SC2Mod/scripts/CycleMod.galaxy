@@ -1,9 +1,10 @@
 //--------------------------------------------------------------------------------------------------
 // Cycle Modifier System
 //
-// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 17
-//   global battlefield modifiers. Each player bans 2 (17 -> 13), then picks 3,
-//   so seven modifiers go unpicked every game. Every pick is ALWAYS active
+// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 18
+//   global battlefield modifiers, 17 of them on the board (YOLO is not). Each
+//   player bans 2 (17 -> 13), then picks 3, so seven board modifiers go unpicked
+//   every game. Every pick is ALWAYS active
 //   in-game, but only for the drafting player's own units. A shared reference
 //   panel lists both sides' picks.
 //
@@ -25,8 +26,8 @@ include "scripts/Debug"
 // The draft dialog lays the pool out in two columns of c_cycleModRows buttons.
 // Every array indexed by modifier is sized with the literal 20 - Galaxy array
 // sizes must be literals - so keep c_cycleModCount below 20 when adding more.
-const int c_cycleModCount   = 17;
-const int c_cycleModRows    = 8;   // board columns; YOLO is not on the board
+const int c_cycleModCount   = 18;
+const int c_cycleModRows    = 9;   // cards per board column; YOLO is not on the board
 // Top-left-justified stock core style for the picks panel (a plain label
 // centres vertically, so a short list would float mid-panel).
 const string c_cyclePicksPanelStyle = "HelpWelcomePanelSubText";
@@ -41,6 +42,7 @@ const int c_cycleModSharedDamage = 14;
 const int c_cycleModMineralsOnly = 15;
 const int c_cycleModYolo         = 16;
 const int c_cycleModFactoryLines = 17;
+const int c_cycleModAdrenaline   = 18;
 
 // Minerals Only: every gas cost becomes minerals at this rate, and gas income is
 // paid out as minerals at the same rate (CycleMod_ConvertGasIncome).
@@ -133,6 +135,9 @@ const string c_cycleOverwatchEffect = "TardigradeMod_OverwatchBonus";
 // Marine taking 45 rather than 52.5, because 15 of its 35 comes from the Light
 // attribute bonus.
 const fixed  c_cycleOverwatchFlatMult = 1.5;
+// The Widow Mine's primary-target hit, baked the same way (see
+// CycleMod_BaneEffect for why).
+const string c_cycleMineDirectEffect = "WidowMineExplodeDirect";
 
 // Auto Refineries: a finished gas building mines itself at the rate three
 // workers would. A saturated LotV geyser yields ~160 gas per real minute on
@@ -180,12 +185,22 @@ const string c_cycleMarchBroken   = "TardigradeMod_MarchBroken";
 const fixed c_cycleRefundFraction = 0.25;
 
 // Battle Blink, now automatic. A unit that drops to this fraction of its
-// maximum life teleports c_cycleBlinkRange away from whatever last hit it,
-// then can't do it again until c_cycleBlinkCooldown has passed. The cooldown
-// is the TardigradeMod_BlinkCooldown behavior's Duration rather than a custom
-// value, so the engine expires it and there is no per-unit state to keep.
-const fixed  c_cycleBlinkThreshold = 0.30;  // fraction of max life
-const fixed  c_cycleBlinkRange     = 8.0;   // matches the Stalker's Blink
+// maximum life teleports c_cycleBlinkRange away from whatever last hit it.
+// It then needs BOTH of these before it can blink again:
+//   - c_cycleBlinkCooldown has passed (the TardigradeMod_BlinkCooldown
+//     behavior's Duration, so the engine expires it), and
+//   - it has been back up to c_cycleBlinkRearm of its maximum (the
+//     c_cycleStateBlinkSpent flag). Without this a unit that regenerated or
+//     was healed a sliver past 30% blinked again on the very next hit once the
+//     cooldown ran out - a second free escape for a few points of life.
+//
+// The range is half the Stalker's 8. A full Stalker blink took a unit out of
+// the fight entirely, which denied the kill outright and made diving or
+// chasing with melee pointless; 4 staggers the attacker - it loses a hit or
+// two closing the gap - without erasing the engagement.
+const fixed  c_cycleBlinkThreshold = 0.30;  // fraction of max life (+ shields)
+const fixed  c_cycleBlinkRearm     = 0.65;  // fraction it must climb back to
+const fixed  c_cycleBlinkRange     = 4.0;
 const string c_cycleBlinkEffect    = "TardigradeAbil_Blink";
 const string c_cycleBlinkCooldown  = "TardigradeMod_BlinkCooldown";
 
@@ -209,12 +224,25 @@ const int    c_cycleShareMinShare  = 1;   // smallest chunk a single partner can
 const string c_cycleShareBehavior  = "TardigradeMod_SharedDamage";
 const string c_cycleShareEffect    = "TardigradeMod_SharedDamageHit";
 
+// Adrenaline: any hostile hit gives the unit +50% move speed for 3 real
+// seconds. The rush is TardigradeMod_AdrenalineRush, re-added on every hit -
+// which refreshes its Duration, so it runs 3 seconds from the LAST hit and no
+// timestamp is kept per unit (same trick as Forced March's recovery window).
+// The pick itself is a marker that is never applied as a buff.
+//
+// It is Forced March's mirror image: that one is out-of-contact speed and
+// switches off on the first hit; this one is speed only while being hit. It
+// helps the side being shot at - a kiting unit taking fire, or a melee unit
+// eating a volley on the way in - and does nothing for one shooting freely.
+const string c_cycleAdrenalineBehavior = "TardigradeMod_Adrenaline";
+const string c_cycleAdrenalineRush     = "TardigradeMod_AdrenalineRush";
+
 // ── Draft state ──────────────────────────────────────────────────────────────
 trigger g_cycle_callback = null;
 int     g_cycle_p1;                 // Player A (picks first)
 int     g_cycle_p2;                 // Player B (picks second)
 int     g_cycle_pickIndex = 0;      // 0 = A picking, 1 = B picking
-bool[20] g_cycle_taken;             // [1..17] which mods are already claimed (keep > c_cycleModCount)
+bool[20] g_cycle_taken;             // [1..18] which mods are already claimed (keep > c_cycleModCount)
 
 // WHY a claimed modifier is claimed. g_cycle_taken only says a modifier is off
 // the table, which was enough while a claimed modifier disappeared. The board
@@ -225,7 +253,7 @@ const int c_cycleSlotBanned = 1;
 const int c_cycleSlotP1     = 2;
 const int c_cycleSlotP2     = 3;
 const int c_cycleSlotTaken  = 4;    // claimed by neither side (legacy phase mode)
-int[20] g_cycle_modState;           // [1..17] one of c_cycleSlot* (keep > c_cycleModCount)
+int[20] g_cycle_modState;           // [1..18] one of c_cycleSlot* (keep > c_cycleModCount)
 int[4]  g_cycle_chosen;             // [1..3] chosen mod indices (phase order)
 
 // ── Per-player draft state (c_cyclePhaseMode == false) ────────────────────
@@ -279,7 +307,7 @@ int    g_cycle_lblPicksBottom = c_invalidDialogControlId;
 // -150 on the per-player board, which makes room for the picks panel.
 int    g_cycle_boardShift     = 0;
 int    g_cycle_lblLegend = c_invalidDialogControlId; // what the card markers mean
-int[20] g_cycle_btnMod;             // [1..17] modifier buttons (keep > c_cycleModCount)
+int[20] g_cycle_btnMod;             // [1..18] modifier buttons (keep > c_cycleModCount)
 trigger g_cycle_draftTrig = null;
 trigger g_cycle_autoTrig  = null;   // CycleMod_DraftAutoAct, run by the Tournament timer
 
@@ -304,8 +332,8 @@ const int c_cycleStateRegistered   = 0;
 const int c_cycleStateLastX        = 1;
 const int c_cycleStateLastY        = 2;
 const int c_cycleStateStillTime    = 3;
-const int c_cycleStateAdrenalReady = 4;
-const int c_cycleStateWasLow       = 5;
+const int c_cycleStateAdrenalReady = 4;   // unused leftover of Adrenal Response
+const int c_cycleStateBlinkSpent   = 5;   // 1 = blinked, not yet back to c_cycleBlinkRearm
 const int c_cycleStateLastAttack   = 6;
 const int c_cycleStateEconomicEgg  = 7;
 const int c_cycleStateAutoGas      = 8;   // gas building: mission time its last auto trip was paid up to
@@ -388,6 +416,9 @@ string CycleMod_Behavior(int idx) {
     if (idx == 15) { return "TardigradeMod_MineralsOnly"; }
     if (idx == 16) { return "TardigradeMod_Yolo"; }
     if (idx == 17) { return "TardigradeMod_FactoryLines"; }
+    // 18 is a key only: the rush is added off the damage event
+    // (CycleMod_TryAdrenaline), not kept on by the scan.
+    if (idx == 18) { return c_cycleAdrenalineBehavior; }
     return "";
 }
 
@@ -419,6 +450,7 @@ string CycleMod_Name(int idx) {
     if (idx == 15) { return "Minerals Only"; }
     if (idx == 16) { return "YOLO"; }
     if (idx == 17) { return "Factory Lines"; }
+    if (idx == 18) { return "Adrenaline"; }
     return "";
 }
 
@@ -435,6 +467,7 @@ string CycleMod_Name(int idx) {
 //   Entrenchment hold       10.5 game ->  7.5 real
 //   Overwatch idle          14   game -> 10   real
 //   Overwatch window         1.4 game ->  1   real
+//   Adrenaline rush          4.2 game ->  3   real
 // CycleMod_ActivationClockText does the same conversion for the activation time.
 string CycleMod_Desc(int idx) {
     if (idx == 1)  { return "weapons hit ground and air; half damage to the new one"; }
@@ -445,7 +478,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 6)  { return "hold position 7.5s for +2 armor and +1 range"; }
     if (idx == 7)  { return "double energy regeneration, units and structures"; }
     if (idx == 8)  { return "after 10s idle, +50% damage for 1s of attacking"; }
-    if (idx == 9)  { return "units at 30% health blink away from their attacker"; }
+    if (idx == 9)  { return "at 30% health, blink a short hop away; re-arms at 65%"; }
     if (idx == 10) { return "kills: permanent +3% to all speeds and regen, stacks to 15"; }
     if (idx == 11) { return "from 0:00: gas buildings mine themselves, cost 200 minerals"; }
     if (idx == 12) { return "no unit bans against you; YOLO: +1 unit; Protect: +4 points"; }
@@ -454,6 +487,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 15) { return "from 0:00: gas costs and gas mined both 1.5x minerals"; }
     if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
     if (idx == 17) { return "everything but workers builds, trains and morphs 15% faster"; }
+    if (idx == 18) { return "taking damage gives +50% move speed for 3s"; }
     return "";
 }
 
@@ -1183,7 +1217,7 @@ void CycleMod_AdvancePick() {
 // opponent's picks don't matter, it is pure chance, and nothing it rolls
 // leaves the board (both sides may hold the same modifier; they are per
 // side). YOLO itself is left out. No Bans can be rolled: for a YOLO side it
-// means 2 more units (RosterDraft_YoloSize). 0 if the side is already full.
+// means 1 more unit (RosterDraft_YoloSize). 0 if the side is already full.
 int CycleMod_YoloRollOne(bool isP1) {
     int idx;
     int tries;
@@ -1307,14 +1341,14 @@ bool CycleMod_DraftAutoAct(bool testConds, bool runActions) {
 void CycleMod_OpenDraftBoard() {
     int i;
 
-    // Dialog: 940 x 600. Left, the board: two columns of eight buttons (YOLO
+    // Dialog: 940 x 660. Left, the board: two columns of nine buttons (YOLO
     // is not on the board), then the legend. Buttons start at y=80 on a 60px
-    // pitch: 80 + 8*60 = 560, the legend sits at 566, plus a margin. Right,
+    // pitch: 80 + 9*60 = 620, the legend sits at 626, plus a margin. Right,
     // both sides' picks. With c_anchorTop an x offset places a control's
     // centre relative to the dialog's (470): the board's columns move from
     // -150/+150 to -300/0 (g_cycle_boardShift), the panel is left 620, width
     // 300 -> +300.
-    g_cycle_dialog = DialogCreate(940, 600, c_anchorCenter, 0, 0, true);
+    g_cycle_dialog = DialogCreate(940, 660, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
     g_cycle_boardShift = -150;
@@ -1333,10 +1367,10 @@ void CycleMod_OpenDraftBoard() {
         Tardigrade_Viewers(), c_cyclePicksPanelStyle);
     DialogControlSetPropertyAsString(g_cycle_lblPicksBottom, c_triggerControlPropertyStyle,
         Tardigrade_Viewers(), c_cyclePicksPanelStyle);
-    DialogControlSetSize(g_cycle_lblPicksTop, Tardigrade_Viewers(), 300, 240);
+    DialogControlSetSize(g_cycle_lblPicksTop, Tardigrade_Viewers(), 300, 270);
     DialogControlSetPosition(g_cycle_lblPicksTop, Tardigrade_Viewers(), c_anchorTop, 300, 80);
-    DialogControlSetSize(g_cycle_lblPicksBottom, Tardigrade_Viewers(), 300, 240);
-    DialogControlSetPosition(g_cycle_lblPicksBottom, Tardigrade_Viewers(), c_anchorTop, 300, 330);
+    DialogControlSetSize(g_cycle_lblPicksBottom, Tardigrade_Viewers(), 300, 270);
+    DialogControlSetPosition(g_cycle_lblPicksBottom, Tardigrade_Viewers(), c_anchorTop, 300, 360);
 
     i = 1;
     while (i <= c_cycleModCount) {
@@ -1350,7 +1384,7 @@ void CycleMod_OpenDraftBoard() {
     // has to say what the markers on them mean.
     g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
-    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, g_cycle_boardShift, 566);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, g_cycle_boardShift, 626);
     DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
         Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
 
@@ -1687,9 +1721,9 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
         i = i + 1;
     }
 
-    // Dialog: 640 x 600, two columns of eight buttons, then the legend.
+    // Dialog: 640 x 660, two columns of nine buttons, then the legend.
     g_cycle_boardShift = 0;
-    g_cycle_dialog = DialogCreate(640, 600, c_anchorCenter, 0, 0, true);
+    g_cycle_dialog = DialogCreate(640, 660, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
 
@@ -1712,7 +1746,7 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     // Legend, under the grid (see CycleMod_StartDraftPerPlayer).
     g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
-    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 566);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 626);
     DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
         Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
 
@@ -1768,13 +1802,15 @@ bool CycleMod_IsHostileTarget(unit source, unit target) {
     return true;
 }
 
-// Units whose Overwatch bonus is baked into their damage numbers by
+// Damage whose Overwatch bonus is baked into the numbers by
 // CycleMod_ApplyOverwatchDamageTeam, and which the trigger must therefore
-// leave alone so the two can't stack.
-bool CycleMod_OverwatchIsFlatBoosted(unit candidate) {
+// leave alone so the two can't stack. All of a Baneling's damage; only a Widow
+// Mine's direct hit - its splash is still boosted by the trigger.
+bool CycleMod_OverwatchIsBaked(unit source, string effect) {
     string unitType;
-    unitType = UnitGetType(candidate);
-    return unitType == "Baneling" || unitType == "BanelingBurrowed";
+    unitType = UnitGetType(source);
+    if (unitType == "Baneling" || unitType == "BanelingBurrowed") { return true; }
+    return effect == c_cycleMineDirectEffect;
 }
 
 // Damage events Overwatch must not scale. Riding EventUnitDamageAmount() is what
@@ -2476,8 +2512,17 @@ void CycleMod_ApplyOpenSkiesTeam(playergroup team) {
 // melee attack upgrades are applied by the engine on top of the effect's
 // Amount, not by editing it, so the upgrade part of a Baneling's damage is not
 // scaled - a +3 Baneling does 52.5 + 3 rather than (35 + 3) x 1.5.
+//
+// The Widow Mine's direct hit is baked in the same way, for a different
+// reason: its 125 nearly always kills, and the trigger bonus is only dealt to a
+// target that survived the hit, so through the trigger the mine's main shot
+// was effectively never boosted. A mine always reloads for longer than the
+// idle wait, so every shot would have qualified anyway - baking it in says the
+// same thing. Only the DIRECT hit, which always lands on the enemy the mine
+// fired at: the splash also hits the mine's own side, so it stays on the
+// trigger path, which skips friendly fire (CycleMod_OverwatchIsBaked).
 //--------------------------------------------------------------------------------------------------
-const int c_cycleBaneEffectCount = 6;
+const int c_cycleBaneEffectCount = 7;
 
 string CycleMod_BaneEffect(int i) {
     if (i == 0) { return "VolatileBurstU"; }                                   // enemy units
@@ -2486,6 +2531,7 @@ string CycleMod_BaneEffect(int i) {
     if (i == 3) { return "VolatileBurstDirectFallbackEnemyNeutralBuilding"; }
     if (i == 4) { return "TardigradeOS_BanelingAirUnitDamage"; }               // Open Skies air splash
     if (i == 5) { return "TardigradeOS_BanelingAirBuildingDamage"; }
+    if (i == 6) { return c_cycleMineDirectEffect; }                            // Widow Mine primary target
     return "";
 }
 
@@ -2510,6 +2556,9 @@ string CycleMod_CatalogBaseKey(int catalog, string entry, string field) {
 
 string CycleMod_CatalogBase(int catalog, string entry, string field, int player) {
     string key;
+    // A missing entry reads as empty - skipped by every caller - rather than
+    // raising a catalog error on every switch of the modifier.
+    if (!CatalogEntryIsValid(catalog, entry)) { return ""; }
     key = CycleMod_CatalogBaseKey(catalog, entry, field);
     if (!DataTableValueExists(true, key)) {
         DataTableSetString(true, key, CatalogFieldValueGet(catalog, entry, field, player));
@@ -3888,30 +3937,75 @@ void CycleMod_PayRefund(unit dead, unit source) {
 // is usually dead well inside half a second. Reacting to the hit that took it
 // there is the only way the escape is reliable.
 //
-// The threshold is an edge, not a state: the cooldown behavior is what stops a
-// unit that is sitting below 30% from blinking on every subsequent hit.
+// The threshold is an edge, not a state: the spent flag is what stops a unit
+// that is sitting below 30% from blinking on every subsequent hit, and the
+// cooldown stops one healed straight back past 65% from blinking again at once.
 // Shields count toward the total, so a Protoss unit blinks on its real health
-// bar rather than the moment its shields break.
+// bar rather than the moment its shields break - and re-arms once its shields
+// have come back, which is how a Protoss unit usually recovers.
 //--------------------------------------------------------------------------------------------------
-void CycleMod_TryBattleBlink(unit u, unit attacker) {
-    fixed life;
+// Life + shields as a fraction of their maximum; -1 for a unit with no life.
+fixed CycleMod_BlinkHealthFraction(unit u) {
     fixed lifeMax;
     fixed total;
     fixed totalMax;
+
+    lifeMax = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent);
+    if (lifeMax <= 0.0) { return -1.0; }
+    total    = UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent)
+        + UnitGetPropertyFixed(u, c_unitPropShields, c_unitPropCurrent);
+    totalMax = lifeMax + UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent);
+    return total / totalMax;
+}
+
+// Clear the spent flag once the unit is back up to c_cycleBlinkRearm. Run from
+// the scan, because healing and regeneration fire no event; and again at the
+// top of CycleMod_TryBattleBlink, so a unit healed between two scan ticks is
+// not refused on a technicality. The scan can still miss a unit that climbs
+// past 65% and is knocked back under it inside half a second - that unit stays
+// spent, which errs on the side of fewer blinks.
+void CycleMod_UpdateBlinkRearm(unit u) {
+    if (FixedToInt(UnitGetCustomValue(u, c_cycleStateBlinkSpent)) == 0) { return; }
+    if (CycleMod_BlinkHealthFraction(u) >= c_cycleBlinkRearm) {
+        UnitSetCustomValue(u, c_cycleStateBlinkSpent, 0.0);
+    }
+}
+
+// Who may blink at all. Two groups are out:
+//   - Free units: summons (Locusts, Broodlings, Interceptors), timed units,
+//     eggs/cocoons, changelings and hallucinations - the same set that can't
+//     soak Shared Damage, for the same reason: they are not real army.
+//   - Anything that can't walk right now. Movement speed 0 covers the alt
+//     forms that root in place (sieged Tank, burrowed Lurker/Widow Mine,
+//     Liberator AG, phasing Prism, Observer surveillance). The disables don't
+//     change the speed property, so they are named: lifted by a Phoenix,
+//     mind-controlled, Fungal'd, or frozen in a Stasis Ward.
+bool CycleMod_CanBattleBlink(unit u) {
+    if (!CycleMod_IsCombatUnit(u)) { return false; }
+    if (UnitTestState(u, c_unitStateHallucination)) { return false; }
+    if (CycleMod_IsShareExemptType(UnitGetType(u))) { return false; }
+    if (UnitGetPropertyFixed(u, c_unitPropMovementSpeed, c_unitPropCurrent) <= 0.0) { return false; }
+    if (UnitBehaviorCount(u, "GravitonBeam") > 0)            { return false; }
+    if (UnitBehaviorCount(u, "NeuralParasite") > 0)          { return false; }
+    if (UnitBehaviorCount(u, "FungalGrowth") > 0)            { return false; }
+    if (UnitBehaviorCount(u, "OracleStasisTrapTarget") > 0)  { return false; }
+    return true;
+}
+
+void CycleMod_TryBattleBlink(unit u, unit attacker) {
+    fixed frac;
     point from;
     point to;
 
     if (u == null || attacker == null || !UnitIsAlive(u))     { return; }
-    if (!CycleMod_IsCombatUnit(u))                            { return; }
+    if (!CycleMod_CanBattleBlink(u))                          { return; }
     if (!CycleMod_UnitModActive(u, "TardigradeMod_BattleBlink")) { return; }
     if (UnitBehaviorCount(u, c_cycleBlinkCooldown) > 0)       { return; }
+    CycleMod_UpdateBlinkRearm(u);
+    if (FixedToInt(UnitGetCustomValue(u, c_cycleStateBlinkSpent)) != 0) { return; }
 
-    life     = UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent);
-    lifeMax  = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent);
-    if (lifeMax <= 0.0) { return; }
-    total    = life + UnitGetPropertyFixed(u, c_unitPropShields, c_unitPropCurrent);
-    totalMax = lifeMax + UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent);
-    if (total > totalMax * c_cycleBlinkThreshold) { return; }
+    frac = CycleMod_BlinkHealthFraction(u);
+    if (frac < 0.0 || frac > c_cycleBlinkThreshold) { return; }
 
     // Straight back along the line from the attacker: the angle FROM the
     // attacker TO this unit, continued past it. An attacker standing on top of
@@ -3926,9 +4020,24 @@ void CycleMod_TryBattleBlink(unit u, unit attacker) {
     // a cliff or a wall lands short rather than failing outright.
     UnitCreateEffectPoint(u, c_cycleBlinkEffect, to);
     UnitBehaviorAdd(u, c_cycleBlinkCooldown, u, 1);
+    UnitSetCustomValue(u, c_cycleStateBlinkSpent, 1.0);
     Debug_Log("Battle Blink: " + UnitGetType(u) + " at "
-        + FixedToString(total / totalMax * 100.0, 0) + "% away from "
+        + FixedToString(frac * 100.0, 0) + "% away from "
         + UnitGetType(attacker));
+}
+
+// Adrenaline (modifier 18): every hostile hit (re)starts a 3-real-second +50%
+// move speed rush. Same eligibility as Battle Blink's free-unit rule - summons,
+// eggs and hallucinations get nothing - but a rooted unit may still take it:
+// the multiplier on a speed of 0 is harmless, and it is live the moment the
+// unit unsieges or the disable ends.
+void CycleMod_TryAdrenaline(unit u) {
+    if (u == null || !UnitIsAlive(u)) { return; }
+    if (!CycleMod_IsCombatUnit(u)) { return; }
+    if (UnitTestState(u, c_unitStateHallucination)) { return; }
+    if (CycleMod_IsShareExemptType(UnitGetType(u))) { return; }
+    if (!CycleMod_UnitModActive(u, c_cycleAdrenalineBehavior)) { return; }
+    UnitBehaviorAdd(u, c_cycleAdrenalineRush, u, 1);
 }
 
 // Forced March drops the moment a unit is in contact, and "in contact" is both
@@ -4064,7 +4173,7 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
         // report its blast while it still counts as alive, the trigger must not
         // stack a second bonus on top of the catalog one.
         if (EventUnitDamageAmount() > 0.0 && UnitIsAlive(target)
-            && !CycleMod_OverwatchIsFlatBoosted(source)
+            && !CycleMod_OverwatchIsBaked(source, EventUnitDamageEffect())
             && !CycleMod_OverwatchSkipsEffect(EventUnitDamageEffect())
             && CycleMod_IsHostileTarget(source, target)) {
             Debug_Log("Overwatch: " + UnitGetType(overwatchOwner) + " +"
@@ -4086,8 +4195,12 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     // March is not - any damage taken breaks it, because "if anything is
     // hitting you, you are not marching" is the rule, and a unit standing in
     // its own Psi Storm is not marching anywhere either.
+    //
+    // Adrenaline follows Battle Blink: a hostile hit only, or a side could
+    // speed its own army up by splashing it.
     if (CycleMod_IsHostileTarget(source, target)) {
         CycleMod_TryBattleBlink(target, source);
+        CycleMod_TryAdrenaline(target);
     }
     CycleMod_BreakMarch(target);
 
@@ -4202,7 +4315,7 @@ void CycleMod_RegisterUnit(unit u) {
     UnitSetCustomValue(u, c_cycleStateLastY, PointGetY(pos));
     UnitSetCustomValue(u, c_cycleStateStillTime, GameGetMissionTime());
     UnitSetCustomValue(u, c_cycleStateAdrenalReady, 0.0);
-    UnitSetCustomValue(u, c_cycleStateWasLow, 0.0);
+    UnitSetCustomValue(u, c_cycleStateBlinkSpent, 0.0);
     UnitSetCustomValue(u, c_cycleStateLastAttack, GameGetMissionTime());
 }
 
@@ -4293,6 +4406,8 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
     // CycleMod_OnUnitDamaged stamps c_cycleStateLastAttack for ANY damage a
     // unit deals, spell included, so a Storm's first tick counts as attacking
     // and the High Templar is no longer idle for the rest of it.
+    CycleMod_UpdateBlinkRearm(u);
+
     if (CycleMod_UnitModActive(u, "TardigradeMod_Overwatch")
         && FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)) >= c_cycleOverwatchDelay
         && UnitBehaviorCount(u, "TardigradeMod_OverwatchReady") == 0) {
@@ -4382,8 +4497,9 @@ void CycleMod_RenderRows(int activePhase) {
 //--------------------------------------------------------------------------------------------------
 // Draft mode: apply (or clear) a single drafted modifier's passive buff on a
 // unit. NO modifier grants a clickable ability any more - Medivac Boost was the
-// last one, and it is Forced March now. Battle Blink and Refund are conditions
-// with no buff at all (CycleMod_TryBattleBlink off the damage event,
+// last one, and it is Forced March now. Battle Blink, Adrenaline and Refund are
+// conditions with no standing buff (CycleMod_TryBattleBlink and
+// CycleMod_TryAdrenaline off the damage event,
 // CycleMod_PayRefund off the death event), Auto Refineries runs from
 // CycleMod_UpdateAutoRefinery, and No Bans only acts on the roster draft, so
 // none of those four has a buff here either. Free Labor (Workers cost no supply) is narrowed
@@ -4441,7 +4557,8 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
     if (beh == "" || beh == "TardigradeMod_BattleBlink"
         || beh == "TardigradeMod_Refund" || beh == "TardigradeMod_AutoRefinery"
         || beh == "TardigradeMod_NoBans" || beh == "TardigradeMod_MineralsOnly"
-        || beh == "TardigradeMod_Yolo" || beh == "TardigradeMod_FactoryLines") {
+        || beh == "TardigradeMod_Yolo" || beh == "TardigradeMod_FactoryLines"
+        || beh == c_cycleAdrenalineBehavior) {
         return;
     }
     if (beh == c_cycleMarchBehavior) {

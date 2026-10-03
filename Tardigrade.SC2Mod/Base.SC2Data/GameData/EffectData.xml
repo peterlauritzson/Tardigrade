@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
-	<!-- Battle Blink: a short-range teleport, same parameters as the Stalker's
-	     Blink (8 range), kept as a separate id so it doesn't share the
-	     Stalker's own cooldown or its Blink-tech requirement.
+	<!-- Battle Blink: a short hop - 4 range, half the Stalker's Blink, so it
+	     staggers an attacker rather than leaving the fight. Kept as a separate
+	     id so it doesn't share the Stalker's own cooldown or its Blink-tech
+	     requirement. Range here must stay >= c_cycleBlinkRange in the script.
 
 	     No ability wraps it any more. CycleMod_TryBattleBlink creates this
 	     effect directly with UnitCreateEffectPoint when a unit drops to 30%
@@ -12,8 +13,8 @@
 	<CEffectTeleport id="TardigradeAbil_Blink">
 		<ClearQueuedOrders value="0"/>
 		<PlacementAround Value="CasterUnit"/>
-		<PlacementRange value="8"/>
-		<Range value="8"/>
+		<PlacementRange value="4"/>
+		<Range value="4"/>
 		<WhichUnit Value="Caster"/>
 		<TargetLocation Value="TargetPoint"/>
 		<TeleportFlags index="TestCliff" value="1"/>
