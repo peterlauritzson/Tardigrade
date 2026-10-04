@@ -2757,48 +2757,19 @@ void CycleMod_RevertArcaneSurgeForPlayer(int player) {
 //     morph costs are cumulative there (Lair 475/100 = Hatchery 325 + 150/100)
 //     and the engine charges the difference, so converting both ends keeps
 //     the difference converted too.
-//   - CAbilResearch InfoArray[].Resource: every upgrade. Curated list below,
-//     taken from every melee layer (liberty .. voidmulti) - the abilities
-//     that carry a gas cost on any research slot.
-//   - CAbilMorph Cost: MorphToTransportOverlord (25/25) is the one melee
-//     ability with its own gas cost.
-// The unit catalog is swept once, like the Arcane Surge cache; only the
-// entries that actually cost gas are kept.
+//   - CAbilResearch InfoArray[].Resource: every upgrade.
+//   - Cost[].Resource on any ability: MorphToTransportOverlord (25/25), and
+//     since 5.0.16 the first Gateway -> Warp Gate morph, UpgradeToWarpGate
+//     (25/25).
+// Both catalogs are swept whole, once, like the Arcane Surge cache - no
+// curated lists, so a patch that puts a gas cost on another unit or ability
+// is picked up without a change here. Only entries that actually cost gas
+// are kept. Refunds (a negative gas cost, like Salvage) are left alone: the
+// gas they pay out is converted on income like any other.
 //--------------------------------------------------------------------------------------------------
-const int c_cycleResearchAbilCount = 28;
+const int c_cycleAbilClassResearch = 30;   // c_classIdCAbilResearch
 const int c_cycleResearchSlots     = 30;   // Research1..Research30
-
-string CycleMod_ResearchAbil(int i) {
-    if (i == 1)  { return "ArmoryResearch"; }
-    if (i == 2)  { return "ArmoryResearchSwarm"; }
-    if (i == 3)  { return "BanelingNestResearch"; }
-    if (i == 4)  { return "BarracksTechLabResearch"; }
-    if (i == 5)  { return "CyberneticsCoreResearch"; }
-    if (i == 6)  { return "DarkShrineResearch"; }
-    if (i == 7)  { return "EngineeringBayResearch"; }
-    if (i == 8)  { return "FactoryTechLabResearch"; }
-    if (i == 9)  { return "FleetBeaconResearch"; }
-    if (i == 10) { return "ForgeResearch"; }
-    if (i == 11) { return "FusionCoreResearch"; }
-    if (i == 12) { return "GhostAcademyResearch"; }
-    if (i == 13) { return "HydraliskDenResearch"; }
-    if (i == 14) { return "InfestationPitResearch"; }
-    if (i == 15) { return "LairResearch"; }
-    if (i == 16) { return "LurkerDenResearch"; }
-    if (i == 17) { return "MercCompoundResearch"; }
-    if (i == 18) { return "RoachWarrenResearch"; }
-    if (i == 19) { return "RoboticsBayResearch"; }
-    if (i == 20) { return "SpawningPoolResearch"; }
-    if (i == 21) { return "SpireResearch"; }
-    if (i == 22) { return "StarportTechLabResearch"; }
-    if (i == 23) { return "TemplarArchivesResearch"; }
-    if (i == 24) { return "TwilightCouncilResearch"; }
-    if (i == 25) { return "UltraliskCavernResearch"; }
-    if (i == 26) { return "evolutionchamberresearch"; }
-    if (i == 27) { return "HatcheryResearch"; }
-    if (i == 28) { return "NexusResearch"; }
-    return "";
-}
+const int c_cycleMaxGasAbilSlots   = 512;
 
 // Field-path spellings. Blizzard's own scripts only ever index catalog arrays
 // by number, and it is not certain the engine accepts enum NAMES in a field
@@ -2809,6 +2780,7 @@ bool   g_cycle_pathsResolved = false;
 string g_cycle_resMin = "[Minerals]";
 string g_cycle_resGas = "[Vespene]";
 bool   g_cycle_infoNamed = true;
+bool   g_cycle_costIndexed = true;
 
 void CycleMod_ResolveCostPaths() {
     if (g_cycle_pathsResolved) { return; }
@@ -2822,8 +2794,13 @@ void CycleMod_ResolveCostPaths() {
     // Stimpack is BarracksTechLabResearch's first slot.
     g_cycle_infoNamed = CatalogFieldValueGet(c_gameCatalogAbil, "BarracksTechLabResearch",
         "InfoArray[Research1].Resource" + g_cycle_resGas, 1) != "";
+    // An ability's Cost is a one-element array in the data (<Cost> with no
+    // index). MorphToTransportOverlord costs 25/25 in every layer.
+    g_cycle_costIndexed = CatalogFieldValueGet(c_gameCatalogAbil, "MorphToTransportOverlord",
+        "Cost[0].Resource" + g_cycle_resGas, 1) != "";
     Debug_Log("Cost paths: resource " + g_cycle_resGas + ", research named="
-        + libNtve_gf_ConvertBooleanToString(g_cycle_infoNamed));
+        + libNtve_gf_ConvertBooleanToString(g_cycle_infoNamed) + ", cost indexed="
+        + libNtve_gf_ConvertBooleanToString(g_cycle_costIndexed));
 }
 
 string CycleMod_ResearchSlotPath(int slot) {
@@ -2835,14 +2812,14 @@ string CycleMod_ResearchSlotPath(int slot) {
 // (ability, path prefix) pairs whose Resource array holds the cost.
 string[512] g_cycle_gasUnit;
 int         g_cycle_gasUnitCount = 0;
-string[256] g_cycle_gasAbil;
-string[256] g_cycle_gasAbilPrefix;
+string[512] g_cycle_gasAbil;
+string[512] g_cycle_gasAbilPrefix;
 int         g_cycle_gasAbilCount = 0;
 bool        g_cycle_gasCached = false;
 
 void CycleMod_AddGasAbilSlot(string abil, string prefix) {
     string gas;
-    if (g_cycle_gasAbilCount >= 256) { return; }
+    if (g_cycle_gasAbilCount >= c_cycleMaxGasAbilSlots) { return; }
     gas = CatalogFieldValueGet(c_gameCatalogAbil, abil, prefix + ".Resource" + g_cycle_resGas, 1);
     if (StringToFixed(gas) > 0.0) {
         g_cycle_gasAbil[g_cycle_gasAbilCount]       = abil;
@@ -2875,28 +2852,23 @@ void CycleMod_EnsureGasCostCache() {
         i = i + 1;
     }
 
+    catalogCount = CatalogEntryCount(c_gameCatalogAbil);
     i = 1;
-    while (i <= c_cycleResearchAbilCount) {
-        entry = CycleMod_ResearchAbil(i);
-        if (CatalogEntryIsValid(c_gameCatalogAbil, entry)) {
+    while (i <= catalogCount) {
+        entry = CatalogEntryGet(c_gameCatalogAbil, i);
+        if (CatalogEntryClass(c_gameCatalogAbil, entry) == c_cycleAbilClassResearch) {
             slot = 1;
             while (slot <= c_cycleResearchSlots) {
                 CycleMod_AddGasAbilSlot(entry, CycleMod_ResearchSlotPath(slot));
                 slot = slot + 1;
             }
         }
-        i = i + 1;
-    }
-
-    // The one ability with a Cost of its own. Cost is a one-element array in
-    // the data (<Cost> with no index); try the indexed spelling, then the bare.
-    if (CatalogEntryIsValid(c_gameCatalogAbil, "MorphToTransportOverlord")) {
-        if (CatalogFieldValueGet(c_gameCatalogAbil, "MorphToTransportOverlord",
-                "Cost[0].Resource" + g_cycle_resGas, 1) != "") {
-            CycleMod_AddGasAbilSlot("MorphToTransportOverlord", "Cost[0]");
+        if (g_cycle_costIndexed) {
+            CycleMod_AddGasAbilSlot(entry, "Cost[0]");
         } else {
-            CycleMod_AddGasAbilSlot("MorphToTransportOverlord", "Cost");
+            CycleMod_AddGasAbilSlot(entry, "Cost");
         }
+        i = i + 1;
     }
 
     Debug_Log("Minerals Only: " + IntToString(g_cycle_gasUnitCount) + " unit types, "
@@ -2928,6 +2900,38 @@ void CycleMod_ConvertCost(int catalog, string entry, string prefix, int player, 
     }
 }
 
+// Read every converted cost back from the player's copy of the catalog and log
+// any that still asks for gas - a write the engine refused, or a path that
+// reads but does not write. Silent when everything converted.
+void CycleMod_VerifyMineralsOnly(int player) {
+    int i;
+    int bad;
+
+    bad = 0;
+    i = 0;
+    while (i < g_cycle_gasUnitCount) {
+        if (StringToFixed(CatalogFieldValueGet(c_gameCatalogUnit, g_cycle_gasUnit[i],
+                "CostResource" + g_cycle_resGas, player)) > 0.0) {
+            Debug_Log("Minerals Only: P" + IntToString(player) + " " + g_cycle_gasUnit[i] + " still costs gas");
+            bad = bad + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < g_cycle_gasAbilCount) {
+        if (StringToFixed(CatalogFieldValueGet(c_gameCatalogAbil, g_cycle_gasAbil[i],
+                g_cycle_gasAbilPrefix[i] + ".Resource" + g_cycle_resGas, player)) > 0.0) {
+            Debug_Log("Minerals Only: P" + IntToString(player) + " " + g_cycle_gasAbil[i]
+                + " " + g_cycle_gasAbilPrefix[i] + " still costs gas");
+            bad = bad + 1;
+        }
+        i = i + 1;
+    }
+    if (bad > 0) {
+        Debug_Log("Minerals Only: P" + IntToString(player) + " has " + IntToString(bad) + " gas costs left");
+    }
+}
+
 void CycleMod_MineralsOnlyForPlayer(int player, bool on) {
     int i;
 
@@ -2943,6 +2947,7 @@ void CycleMod_MineralsOnlyForPlayer(int player, bool on) {
             g_cycle_gasAbilPrefix[i] + ".Resource", player, on);
         i = i + 1;
     }
+    if (on) { CycleMod_VerifyMineralsOnly(player); }
 }
 
 // Gas that reaches the bank - mined, auto-refined, refunded - is paid out as

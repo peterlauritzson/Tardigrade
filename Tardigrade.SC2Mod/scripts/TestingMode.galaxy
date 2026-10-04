@@ -46,8 +46,8 @@ trigger      g_test_panelTrig = null;
 // Slots run 1..N; a unit with an empty queue (a structure under construction,
 // an egg) is still probed at slot 1. Morphs (Orbital, Lair, Warp Gate...) are
 // not queue items and larva come from a spawn timer, so the scan also gives
-// every unit the TardigradeTesting_InstantMorph buff, which runs morphs and
-// larva spawns ~10000x faster.
+// every unit the TardigradeTesting_InstantMorph buff, which runs construction,
+// training, research, morphs and larva spawns ~10000x faster.
 //--------------------------------------------------------------------------------------------------
 void TestingMode_Rush(unit u) {
     int   slots;
@@ -55,14 +55,17 @@ void TestingMode_Rush(unit u) {
     fixed pct;
 
     if (u == null || !UnitIsAlive(u)) { return; }
-    // Morphs and larva spawns never sit in a queue slot; the buff speeds them up.
+    // A Brood Lord's queue is its broodling magazine (BroodLordHangar, 2.5s
+    // per broodling), and that build time is what paces its attack. Rushing
+    // it (or giving it the buff's Progress rate) made Brood Lords fire as
+    // fast as the weapon cycles.
+    if (UnitGetType(u) == "BroodLord") { return; }
+    // The buff's Progress / Morph / Spawn rates speed up everything, including
+    // what never sits in a queue slot (morphs, larva) and construction the
+    // slot probe below can miss (Zerg buildings, add-ons).
     if (UnitBehaviorCount(u, "TardigradeTesting_InstantMorph") == 0) {
         UnitBehaviorAdd(u, "TardigradeTesting_InstantMorph", u, 1);
     }
-    // A Brood Lord's queue is its broodling magazine (BroodLordHangar, 2.5s
-    // per broodling), and that build time is what paces its attack. Rushing
-    // it made Brood Lords fire as fast as the weapon cycles.
-    if (UnitGetType(u) == "BroodLord") { return; }
     slots = UnitQueueGetProperty(u, c_unitQueuePropertyUsed);
     if (slots < 1) { slots = 1; }
     s = 1;

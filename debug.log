@@ -1,0 +1,18 @@
+[03/10/2026 21:13:58]: CASCHandlerBase: loading CDN indices...
+[03/10/2026 21:13:58]: CDNIndexHandler.Initialize() completed in 00:00:00.2046851
+[03/10/2026 21:13:58]: FileIndexHandler() completed in 00:00:00.0150265
+[03/10/2026 21:13:58]: CASCHandlerBase: loaded 718701 CDN indexes
+[03/10/2026 21:13:58]: CASCHandlerBase: loading local indices...
+[03/10/2026 21:13:58]: LocalIndexHandler: loaded 189538 indexes
+[03/10/2026 21:13:58]: LocalIndexHandler.Initialize() completed in 00:00:00.1388946
+[03/10/2026 21:13:58]: CASCHandlerBase: loaded 189538 local indexes
+[03/10/2026 21:13:58]: CASCHandler: loading encoding data...
+[03/10/2026 21:13:59]: new EncodingHandler() completed in 00:00:00.9263541
+[03/10/2026 21:13:59]: CASCHandler: loaded 722221 encoding data
+[03/10/2026 21:13:59]: CASCHandler: loading root data...
+[03/10/2026 21:14:00]: new RootHandler() completed in 00:00:00.3879078
+[03/10/2026 21:14:00]: CASCHandler: loaded 666588 root data
+[03/10/2026 21:14:00]: new CASCHandler() completed in 00:00:01.6736047
+[03/10/2026 21:14:00]: MNDXRootHandler: loading file names...
+[03/10/2026 21:14:32]: MNDXRootHandler: loaded 0 file names
+[03/10/2026 21:14:33]: MNDXRootHandler::SetFlags() completed in 00:00:01.0023747
