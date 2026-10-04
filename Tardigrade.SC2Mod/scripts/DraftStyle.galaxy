@@ -58,6 +58,11 @@
 //   BANNED       Overwatch     [X] BANNED · Allies...        flat
 //   YOURS / P1   Overwatch     [+] YOURS · Allies...         flat
 //   THEIRS / P2  Overwatch     [O] THEIRS · Allies...        flat
+//   SELECTED     Overwatch     [>] SELECTED · Allies...      gold, clickable
+//
+// SELECTED exists only in Tournament mode, and only for the player who made it
+// (see DRAFT SELECTION in GameMode.galaxy): a click marks the card, Confirm or
+// the clock takes it.
 //
 //   1. A WORD. BANNED / YOURS / THEIRS / TAKEN is spelled out. Nothing has to
 //      be inferred from an appearance at all.
@@ -92,6 +97,7 @@ const int c_draftStateBanned    = 2; // removed by a ban
 const int c_draftStateMine      = 3; // taken by the side this viewer is on
 const int c_draftStateTheirs    = 4; // taken by the other side
 const int c_draftStateTaken     = 5; // claimed, no side (shared-pool drafts)
+const int c_draftStateSelected  = 6; // Tournament: marked by this viewer, awaiting Confirm
 
 // Text styles - see the block above for why these are set at all. All three are
 // plain StandardTemplate styles from core.sc2mod, so they are available to
@@ -107,6 +113,7 @@ const string c_draftGlyphBanned = "[X]";
 const string c_draftGlyphMine   = "[+]";
 const string c_draftGlyphTheirs = "[O]";
 const string c_draftGlyphTaken  = "[=]";
+const string c_draftGlyphSelected = "[>]";
 
 // Separator between a chip and the card detail. Same middle dot the rest of
 // the draft text already uses.
@@ -128,6 +135,7 @@ string DraftStyle_NameColor(int state) {
     if (state == c_draftStateMine)   { return "4ADB92"; }
     if (state == c_draftStateTheirs) { return "F0A050"; }
     if (state == c_draftStateTaken)  { return "9FB4C7"; }
+    if (state == c_draftStateSelected) { return "FFD54A"; }
     return "FFFFFF";
 }
 
@@ -137,6 +145,7 @@ string DraftStyle_BodyColor(int state) {
     if (state == c_draftStateMine)      { return "3FB077"; }
     if (state == c_draftStateTheirs)    { return "B5793A"; }
     if (state == c_draftStateTaken)     { return "6F8496"; }
+    if (state == c_draftStateSelected)  { return "E8C860"; }
     return "8FC4E8";
 }
 
@@ -152,12 +161,14 @@ color DraftStyle_Tint(int state) {
     if (state == c_draftStateBanned) { return Color(60, 32, 32); }
     if (state == c_draftStateMine)   { return Color(34, 78, 54); }
     if (state == c_draftStateTheirs) { return Color(80, 52, 24); }
+    if (state == c_draftStateSelected) { return Color(100, 84, 30); }
     return Color(52, 60, 68);
 }
 
 bool DraftStyle_HasTint(int state) {
     return state == c_draftStateBanned || state == c_draftStateMine
-        || state == c_draftStateTheirs || state == c_draftStateTaken;
+        || state == c_draftStateTheirs || state == c_draftStateTaken
+        || state == c_draftStateSelected;
 }
 
 // The chip that leads a claimed card's detail line - glyph plus word. tag
@@ -183,6 +194,10 @@ string DraftStyle_Chip(int state, string tag) {
     if (state == c_draftStateTaken) {
         if (word == "") { word = "TAKEN"; }
         return c_draftGlyphTaken + " " + word;
+    }
+    if (state == c_draftStateSelected) {
+        if (word == "") { word = "SELECTED"; }
+        return c_draftGlyphSelected + " " + word;
     }
     return "";
 }
@@ -248,6 +263,7 @@ void DraftStyle_ApplyCard(int control, playergroup viewer, int state, string car
     // Set both ways: a button disabled on this player's waiting turn would
     // otherwise stay disabled on their own turn.
     DialogControlSetEnabled(control, viewer,
-        canClick && (state == c_draftStateOpen || state == c_draftStateBanTarget));
+        canClick && (state == c_draftStateOpen || state == c_draftStateBanTarget
+            || state == c_draftStateSelected));
 }
 

@@ -7,8 +7,10 @@
 //
 //   Casual     - the draft as it always was: no time limits, normal game.
 //   Tournament - every draft step (race ban/pick, modifier ban/pick, unit
-//                pick/ban) has a c_tournamentStepSeconds limit. When it runs
-//                out, a random legal option is taken for whoever was up.
+//                pick/ban) has a c_tournamentStepSeconds limit. A click only
+//                SELECTS a card; Confirm takes it. When the clock runs out
+//                the selection is taken, or a random legal option if there
+//                is none (see DRAFT SELECTION below).
 //   Testing    - no draft at all. Everyone keeps their lobby town hall, gets one
 //                SCV, one Probe and one Drone, a huge bank, instant build times
 //                and every unit unlocked, plus a panel to switch modifiers on
@@ -25,7 +27,7 @@ const int c_gameModeTesting    = 2;
 
 // Real seconds per draft step in Tournament mode. The draft runs with mission
 // time paused, so this is counted in real time (see DraftTimer_Run).
-const int c_tournamentStepSeconds = 10;
+const int c_tournamentStepSeconds = 15;
 
 int g_game_mode = c_gameModeCasual;
 
@@ -40,7 +42,7 @@ string GameMode_Name(int mode) {
 
 string GameMode_Desc(int mode) {
     if (mode == c_gameModeTournament) {
-        return IntToString(c_tournamentStepSeconds) + "s per draft step, then a random pick";
+        return IntToString(c_tournamentStepSeconds) + "s per draft step: select, then Confirm";
     }
     if (mode == c_gameModeTesting) { return "no draft: huge bank, instant builds, all units"; }
     return "normal draft, no time limits";
@@ -135,17 +137,18 @@ void GameMode_Select(int chooser, trigger callback) {
     }
 }
 
+
 //==================================================================================================
 // DRAFT TIMER (Tournament)
 //
 // One persistent thread for the whole draft, not one per step. Each draft
 // screen calls DraftTimer_Arm(onExpire) as it starts a new step; that resets
 // the clock to c_tournamentStepSeconds and remembers which auto-pick to run.
-// When it reaches zero the thread disarms and runs onExpire, which takes a
-// random legal option through the same path a click would - and that path
-// arms the timer again for the next step. A per-step thread would need a
-// token to tell a stale countdown from the live one; a single thread with a
-// deadline has nothing to go stale.
+// When it reaches zero the thread disarms and runs onExpire, which takes the
+// player's selection, or a random legal option, through the same path a
+// click would - and that path arms the timer again for the next step. A
+// per-step thread would need a token to tell a stale countdown from the live
+// one; a single thread with a deadline has nothing to go stale.
 //
 // Counted in real time in 0.25s ticks: the draft runs with mission time
 // paused, and c_timeGame waits do not advance while it is (see
@@ -158,6 +161,137 @@ trigger g_dtimer_expire  = null;
 string  g_dtimer_note    = "";       // what happens at zero, shown after the seconds
 int     g_dtimer_dialog  = c_invalidDialogId;
 int     g_dtimer_label   = c_invalidDialogControlId;
+int     g_dtimer_btnConfirm = c_invalidDialogControlId;
+
+//==================================================================================================
+// DRAFT SELECTION (Tournament)
+//
+// On the clock, a click on a card only SELECTS it - marked [>] SELECTED, for
+// the clicking player only - and the step is taken by the Confirm button on
+// the timer bar. When the clock runs out, the selection is taken; with none,
+// a random legal option, as before. So a player can mark a choice early and
+// keep thinking without risking a random pick.
+//
+//   nothing selected, clock runs out   ->  random (the screen's own fallback)
+//   something selected, clock runs out ->  the selection
+//   something selected, Confirm        ->  the selection, now
+//
+// Kept per player, because the drafting-style screen is simultaneous: both
+// players can hold a selection at once. Every DraftTimer_Arm* clears them all,
+// so a new step starts blank. Steps armed with DraftTimer_ArmFor (the Protect
+// stage, which has its own Done button) take clicks directly, as before.
+//
+// A draft screen's part: in its click handler, DraftSelect_Active() decides
+// between DraftSelect_Pick (select) and acting at once; its onExpire reads
+// DraftSelect_Of(the player who is up). Only open or ban-target cards can be
+// selected, and a step's legal options cannot change until it is taken, so a
+// selection is still legal when the clock or Confirm takes it.
+//--------------------------------------------------------------------------------------------------
+bool[16]   g_dsel_has;
+int[16]    g_dsel_value;
+int[16]    g_dsel_control;
+int[16]    g_dsel_openState;     // the card's state before it was selected
+string[16] g_dsel_name;
+string[16] g_dsel_detail;
+bool       g_dsel_mode      = false;  // this step takes select + Confirm
+trigger    g_dsel_confirm   = null;   // run when a player clicks Confirm
+int        g_dsel_confirmer = 0;      // ...and which player that was
+
+// True when a click on a card should select it rather than take it.
+bool DraftSelect_Active() {
+    return GameMode_IsTournament() && g_dsel_mode && g_dtimer_armed;
+}
+
+// The player's selection, or -1 if they have none.
+int DraftSelect_Of(int player) {
+    if (!g_dsel_has[player]) { return -1; }
+    return g_dsel_value[player];
+}
+
+// The player who clicked Confirm - for an onConfirm that is not simply the
+// step's onExpire (the simultaneous drafting-style screen).
+int DraftSelect_Confirmer() {
+    return g_dsel_confirmer;
+}
+
+void DraftSelect_Draw(int player) {
+    string tag;
+    tag = "";
+    if (g_dsel_openState[player] == c_draftStateBanTarget) { tag = "SELECTED TO BAN"; }
+    DraftStyle_ApplyCard(g_dsel_control[player], PlayerGroupSingle(player), c_draftStateSelected,
+        DraftStyle_Card(c_draftStateSelected, tag, g_dsel_name[player], g_dsel_detail[player]), true);
+}
+
+// Put a previously selected card back the way the screen drew it.
+void DraftSelect_Undraw(int player) {
+    DraftStyle_ApplyCard(g_dsel_control[player], PlayerGroupSingle(player),
+        g_dsel_openState[player],
+        DraftStyle_Card(g_dsel_openState[player], "", g_dsel_name[player], g_dsel_detail[player]),
+        true);
+}
+
+// Select a card for player. value is what the screen's own choose function
+// takes; openState / name / detail are how the screen draws the card, so it
+// can be drawn back when the player selects another one.
+void DraftSelect_Pick(int player, int value, int control, int openState, string name, string detail) {
+    if (g_dsel_has[player]) {
+        if (g_dsel_control[player] == control) { return; }
+        DraftSelect_Undraw(player);
+    }
+    g_dsel_has[player]       = true;
+    g_dsel_value[player]     = value;
+    g_dsel_control[player]   = control;
+    g_dsel_openState[player] = openState;
+    g_dsel_name[player]      = name;
+    g_dsel_detail[player]    = detail;
+    DraftSelect_Draw(player);
+    if (g_dtimer_btnConfirm != c_invalidDialogControlId) {
+        DialogControlSetEnabled(g_dtimer_btnConfirm, PlayerGroupSingle(player), true);
+    }
+}
+
+// Forget a player's selection without redrawing anything - for when their
+// part of the step is over and the screen has been (or is about to be) redrawn.
+void DraftSelect_Drop(int player) {
+    g_dsel_has[player] = false;
+    if (g_dtimer_btnConfirm != c_invalidDialogControlId) {
+        DialogControlSetEnabled(g_dtimer_btnConfirm, PlayerGroupSingle(player), false);
+    }
+}
+
+void DraftSelect_ClearAll() {
+    int p;
+    p = 0;
+    while (p <= 15) {
+        g_dsel_has[p] = false;
+        p = p + 1;
+    }
+    if (g_dtimer_btnConfirm != c_invalidDialogControlId) {
+        DialogControlSetEnabled(g_dtimer_btnConfirm, PlayerGroupAll(), false);
+    }
+}
+
+// Redraw every live selection - after a screen redrew its board mid-step
+// (one player locking in on the simultaneous drafting-style screen).
+void DraftSelect_Reapply() {
+    int p;
+    p = 0;
+    while (p <= 15) {
+        if (g_dsel_has[p]) { DraftSelect_Draw(p); }
+        p = p + 1;
+    }
+}
+
+bool DraftSelect_OnConfirm(bool testConds, bool runActions) {
+    int p;
+    p = EventPlayer();
+    if (!DraftSelect_Active() || !g_dsel_has[p] || g_dsel_confirm == null) { return true; }
+    g_dsel_confirmer = p;
+    TriggerExecute(g_dsel_confirm, false, true);
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
 
 void DraftTimer_Show(bool visible) {
     if (g_dtimer_dialog == c_invalidDialogId) { return; }
@@ -166,6 +300,8 @@ void DraftTimer_Show(bool visible) {
 
 bool DraftTimer_Run(bool testConds, bool runActions) {
     int     secs;
+    int     p;
+    string  head;
     trigger expire;
 
     while (g_dtimer_running) {
@@ -181,10 +317,24 @@ bool DraftTimer_Run(bool testConds, bool runActions) {
                 }
             } else {
                 secs = FixedToInt(g_dtimer_left + 0.99);
+                head = "<c val=\"FFD54A\">TOURNAMENT</c>   "
+                    + "<c val=\"FFFFFF\">" + IntToString(secs) + "s</c>";
                 DialogControlSetPropertyAsText(g_dtimer_label, c_triggerControlPropertyText,
-                    PlayerGroupAll(), StringToText("<c val=\"FFD54A\">TOURNAMENT</c>   "
-                        + "<c val=\"FFFFFF\">" + IntToString(secs) + "s</c>"
+                    PlayerGroupAll(), StringToText(head
                         + "  <c val=\"AAAAAA\">left - " + g_dtimer_note + "</c>"));
+                // A player holding a selection reads what the clock will take.
+                if (g_dsel_mode) {
+                    p = 0;
+                    while (p <= 15) {
+                        if (g_dsel_has[p]) {
+                            DialogControlSetPropertyAsText(g_dtimer_label,
+                                c_triggerControlPropertyText, PlayerGroupSingle(p),
+                                StringToText(head + "  <c val=\"AAAAAA\">left - then</c> "
+                                    + "<c val=\"FFD54A\">" + g_dsel_name[p] + "</c>"));
+                        }
+                        p = p + 1;
+                    }
+                }
                 g_dtimer_left = g_dtimer_left - 0.25;
             }
         }
@@ -193,20 +343,39 @@ bool DraftTimer_Run(bool testConds, bool runActions) {
     return true;
 }
 
-// Start (or restart) the countdown for the step that is now up, with its own
-// length and a note on what happens at zero. No-op outside Tournament mode, so
-// every draft screen can call it unconditionally.
-void DraftTimer_ArmFor(trigger onExpire, int seconds, string note) {
+// Start (or restart) the countdown for the step that is now up. onConfirm is
+// what the Confirm button runs; null means this step takes clicks directly
+// and the button is hidden. No-op outside Tournament mode, so every draft
+// screen can call it unconditionally.
+void DraftTimer_Start(trigger onExpire, int seconds, string note, trigger onConfirm) {
+    trigger t;
+
     if (!GameMode_IsTournament()) { return; }
 
     if (g_dtimer_dialog == c_invalidDialogId) {
-        g_dtimer_dialog = DialogCreate(420, 44, c_anchorTop, 0, 90, false);
+        // Label on the left, Confirm on the right.
+        g_dtimer_dialog = DialogCreate(580, 52, c_anchorTop, 0, 90, false);
         DialogSetObservedType(g_dtimer_dialog, c_triggerObservedTypeObservedOrSelectedPlayerId);
         DialogSetImageVisible(g_dtimer_dialog, true);
         g_dtimer_label = DialogControlCreate(g_dtimer_dialog, c_triggerControlTypeLabel);
-        DialogControlSetSize(g_dtimer_label, PlayerGroupAll(), 400, 30);
-        DialogControlSetPosition(g_dtimer_label, PlayerGroupAll(), c_anchorCenter, 0, 0);
+        DialogControlSetSize(g_dtimer_label, PlayerGroupAll(), 420, 30);
+        DialogControlSetPosition(g_dtimer_label, PlayerGroupAll(), c_anchorLeft, 18, 0);
+
+        g_dtimer_btnConfirm = DialogControlCreate(g_dtimer_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_dtimer_btnConfirm, PlayerGroupAll());
+        DialogControlSetSize(g_dtimer_btnConfirm, PlayerGroupAll(), 124, 36);
+        DialogControlSetPosition(g_dtimer_btnConfirm, PlayerGroupAll(), c_anchorRight, 12, 0);
+        DialogControlSetPropertyAsText(g_dtimer_btnConfirm, c_triggerControlPropertyText,
+            PlayerGroupAll(), StringToText("<c val=\"FFD54A\">CONFIRM</c>"));
+        t = TriggerCreate("DraftSelect_OnConfirm");
+        TriggerAddEventDialogControl(t, c_playerAny, g_dtimer_btnConfirm,
+            c_triggerControlEventTypeClick);
     }
+
+    DraftSelect_ClearAll();
+    g_dsel_mode    = (onConfirm != null);
+    g_dsel_confirm = onConfirm;
+    DialogControlSetVisible(g_dtimer_btnConfirm, PlayerGroupAll(), g_dsel_mode);
 
     g_dtimer_expire = onExpire;
     g_dtimer_left   = IntToFixed(seconds);
@@ -220,14 +389,29 @@ void DraftTimer_ArmFor(trigger onExpire, int seconds, string note) {
     }
 }
 
-// The usual draft step: c_tournamentStepSeconds, then a random pick.
+// A step that takes clicks directly, with its own length and a note on what
+// happens at zero (the Protect stage, which has a Done button of its own).
+void DraftTimer_ArmFor(trigger onExpire, int seconds, string note) {
+    DraftTimer_Start(onExpire, seconds, note, null);
+}
+
+// A select-then-Confirm step of c_tournamentStepSeconds, with its own Confirm
+// action and note.
+void DraftTimer_ArmPick(trigger onExpire, trigger onConfirm, string note) {
+    DraftTimer_Start(onExpire, c_tournamentStepSeconds, note, onConfirm);
+}
+
+// The usual draft step: select, then Confirm; at zero, the selection or a
+// random pick. onExpire does both jobs - it reads the selection of whoever is
+// up, and only they can have one.
 void DraftTimer_Arm(trigger onExpire) {
-    DraftTimer_ArmFor(onExpire, c_tournamentStepSeconds, "then a random pick");
+    DraftTimer_ArmPick(onExpire, onExpire, "then a random pick");
 }
 
 // Stop counting (a step finished some other way, e.g. the debug auto-run).
 void DraftTimer_Disarm() {
     g_dtimer_armed = false;
+    DraftSelect_ClearAll();
     DraftTimer_Show(false);
 }
 
@@ -235,8 +419,10 @@ void DraftTimer_Disarm() {
 void DraftTimer_Shutdown() {
     g_dtimer_armed   = false;
     g_dtimer_running = false;
+    DraftSelect_ClearAll();
     if (g_dtimer_dialog != c_invalidDialogId) {
         DialogDestroy(g_dtimer_dialog);
         g_dtimer_dialog = c_invalidDialogId;
+        g_dtimer_btnConfirm = c_invalidDialogControlId;
     }
 }

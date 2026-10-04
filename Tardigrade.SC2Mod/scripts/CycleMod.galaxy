@@ -1285,6 +1285,12 @@ void CycleMod_DraftChoose(int idx) {
     }
 }
 
+// Whether modifier idx can still be banned or picked this step.
+bool CycleMod_DraftIsLive(int idx) {
+    if (idx <= 0 || idx > c_cycleModCount || g_cycle_taken[idx]) { return false; }
+    return CycleMod_OnBoard(idx);
+}
+
 bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
     int control;
     int idx;
@@ -1299,6 +1305,20 @@ bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
         if (control == g_cycle_btnMod[i]) { idx = i; break; }
         i = i + 1;
     }
+
+    // Tournament: the click selects; Confirm or the clock takes it.
+    if (DraftSelect_Active()) {
+        if (!CycleMod_DraftIsLive(idx)) { return true; }
+        if (g_cycle_draftPhase == 0) {
+            DraftSelect_Pick(EventPlayer(), idx, control, c_draftStateBanTarget,
+                CycleMod_Name(idx), CycleMod_Desc(idx));
+        } else {
+            DraftSelect_Pick(EventPlayer(), idx, control, c_draftStateOpen,
+                CycleMod_Name(idx), CycleMod_Desc(idx));
+        }
+        return true;
+    }
+
     CycleMod_DraftChoose(idx);
     return true;
 }
@@ -1329,9 +1349,13 @@ void CycleMod_DraftChooseRandom() {
     CycleMod_DraftChoose(i);
 }
 
-// Tournament: the clock ran out.
+// Tournament: Confirm was clicked, or the clock ran out - the selection if
+// there is one, else a random modifier.
 bool CycleMod_DraftAutoAct(bool testConds, bool runActions) {
-    CycleMod_DraftChooseRandom();
+    int sel;
+    sel = DraftSelect_Of(CycleMod_DraftPicker());
+    if (CycleMod_DraftIsLive(sel)) { CycleMod_DraftChoose(sel); }
+    else                           { CycleMod_DraftChooseRandom(); }
     return true;
 }
 
@@ -1428,6 +1452,7 @@ int     g_cycle_yoloLblSub = c_invalidDialogControlId;
 int[3]  g_cycle_yoloBtn;            // [c_cycleStyle*] one card per style
 trigger g_cycle_yoloTrig   = null;
 trigger g_cycle_yoloAuto   = null;
+trigger g_cycle_yoloConfirm = null; // Tournament: a player clicked Confirm
 trigger g_cycle_yoloCallback = null;
 bool    g_cycle_yoloDoneP1 = false;
 bool    g_cycle_yoloDoneP2 = false;
@@ -1439,16 +1464,20 @@ int     g_cycle_yoloWantP2 = 0;
 string ProtectDraft_CardRule();
 string ProtectDraft_ShortRule();
 
+string CycleMod_YoloName(int style) {
+    if (style == c_cycleStyleYolo)    { return "Go YOLO"; }
+    if (style == c_cycleStyleProtect) { return "Protect and Ban"; }
+    return "Draft normally";
+}
+
+string CycleMod_YoloDetail(int style) {
+    if (style == c_cycleStyleYolo)    { return "random race, 3 random modifiers, 7 random units"; }
+    if (style == c_cycleStyleProtect) { return ProtectDraft_CardRule(); }
+    return "ban and pick your race, modifiers and units";
+}
+
 string CycleMod_YoloCard(int style, int state, string tag) {
-    if (style == c_cycleStyleYolo) {
-        return DraftStyle_Card(state, tag, "Go YOLO",
-            "random race, 3 random modifiers, 7 random units");
-    }
-    if (style == c_cycleStyleProtect) {
-        return DraftStyle_Card(state, tag, "Protect and Ban", ProtectDraft_CardRule());
-    }
-    return DraftStyle_Card(state, tag, "Draft normally",
-        "ban and pick your race, modifiers and units");
+    return DraftStyle_Card(state, tag, CycleMod_YoloName(style), CycleMod_YoloDetail(style));
 }
 
 // One viewer's copy of the screen. decided / want: what the side this viewer
@@ -1531,11 +1560,31 @@ void CycleMod_YoloDecide(bool isP1, int want) {
         CycleMod_YoloResolve();
         return;
     }
+    // Tournament: that side's selection is spent; the other player's (if any)
+    // is drawn back over the refreshed board.
+    if (isP1) { DraftSelect_Drop(g_cycle_p1); } else { DraftSelect_Drop(g_cycle_p2); }
     CycleMod_YoloRefresh();
+    DraftSelect_Reapply();
     // One human deciding both sides in turn: the second decision is a step of
     // its own on the clock. Between two humans it is one simultaneous step, so
     // the first lock-in must not restart the other player's clock.
-    if (g_cycle_p1 == g_cycle_p2) { DraftTimer_Arm(g_cycle_yoloAuto); }
+    if (g_cycle_p1 == g_cycle_p2) {
+        DraftTimer_ArmPick(g_cycle_yoloAuto, g_cycle_yoloConfirm, "then Draft normally");
+    }
+}
+
+// Which side player is deciding for right now: 1 = P1, 2 = P2, 0 = none
+// (not a decider, or already locked in).
+int CycleMod_YoloSideOf(int player) {
+    if (g_cycle_p1 == g_cycle_p2) {
+        if (player != g_cycle_p1) { return 0; }
+        if (!g_cycle_yoloDoneP1)  { return 1; }
+        if (!g_cycle_yoloDoneP2)  { return 2; }
+        return 0;
+    }
+    if (player == g_cycle_p1 && !g_cycle_yoloDoneP1) { return 1; }
+    if (player == g_cycle_p2 && !g_cycle_yoloDoneP2) { return 2; }
+    return 0;
 }
 
 bool CycleMod_OnYoloClicked(bool testConds, bool runActions) {
@@ -1543,6 +1592,7 @@ bool CycleMod_OnYoloClicked(bool testConds, bool runActions) {
     int  control;
     int  want;
     int  style;
+    int  side;
 
     player  = EventPlayer();
     control = EventDialogControl();
@@ -1554,26 +1604,53 @@ bool CycleMod_OnYoloClicked(bool testConds, bool runActions) {
     }
     if (want < 0) { return true; }
 
-    if (g_cycle_p1 == g_cycle_p2) {
-        if (player != g_cycle_p1) { return true; }
-        if (!g_cycle_yoloDoneP1)      { CycleMod_YoloDecide(true, want); }
-        else if (!g_cycle_yoloDoneP2) { CycleMod_YoloDecide(false, want); }
+    side = CycleMod_YoloSideOf(player);
+    if (side == 0) { return true; }
+
+    // Tournament: the click selects; Confirm or the clock takes it.
+    if (DraftSelect_Active()) {
+        DraftSelect_Pick(player, want, control, c_draftStateOpen,
+            CycleMod_YoloName(want), CycleMod_YoloDetail(want));
         return true;
     }
-    if (player == g_cycle_p1 && !g_cycle_yoloDoneP1)      { CycleMod_YoloDecide(true, want); }
-    else if (player == g_cycle_p2 && !g_cycle_yoloDoneP2) { CycleMod_YoloDecide(false, want); }
+
+    CycleMod_YoloDecide(side == 1, want);
     return true;
 }
 
-// Tournament: the clock ran out - whoever hasn't decided drafts normally.
+// Tournament: a player clicked Confirm - lock in their selection.
+bool CycleMod_YoloConfirmAct(bool testConds, bool runActions) {
+    int player;
+    int side;
+    int want;
+
+    player = DraftSelect_Confirmer();
+    side = CycleMod_YoloSideOf(player);
+    want = DraftSelect_Of(player);
+    if (side == 0 || want < 0) { return true; }
+    CycleMod_YoloDecide(side == 1, want);
+    return true;
+}
+
+// Tournament: the clock ran out - whoever hasn't decided takes their
+// selection, or drafts normally if they have none.
 bool CycleMod_YoloAutoAct(bool testConds, bool runActions) {
+    int want1;
+    int want2;
+
+    want1 = DraftSelect_Of(g_cycle_p1);
+    want2 = DraftSelect_Of(g_cycle_p2);
+    if (want1 < 0) { want1 = c_cycleStyleNormal; }
+    if (want2 < 0) { want2 = c_cycleStyleNormal; }
+
     if (g_cycle_p1 == g_cycle_p2) {
-        if (!g_cycle_yoloDoneP1) { CycleMod_YoloDecide(true, c_cycleStyleNormal); }
-        else                     { CycleMod_YoloDecide(false, c_cycleStyleNormal); }
+        // One player's selection, for whichever side they are on now.
+        if (!g_cycle_yoloDoneP1) { CycleMod_YoloDecide(true, want1); }
+        else                     { CycleMod_YoloDecide(false, want1); }
         return true;
     }
-    if (!g_cycle_yoloDoneP1) { g_cycle_yoloDoneP1 = true; g_cycle_yoloWantP1 = c_cycleStyleNormal; }
-    if (!g_cycle_yoloDoneP2) { g_cycle_yoloDoneP2 = true; g_cycle_yoloWantP2 = c_cycleStyleNormal; }
+    if (!g_cycle_yoloDoneP1) { g_cycle_yoloDoneP1 = true; g_cycle_yoloWantP1 = want1; }
+    if (!g_cycle_yoloDoneP2) { g_cycle_yoloDoneP2 = true; g_cycle_yoloWantP2 = want2; }
     CycleMod_YoloResolve();
     return true;
 }
@@ -1587,6 +1664,7 @@ void CycleMod_YoloChoiceStart() {
     g_cycle_yoloWantP1 = c_cycleStyleNormal;
     g_cycle_yoloWantP2 = c_cycleStyleNormal;
     g_cycle_yoloAuto   = TriggerCreate("CycleMod_YoloAutoAct");
+    g_cycle_yoloConfirm = TriggerCreate("CycleMod_YoloConfirmAct");
 
     // Three 290-wide cards on a 300px pitch: -300 / 0 / +300 from the centre.
     g_cycle_yoloDlg = DialogCreate(940, 300, c_anchorCenter, 0, 0, true);
@@ -1630,7 +1708,7 @@ void CycleMod_YoloChoiceStart() {
     }
 
     CycleMod_YoloRefresh();
-    DraftTimer_Arm(g_cycle_yoloAuto);
+    DraftTimer_ArmPick(g_cycle_yoloAuto, g_cycle_yoloConfirm, "then Draft normally");
 }
 
 //--------------------------------------------------------------------------------------------------

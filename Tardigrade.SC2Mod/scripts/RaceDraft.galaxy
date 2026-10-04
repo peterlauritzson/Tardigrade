@@ -639,9 +639,19 @@ void RaceDraft_ChooseRandom() {
     RaceDraft_Choose(race);
 }
 
-// Tournament: the clock ran out.
+// Whoever is up: the banner in the ban phase, the picker after.
+int RaceDraft_UpPlayer() {
+    if (g_draft_phase == 0) { return g_draft_p1; }
+    return g_draft_p2;
+}
+
+// Tournament: Confirm was clicked, or the clock ran out - the selection if
+// there is one, else a random race.
 bool RaceDraft_AutoAct(bool testConds, bool runActions) {
-    RaceDraft_ChooseRandom();
+    int sel;
+    sel = DraftSelect_Of(RaceDraft_UpPlayer());
+    if (sel > 0 && sel != g_draft_bannedRace) { RaceDraft_Choose(sel); }
+    else                                      { RaceDraft_ChooseRandom(); }
     return true;
 }
 
@@ -684,6 +694,19 @@ bool RaceDraft_OnClicked(bool testConds, bool runActions) {
     // Ban phase is P1's, pick phase is P2's.
     if (g_draft_phase == 0 && player != g_draft_p1) { return true; }
     if (g_draft_phase != 0 && player != g_draft_p2) { return true; }
+
+    // Tournament: the click selects; Confirm or the clock takes it.
+    if (DraftSelect_Active()) {
+        if (selectedRace == g_draft_bannedRace) { return true; }
+        if (g_draft_phase == 0) {
+            DraftSelect_Pick(player, selectedRace, control, c_draftStateBanTarget,
+                RaceName(selectedRace), RaceDraft_RaceRole(selectedRace));
+        } else {
+            DraftSelect_Pick(player, selectedRace, control, c_draftStateOpen,
+                RaceName(selectedRace), RaceDraft_RaceRole(selectedRace));
+        }
+        return true;
+    }
 
     RaceDraft_Choose(selectedRace);
     return true;

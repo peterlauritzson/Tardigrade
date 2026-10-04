@@ -88,7 +88,7 @@ card columns move left via `g_cycle_boardShift`; the legacy phase board keeps
   `RaceDraft`, so it only uses natives + DraftStyle and addresses
   `PlayerGroupAll()` directly (which is what `Tardigrade_Viewers()` returns).
 - **Casual** — the draft as before.
-- **Tournament** — `c_tournamentStepSeconds` = 10 **real** seconds per draft
+- **Tournament** — `c_tournamentStepSeconds` = 15 **real** seconds per draft
   step (`DraftTimer_Arm`; `DraftTimer_ArmFor(trigger, seconds, note)` takes a
   custom length and the "then ..." note — the Protect and Ban steps use 30). One persistent thread (`DraftTimer_Run`, 0.25s `c_timeReal` ticks —
   the draft runs with mission time paused) plus a small top-center dialog. Each
@@ -96,13 +96,26 @@ card columns move left via `g_cycle_boardShift`; the legacy phase board keeps
   (`RaceDraft_UpdateUI`, `CycleMod_UpdateDraftUI`, `RosterDraft_BeginStep`);
   at zero the thread disarms and runs the screen's auto-pick
   (`RaceDraft_AutoAct` / `CycleMod_DraftAutoAct` / `RosterDraft_AutoAct`,
-  `waitUntilDone`), which takes a random legal option through the **same
-  choose path a click uses** (`RaceDraft_Choose` / `CycleMod_DraftChoose` /
-  `RosterDraft_Choose`) — and that path re-arms for the next step. The click
-  handlers now only check "is it this player's turn" and call the choose
-  function. `DraftTimer_Arm` is a no-op outside Tournament, so the screens
-  call it unconditionally. The debug auto-run disarms it;
-  `Tardigrade_StartGame` shuts it down. The mode screen itself is not timed.
+  `waitUntilDone`), which takes the up player's selection — or a random legal
+  option if none — through the **same choose path a click uses**
+  (`RaceDraft_Choose` / `CycleMod_DraftChoose` / `RosterDraft_Choose`) — and
+  that path re-arms for the next step. `DraftTimer_Arm` is a no-op outside
+  Tournament, so the screens call it unconditionally. The debug auto-run
+  disarms it; `Tardigrade_StartGame` shuts it down. The mode screen itself is
+  not timed.
+- **Select → Confirm** (Tournament only, `DRAFT SELECTION` in
+  `GameMode.galaxy`): while `DraftSelect_Active()`, a card click calls
+  `DraftSelect_Pick(player, value, control, openState, name, detail)` instead
+  of the choose function — the card is redrawn as `c_draftStateSelected`
+  (`[>] SELECTED`, gold, only for that player) and the **CONFIRM** button on
+  the timer bar enables for them. Confirm runs the step's onConfirm (for
+  `DraftTimer_Arm` that is the same auto-pick trigger, which reads
+  `DraftSelect_Of(up player)`). Selections are per player (the drafting-style
+  screen is simultaneous; it uses `DraftTimer_ArmPick` with its own
+  `CycleMod_YoloConfirmAct`, and `DraftSelect_Reapply` after one side locks
+  in) and are cleared on every arm/disarm. `DraftTimer_ArmFor` steps (the
+  Protect stage, which has its own Done button) hide Confirm and take clicks
+  directly.
 - **Testing** — `TestingMode_Start` replaces the whole draft chain (the race
   draft UI is never shown). Everyone keeps the lobby race's town hall (and
   Overlord) from the melee start — `RaceDraft_Setup` removed only the workers —
@@ -224,8 +237,8 @@ The former "cycle" draft. **Per-player draft, no rotation.**
   `g_cycle_yoloWant*`; each player's own view shows `LOCKED IN` + "waiting").
   With one human deciding for both sides it is sequential, P1 then P2.
   Tournament arms the timer once for the simultaneous step (re-armed per
-  decision only in the sequential case); timeout = draft normally
-  (`CycleMod_YoloAutoAct`). `CycleMod_YoloResolve` reveals, calls
+  decision only in the sequential case); timeout = the player's selection,
+  else draft normally (`CycleMod_YoloAutoAct`). `CycleMod_YoloResolve` reveals, calls
   `CycleMod_TakeYolo` (sets `g_cycle_p1Yolo`/`p2Yolo`, announces) for each
   YOLO side, then runs the callback. Nothing is rolled there.
   `CycleMod_StartDraftPerPlayer` keeps the flags; if both are YOLO it rolls

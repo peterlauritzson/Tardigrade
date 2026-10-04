@@ -948,9 +948,39 @@ void RosterDraft_ChooseRandom() {
     else           { RosterDraft_Choose(slot); }
 }
 
-// Tournament: the clock ran out.
+// Whoever is up: the banner in the ban phase, else the picker.
+int RosterDraft_UpPlayer() {
+    if (g_roster_phase == 1) { return g_roster_banOrder[g_roster_banIndex + 1]; }
+    return g_roster_pickOrder[g_roster_pickIndex + 1];
+}
+
+// Whether the pool on screen belongs to P1: during bans it is the banner's
+// opponent's, otherwise the picker's own.
+bool RosterDraft_PoolIsP1() {
+    if (g_roster_phase == 1) { return !g_roster_banIsP1[g_roster_banIndex + 1]; }
+    return g_roster_pickIsP1[g_roster_pickIndex + 1];
+}
+
+// The state of pool slot idx this step, for the player who is up - open or a
+// ban target if it can still be taken.
+int RosterDraft_UpSlotState(int idx) {
+    return RosterDraft_SlotState(RosterDraft_PoolIsP1(), idx, g_roster_phase == 1);
+}
+
+bool RosterDraft_SlotIsLive(int idx) {
+    int state;
+    if (idx <= 0 || idx > c_rosterPoolMax) { return false; }
+    state = RosterDraft_UpSlotState(idx);
+    return state == c_draftStateOpen || state == c_draftStateBanTarget;
+}
+
+// Tournament: Confirm was clicked, or the clock ran out - the selection if
+// there is one, else a random unit.
 bool RosterDraft_AutoAct(bool testConds, bool runActions) {
-    RosterDraft_ChooseRandom();
+    int sel;
+    sel = DraftSelect_Of(RosterDraft_UpPlayer());
+    if (RosterDraft_SlotIsLive(sel)) { RosterDraft_Choose(sel); }
+    else                             { RosterDraft_ChooseRandom(); }
     return true;
 }
 
@@ -1005,6 +1035,8 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
     int player;
     int poolIndex;
     int btnIdx;
+    int race;
+    string unitType;
 
     control = EventDialogControl();
     player  = EventPlayer();
@@ -1022,10 +1054,18 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
     if (poolIndex == 0) { return true; }
 
     // Only whoever is up may act.
-    if (g_roster_phase == 1) {
-        if (player != g_roster_banOrder[g_roster_banIndex + 1]) { return true; }
-    } else {
-        if (player != g_roster_pickOrder[g_roster_pickIndex + 1]) { return true; }
+    if (player != RosterDraft_UpPlayer()) { return true; }
+
+    // Tournament: the click selects; Confirm or the clock takes it.
+    if (DraftSelect_Active()) {
+        if (!RosterDraft_SlotIsLive(poolIndex)) { return true; }
+        if (RosterDraft_PoolIsP1()) { race = g_roster_p1Race; }
+        else                        { race = g_roster_p2Race; }
+        unitType = GetRosterPoolUnit(race, poolIndex);
+        if (unitType == "") { return true; }
+        DraftSelect_Pick(player, poolIndex, control, RosterDraft_UpSlotState(poolIndex),
+            RosterUnitDisplayName(unitType), RosterUnitRole(unitType));
+        return true;
     }
 
     RosterDraft_Choose(poolIndex);

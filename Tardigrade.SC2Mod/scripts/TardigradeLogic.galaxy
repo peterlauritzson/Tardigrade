@@ -23,8 +23,9 @@
 //                      others: opening picks, bans, final picks; each side ends
 //                      with 6 units (7 for YOLO). Enforced in-game.
 //
-// In Tournament mode every draft step above has a time limit, after which a
-// random legal choice is made.
+// In Tournament mode every draft step above has a time limit, and a click only
+// selects; Confirm takes the selection. At zero the selection is taken, or a
+// random legal choice if there is none (GameMode.galaxy, DRAFT SELECTION).
 //
 // Then a summary screen (both rosters and modifier sets) counts down 30s -
 // 3s once both players click Ready; a YOLO side may reroll its units there, one
