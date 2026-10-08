@@ -148,6 +148,12 @@ const string c_cycleMineDirectEffect = "WidowMineExplodeDirect";
 const fixed  c_cycleAutoGasInterval = 2.1;
 const int    c_cycleAutoGasTrip     = 4;
 const int    c_cycleAutoGasTripRich = 8;
+// A gas building with none of its owner's finished town halls within this
+// range is "remote" and pays at a third of the rate (one trip per 3 intervals).
+// A standard base's geysers sit about 7 from the town hall's centre; 10 leaves
+// room for odd layouts without reaching a neighbouring base's geysers.
+const fixed  c_cycleAutoGasBaseRange  = 10.0;
+const int    c_cycleAutoGasRemoteSlow = 3;
 // Radius the evicted workers search for a mineral patch to go mine instead.
 const fixed  c_cycleAutoGasMineralRange = 12.0;
 // The script-side redirect (CycleMod_OnWorkerGatherOrder / _KeepWorkerOutOfGas)
@@ -321,6 +327,13 @@ int[16] g_cycle_panelHdrMine;
 int[16] g_cycle_panelHdrOpp;
 int[16][4] g_cycle_panelRowMine;
 int[16][4] g_cycle_panelRowOpp;
+// Live stat label at the right end of each row (see CycleMod_PanelStatsTick) and
+// the modifier index each row shows, so a refresh can look its number up.
+int[16][4] g_cycle_panelStatMine;
+int[16][4] g_cycle_panelStatOpp;
+int[16][4] g_cycle_panelModMine;
+int[16][4] g_cycle_panelModOpp;
+fixed   g_cycle_panelStatsAt = 0.0;   // mission time of the last stat refresh
 bool[16] g_cycle_panelExpanded;
 // Auto-fold: mission time at which a panel folds itself away (0 = never). Set
 // when the panel opens on its own (game start, activation); cleared the moment
@@ -423,6 +436,98 @@ bool         g_cycle_energyCached  = false;
 bool         g_cycle_arcaneEnabled = false;
 
 //--------------------------------------------------------------------------------------------------
+// Floating feedback: a short line of text that rises off a point and fades, so
+// a modifier that fires by itself (Battle Blink, Refund, Overwatch, Veteran)
+// is seen to fire. Without it those modifiers read as random - nothing on
+// screen says a unit just teleported because of a draft pick. Fogged, so an
+// opponent only sees what happens where they have vision.
+//
+// Defined up here, not beside the modifiers that use it, because functions must
+// precede their first use and the Auto Refinery tick sits far above them.
+//--------------------------------------------------------------------------------------------------
+const fixed c_cycleFloatSeconds = 1.6;
+
+// fontSize is separate so the frequent, low-stakes floats (Rush!, Entrenched,
+// +gas) can be smaller than the one-off ones.
+void CycleMod_FloatTextSized(point where, string msg, string hex, playergroup players, int fontSize) {
+    int tag;
+    if (where == null) { return; }
+    tag = TextTagCreate(StringToText("<c val=\"" + hex + "\">" + msg + "</c>"),
+        fontSize, where, 1.5, true, true, players);
+    TextTagSetVelocity(tag, 0.6, 90.0);
+    TextTagSetTime(tag, c_textTagTimeFadeOut, c_cycleFloatSeconds * 0.5);
+    TextTagSetTime(tag, c_textTagTimeDuration, c_cycleFloatSeconds);
+}
+
+void CycleMod_FloatText(point where, string msg, string hex, playergroup players) {
+    CycleMod_FloatTextSized(where, msg, hex, players, 20);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Live modifier stats, shown beside each row of the in-game Active Modifiers
+// panel: what each side's modifier has actually done so far this match.
+// Indexed [team 1..2][modifier 1..19]; a team's number is credited to the team
+// that BENEFITS (the healed unit's owner, the blinking unit's owner...).
+//--------------------------------------------------------------------------------------------------
+fixed[3][20] g_cycle_stat;
+
+// 1 / 2 for a player on that team, 0 for anyone else (spectators, neutrals).
+// CycleMod_PanelRole, further down, answers the same question for the panel.
+int CycleMod_TeamOfPlayer(int player) {
+    if (PlayerGroupHasPlayer(g_draft_team1, player)) { return 1; }
+    if (PlayerGroupHasPlayer(g_draft_team2, player)) { return 2; }
+    return 0;
+}
+
+void CycleMod_StatAdd(int player, int modIdx, fixed amount) {
+    int team;
+    if (modIdx < 1 || modIdx > c_cycleModCount) { return; }
+    if (amount <= 0.0) { return; }
+    team = CycleMod_TeamOfPlayer(player);
+    if (team == 0) { return; }
+    g_cycle_stat[team][modIdx] = g_cycle_stat[team][modIdx] + amount;
+}
+
+// 0..999 as a whole number, above that one decimal and a "k" (1234 -> "1.2k").
+string CycleMod_StatNum(fixed v) {
+    int n;
+    int tenths;
+    n = FixedToInt(v + 0.5);
+    if (n < 1) { n = 1; }
+    if (n < 1000) { return IntToString(n); }
+    tenths = FixedToInt(v / 100.0 + 0.5);
+    return IntToString(tenths / 10) + "." + IntToString(tenths - (tenths / 10) * 10) + "k";
+}
+
+// The panel's grey stat line for one modifier; "" for a modifier with nothing to
+// count and for a count of zero (an unfired modifier shows no clutter).
+string CycleMod_StatText(int modIdx, fixed v) {
+    string suffix;
+    if (v <= 0.0) { return ""; }
+    suffix = "";
+    if (modIdx == 13)      { suffix = " back"; }
+    else if (modIdx == 9)  { suffix = " saves"; }
+    else if (modIdx == 8)  { suffix = " bonus dmg"; }
+    else if (modIdx == 4)  { suffix = " healed"; }
+    else if (modIdx == 19) { suffix = " healed"; }
+    else if (modIdx == 10) { suffix = " kills"; }
+    else if (modIdx == 11) { suffix = " gas"; }
+    else if (modIdx == 18) { suffix = " rushes"; }
+    else if (modIdx == 6)  { suffix = " holds"; }
+    else if (modIdx == 14) { suffix = " shared"; }
+    if (suffix == "") { return ""; }
+    return "<c val=\"AAAAAA\">" + CycleMod_StatNum(v) + suffix + "</c>";
+}
+
+// Veterancy marker: a small "V<stacks>" tag riding on the unit so veteran
+// stacks can be read without selecting it (see CycleMod_VetTagEnsure).
+const fixed c_cycleVetTagHeight = 1.0;   // playtest knob: how far above the unit's origin the tag floats
+const int   c_cycleVetTagFont   = 12;
+const int   c_cycleStateVetTag      = 10;   // text tag id + 1 (0 = none)
+const int   c_cycleStateVetTagShown = 11;   // stack count the tag currently shows
+unitgroup   g_cycle_vetTagged = null;       // units wearing a tag; created lazily (see VetTagEnsure)
+
+//--------------------------------------------------------------------------------------------------
 // Data: modifier behavior link, display name, and effect description.
 //--------------------------------------------------------------------------------------------------
 string CycleMod_Behavior(int idx) {
@@ -514,18 +619,18 @@ string CycleMod_Desc(int idx) {
     if (idx == 3)  { return "your workers no longer cost supply"; }
     if (idx == 4)  { return "attacks heal 30% of damage dealt, max 8% of HP per second"; }
     if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
-    if (idx == 6)  { return "hold position 7.5s for +2 armor and +1 range"; }
+    if (idx == 6)  { return "units holding 7.5s get +2 armor and +1 range; not buildings"; }
     if (idx == 7)  { return "double energy regeneration, units and structures"; }
-    if (idx == 8)  { return "after 10s idle, +50% damage for 1s of attacking"; }
+    if (idx == 8)  { return "units idle 10s: +50% damage for 1s of attacking; not buildings"; }
     if (idx == 9)  { return "at 30% health, blink a short hop away; re-arms at 65%"; }
-    if (idx == 10) { return "kills: permanent +3% to all speeds and regen, stacks to 15"; }
-    if (idx == 11) { return "from 0:00: gas buildings mine themselves, cost 200 minerals"; }
+    if (idx == 10) { return "unit kills: permanent +3% to all speeds and regen, to 15"; }
+    if (idx == 11) { return "from 0:00: gas mines itself (1/3 rate away from a base); 200m"; }
     if (idx == 12) { return "no unit bans against you; YOLO: +1 unit; Protect: +4 points"; }
-    if (idx == 13) { return "anything of yours that dies refunds 25% of its cost"; }
+    if (idx == 13) { return "any unit of yours that dies refunds 25% of its cost"; }
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
     if (idx == 15) { return "from 0:00: gas costs and gas mined both 1.5x minerals"; }
     if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
-    if (idx == 17) { return "everything but workers builds, trains and morphs 15% faster"; }
+    if (idx == 17) { return "everything but workers builds, morphs and researches 15% faster"; }
     if (idx == 18) { return "taking damage gives +50% move speed for 3s"; }
     if (idx == 19) { return "a unit that dies heals nearby allies for 20% of its max HP"; }
     return "";
@@ -710,8 +815,25 @@ bool CycleMod_ModsLive() {
     return GameGetMissionTime() >= c_cycleActivationDelay;
 }
 
+// Modifiers that are about a UNIT's conduct - holding ground, waiting, racking
+// up kills - and never reach structures. A building never moves, so it would
+// sit permanently Entrenched; it spends most of its life idle, so every cannon
+// and spine would open each fight on an Overwatch charge; and a Planetary
+// Fortress or a cannon wall would bank Veteran stacks no army could match.
+// Refund is about losing an army, not a base: a quarter back on every
+// building razed would soften the one loss that is meant to end games.
+// Spawned children are unaffected: the Auto-Turret is a structure, but Veteran
+// asks about its Raven (CycleMod_VeteranRoot) and its stacks are copied by
+// CycleMod_SyncVeteranStacks, which does not come through here.
+bool CycleMod_ModSkipsStructures(string beh) {
+    return beh == "TardigradeMod_Entrenchment" || beh == "TardigradeMod_Overwatch"
+        || beh == "TardigradeMod_VeteranForces" || beh == "TardigradeMod_Refund";
+}
+
 bool CycleMod_UnitModActive(unit u, string beh) {
     if (CycleMod_IsWorker(u) && !CycleMod_ModReachesWorkers(beh)) { return false; }
+    if (CycleMod_ModSkipsStructures(beh)
+        && UnitTypeTestAttribute(UnitGetType(u), c_unitAttributeStructure)) { return false; }
     if (c_cyclePhaseMode) { return g_cycle_activeBehavior == beh; }
     // Nested rather than &&'d: the index lookup is a string walk over the whole
     // pool, and it only needs to run during the opening minutes.
@@ -1937,6 +2059,35 @@ bool CycleMod_IsHostileTarget(unit source, unit target) {
     return true;
 }
 
+// Whether a live unit of the opposing team is within range of u. Gates the
+// "Entrenched" / "Overwatch ready" floats: without it every unit idling at a
+// rally point would float text constantly. Only participants count, so
+// neutral critters, rocks and resources never trip it.
+const fixed c_cycleArmFloatRange = 15.0;
+
+bool CycleMod_EnemyNear(unit u, fixed range) {
+    unitgroup found;
+    unit      candidate;
+    int       count;
+    int       i;
+
+    found = UnitGroupAlliance(UnitGetOwner(u), c_unitAllianceEnemy,
+        RegionCircle(UnitGetPosition(u), range),
+        UnitFilter(0, 0, (1 << c_targetFilterMissile),
+            (1 << (c_targetFilterDead - 32)) | (1 << (c_targetFilterHidden - 32))), 0);
+    count = UnitGroupCount(found, c_unitCountAll);
+    i = 1;
+    while (i <= count) {
+        candidate = UnitGroupUnit(found, i);
+        if (UnitIsAlive(candidate) && CycleMod_IsParticipantUnit(candidate)
+            && CycleMod_IsHostileTarget(u, candidate)) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
 // Damage whose Overwatch bonus is baked into the numbers by
 // CycleMod_ApplyOverwatchDamageTeam, and which the trigger must therefore
 // leave alone so the two can't stack. All of a Baneling's damage; only a Widow
@@ -3131,8 +3282,8 @@ string CycleMod_WorkerGatherAbil(int i) {
 //--------------------------------------------------------------------------------------------------
 // Factory Lines (modifier 17): everything the side builds, trains, warps in or
 // morphs into goes up 15% faster (build rate, so time / 1.15) - structures,
-// add-ons, units, and production morphs like Orbital, Lair or Baneling. Workers
-// are the exception, and research is not included.
+// add-ons, units, research, and production morphs like Orbital, Lair or
+// Baneling. Workers are the exception.
 //
 // Per-player catalog, like Minerals Only: each time field is set from its
 // shipped value (CycleMod_CatalogBase), so testing mode switching it off and on
@@ -3141,6 +3292,7 @@ string CycleMod_WorkerGatherAbil(int i) {
 //     whose first Unit is an SCV, Probe or Drone is skipped.
 //   - CAbilWarpTrain: the same Time, plus the Charge and Cooldown times - a
 //     warp gate's recharge is its real production time.
+//   - CAbilResearch: InfoArray[ResearchN].Time - every upgrade.
 //   - CAbilMorph: only InfoArray entries with Score set, which is how the data
 //     tells a production morph (Lair, Orbital, Baneling, Brood Lord) from a
 //     mode switch (Siege Mode, Burrow, Hellbat). Every section's Delay and
@@ -3236,6 +3388,8 @@ void CycleMod_EnsureProdCache() {
 
     if (g_cycle_prodCached) { return; }
     g_cycle_prodCached = true;
+    // Research slots share Minerals Only's named-or-numbered probe.
+    CycleMod_ResolveCostPaths();
 
     // The same named-or-numbered doubt as CycleMod_ResolveCostPaths, probed
     // against values the melee data is known to hold.
@@ -3270,6 +3424,12 @@ void CycleMod_EnsureProdCache() {
                         CycleMod_AddProdField(abil, prefix + ".Cooldown.TimeUse");
                     }
                 }
+                slot = slot + 1;
+            }
+        } else if (cls == c_cycleAbilClassResearch) {
+            slot = 1;
+            while (slot <= c_cycleResearchSlots) {
+                CycleMod_AddProdField(abil, CycleMod_ResearchSlotPath(slot) + ".Time");
                 slot = slot + 1;
             }
         } else if (cls == c_cycleAbilClassMorph) {
@@ -3357,15 +3517,44 @@ bool CycleMod_MakeUnharvestable(unit building) {
     return clean;
 }
 
+// Is one of the owner's finished town halls close enough to count as the base
+// this gas building belongs to? A Command Center in the air is a different unit
+// type (CommandCenterFlying) and so does not count - just as workers could not
+// return gas to it either.
+bool CycleMod_GasBuildingHasBase(unit building) {
+    unitgroup halls;
+    unit      hall;
+    int       count;
+    int       i;
+
+    halls = UnitGroup(null, UnitGetOwner(building),
+        RegionCircle(UnitGetPosition(building), c_cycleAutoGasBaseRange),
+        UnitFilter((1 << c_targetFilterStructure), 0, 0, 0), 0);
+    count = UnitGroupCount(halls, c_unitCountAll);
+    i = 1;
+    while (i <= count) {
+        hall = UnitGroupUnit(halls, i);
+        if (CycleMod_IsTownHall(hall)
+            && !UnitTestState(hall, c_unitStateUnderConstruction)) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
 void CycleMod_AutoRefineryTick(unit building) {
     fixed now;
     fixed paidUpTo;
+    fixed interval;
     int   trip;
     int   left;
     int   pay;
+    int   total;
 
     if (UnitTestState(building, c_unitStateUnderConstruction)) { return; }
 
+    total    = 0;
     now      = GameGetMissionTime();
     paidUpTo = UnitGetCustomValue(building, c_cycleStateAutoGas);
     // First sight since it finished (or since the modifier switched on). Order
@@ -3388,8 +3577,15 @@ void CycleMod_AutoRefineryTick(unit building) {
     if (CycleMod_IsRichGasBuilding(building)) { trip = c_cycleAutoGasTripRich; }
     else                                       { trip = c_cycleAutoGasTrip; }
 
-    while (now - paidUpTo >= c_cycleAutoGasInterval) {
-        paidUpTo = paidUpTo + c_cycleAutoGasInterval;
+    // Same trip size, three times as far apart, while no town hall is near -
+    // checked every tick, so building or losing the base switches the rate.
+    interval = c_cycleAutoGasInterval;
+    if (!CycleMod_GasBuildingHasBase(building)) {
+        interval = c_cycleAutoGasInterval * IntToFixed(c_cycleAutoGasRemoteSlow);
+    }
+
+    while (now - paidUpTo >= interval) {
+        paidUpTo = paidUpTo + interval;
         left = FixedToInt(UnitGetCustomValue(building, c_cycleStateAutoGasLeft));
         if (left <= 0) {
             paidUpTo = now;
@@ -3406,8 +3602,17 @@ void CycleMod_AutoRefineryTick(unit building) {
         // so auto gas counts as mined gas everywhere it is reported.
         PlayerModifyPropertyInt(UnitGetOwner(building), c_playerPropVespeneCollected,
             c_playerPropOperAdd, pay);
+        total = total + pay;
     }
     UnitSetCustomValue(building, c_cycleStateAutoGas, paidUpTo);
+
+    // One float per tick for however many trips it caught up on, owner only
+    // (it is their income), plus the panel's running gas total.
+    if (total > 0) {
+        CycleMod_FloatTextSized(UnitGetPosition(building), "+" + IntToString(total), "7CFC9A",
+            PlayerGroupSingle(UnitGetOwner(building)), 14);
+        CycleMod_StatAdd(UnitGetOwner(building), c_cycleModAutoRefinery, IntToFixed(total));
+    }
 }
 
 // Give the geyser under a destroyed automatic refinery the gas the refinery
@@ -3643,6 +3848,7 @@ void CycleMod_ApplyCatalogMods(bool fromStart) {
 
 void CycleMod_PanelPeekAll(fixed seconds);   // defined with the panel, below
 void CycleMod_PanelFoldTick();
+void CycleMod_PanelStatsTick();
 
 // Heads-up shortly before activation (game seconds; ~10 on the clock). The
 // switch-over takes the map vision away from everyone at once, and a chat line
@@ -3886,6 +4092,8 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
         left = left - 1;
         i    = i + 1;
     }
+    // What actually moved onto partners: the pot minus what flowed back.
+    CycleMod_StatAdd(UnitGetOwner(victim), c_cycleModSharedDamage, IntToFixed(total - kept - rest));
     kept = kept + rest;
 
     // Debug mode only (solo tests): the exact split for every absorbed hit, so
@@ -4027,7 +4235,7 @@ void CycleMod_SyncVeteranStacks(unit child) {
 // command-card button, no hotkey, no 5-second channel to interrupt.
 //
 // "Lost" is any death, whoever caused it: an enemy, your own Siege Tank's
-// splash, your own Baneling, a Terran building burning down. Friendly fire is
+// splash, your own Baneling. Friendly fire is
 // not an exploit worth guarding against - killing your own unit to get a
 // quarter of it back still costs you the other three quarters.
 //
@@ -4082,24 +4290,8 @@ fixed CycleMod_UnitCost(string unitType, string resource, int player) {
     return StringToFixed(costText);
 }
 
-//--------------------------------------------------------------------------------------------------
-// Floating feedback: a short line of text that rises off a point and fades, so
-// a modifier that fires by itself (Battle Blink, Refund, Overwatch, Veteran)
-// is seen to fire. Without it those modifiers read as random - nothing on
-// screen says a unit just teleported because of a draft pick. Fogged, so an
-// opponent only sees what happens where they have vision.
-//--------------------------------------------------------------------------------------------------
-const fixed c_cycleFloatSeconds = 1.6;
-
-void CycleMod_FloatText(point where, string msg, string hex, playergroup players) {
-    int tag;
-    if (where == null) { return; }
-    tag = TextTagCreate(StringToText("<c val=\"" + hex + "\">" + msg + "</c>"),
-        20, where, 1.5, true, true, players);
-    TextTagSetVelocity(tag, 0.6, 90.0);
-    TextTagSetTime(tag, c_textTagTimeFadeOut, c_cycleFloatSeconds * 0.5);
-    TextTagSetTime(tag, c_textTagTimeDuration, c_cycleFloatSeconds);
-}
+// (CycleMod_FloatText lives near the top of the file, with the other early
+// helpers, because the Auto Refinery tick far above here floats text too.)
 
 // Types whose unit-died event can be a morph, a merge or a cancellation rather
 // than a death. Everything else only ever dies by actually dying. The Baneling
@@ -4145,6 +4337,7 @@ void CycleMod_PayRefund(unit dead, unit source) {
     if (gas > 0.0) {
         PlayerModifyPropertyFixed(owner, c_playerPropVespene, c_playerPropOperAdd, gas);
     }
+    CycleMod_StatAdd(owner, c_cycleModRefund, minerals + gas);
     // Owner only: the payout is their income, not the opponent's business.
     if (gas > 0.0) {
         CycleMod_FloatText(UnitGetPosition(dead), "+" + IntToString(FixedToInt(minerals))
@@ -4253,6 +4446,7 @@ void CycleMod_TryBattleBlink(unit u, unit attacker) {
     // The teleport itself is silent (see CURRENT_STATE "Battle Blink has no
     // visual"), so mark the spot it left - players look where the unit was.
     CycleMod_FloatText(from, "Blink!", "B48CFF", Tardigrade_Viewers());
+    CycleMod_StatAdd(UnitGetOwner(u), 9, 1.0);
     Debug_Log("Battle Blink: " + UnitGetType(u) + " at "
         + FixedToString(frac * 100.0, 0) + "% away from "
         + UnitGetType(attacker));
@@ -4264,12 +4458,20 @@ void CycleMod_TryBattleBlink(unit u, unit attacker) {
 // the multiplier on a speed of 0 is harmless, and it is live the moment the
 // unit unsieges or the disable ends.
 void CycleMod_TryAdrenaline(unit u) {
+    bool fresh;
+
     if (u == null || !UnitIsAlive(u)) { return; }
     if (!CycleMod_IsCombatUnit(u)) { return; }
     if (UnitTestState(u, c_unitStateHallucination)) { return; }
     if (CycleMod_IsShareExemptType(UnitGetType(u))) { return; }
     if (!CycleMod_UnitModActive(u, c_cycleAdrenalineBehavior)) { return; }
+    // Only a NEW rush floats and counts; a hit during one just refreshes it.
+    fresh = UnitBehaviorCount(u, c_cycleAdrenalineRush) == 0;
     UnitBehaviorAdd(u, c_cycleAdrenalineRush, u, 1);
+    if (fresh) {
+        CycleMod_FloatTextSized(UnitGetPosition(u), "Rush!", "FF6A6A", Tardigrade_Viewers(), 16);
+        CycleMod_StatAdd(UnitGetOwner(u), c_cycleModAdrenaline, 1.0);
+    }
 }
 
 // Healing the mods hand out goes to life first, then spills whatever is left
@@ -4343,6 +4545,7 @@ void CycleMod_PredatorLeech(unit u, fixed dealt) {
     used = FixedToInt(heal / step + 0.5);
     if (used < 1) { used = 1; }
     CycleMod_Mend(u, heal);
+    CycleMod_StatAdd(UnitGetOwner(u), 4, heal);   // heal is already capped to the room available
     UnitBehaviorAdd(u, c_cyclePredatorSated, u, used);
 }
 
@@ -4456,6 +4659,7 @@ void CycleMod_TryMartyrdom(unit dead, unit source) {
     }
 
     if (healed < 1.0) { return; }
+    CycleMod_StatAdd(UnitGetOwner(dead), c_cycleModMartyrdom, healed);
     CycleMod_FloatText(UnitGetPosition(dead), "+" + IntToString(FixedToInt(healed + 0.5)),
         "7FFF8A", PlayerGroupSingle(UnitGetOwner(dead)));
     Debug_Log("Martyrdom: " + UnitGetType(dead) + " died, healed "
@@ -4508,11 +4712,9 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     if (EventUnitDamageEffect() == c_cycleShareEffect
         && !CycleMod_IsHostileTarget(source, target)) { return true; }
 
-    // Overwatch bookkeeping runs BEFORE the structure filter below. The scan
-    // arms static defence exactly like a mobile unit, so when a cannon's damage
-    // bailed out here it never registered an attack and never consumed the
-    // buff - leaving every cannon, turret and spine permanently buffed instead
-    // of getting one bonus shot. Both this and CycleMod_OnUnitStartedAttack
+    // Overwatch bookkeeping runs BEFORE the structure filter below. Structures
+    // no longer arm, but the Auto-Turret is a structure whose damage has to
+    // reach its Raven's Overwatch state just below. Both this and CycleMod_OnUnitStartedAttack
     // reset the idle timer, so a missed event on either path cannot strand a
     // unit in the armed state.
     UnitSetCustomValue(source, c_cycleStateLastAttack, GameGetMissionTime());
@@ -4598,6 +4800,8 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
                 + FixedToString(EventUnitDamageAmount() * c_cycleOverwatchBonus, 2)
                 + " on " + UnitGetType(target)
                 + " (base " + FixedToString(EventUnitDamageAmount(), 2) + ")");
+            CycleMod_StatAdd(UnitGetOwner(overwatchOwner), 8,
+                EventUnitDamageAmount() * c_cycleOverwatchBonus);
             UnitDamage(source, c_cycleOverwatchEffect, target,
                 EventUnitDamageAmount() * c_cycleOverwatchBonus);
         }
@@ -4653,6 +4857,124 @@ bool CycleMod_OnUnitStartedAttack(bool testConds, bool runActions) {
     return true;
 }
 
+//--------------------------------------------------------------------------------------------------
+// Veterancy marker: a persistent "V<stacks>" text tag attached to a unit that
+// has earned Veteran Forces stacks, so a player can read the army's veterancy
+// without selecting anything. The float on each kill is momentary; this stays.
+//
+// The tag id is kept in a unit custom value (+1, so 0 means "none") and the
+// tagged units in g_cycle_vetTagged, which the scan walks via CycleMod_VetTagTick
+// to keep the text current and to hide the tag from anyone who cannot see the
+// unit - a tag attached to a cloaked or burrowed enemy would give it away.
+//--------------------------------------------------------------------------------------------------
+
+// Bronze, silver, gold, then orange at the 15-stack cap.
+string CycleMod_VetTagText(int stacks) {
+    string hex;
+    if (stacks >= 15)     { hex = "FF9A2E"; }
+    else if (stacks >= 10) { hex = "FFD54A"; }
+    else if (stacks >= 5)  { hex = "D0D8E0"; }
+    else                   { hex = "CD7F32"; }
+    return "<c val=\"" + hex + "\">V" + IntToString(stacks) + "</c>";
+}
+
+// Called when a unit gains a stack. Spawned children (Interceptors, Locusts...)
+// carry mirrored stacks but never a tag: there are too many and they are
+// disposable.
+void CycleMod_VetTagEnsure(unit u) {
+    int tag;
+
+    if (u == null || !UnitIsAlive(u)) { return; }
+    if (CycleMod_IsSpawnedChildType(UnitGetType(u))) { return; }
+    if (FixedToInt(UnitGetCustomValue(u, c_cycleStateVetTag)) > 0) { return; }
+    if (g_cycle_vetTagged == null) { g_cycle_vetTagged = UnitGroupEmpty(); }
+
+    tag = TextTagCreate(StringToText(CycleMod_VetTagText(UnitBehaviorCount(u, CycleMod_HelperBehavior(6)))),
+        c_cycleVetTagFont, UnitGetPosition(u), c_cycleVetTagHeight, true, true, Tardigrade_Viewers());
+    TextTagAttachToUnit(tag, u, c_cycleVetTagHeight);
+    UnitSetCustomValue(u, c_cycleStateVetTag, IntToFixed(tag + 1));
+    UnitSetCustomValue(u, c_cycleStateVetTagShown, IntToFixed(UnitBehaviorCount(u, CycleMod_HelperBehavior(6))));
+    UnitGroupAdd(g_cycle_vetTagged, u);
+}
+
+void CycleMod_VetTagDestroy(unit u) {
+    int tag;
+    tag = FixedToInt(UnitGetCustomValue(u, c_cycleStateVetTag)) - 1;
+    if (tag >= 0) { TextTagDestroy(tag); }
+    UnitSetCustomValue(u, c_cycleStateVetTag, 0.0);
+    UnitSetCustomValue(u, c_cycleStateVetTagShown, 0.0);
+    if (g_cycle_vetTagged != null) { UnitGroupRemove(g_cycle_vetTagged, u); }
+}
+
+// Whether player p can see unit u right now (cloaked / burrowed units without
+// detection, and anything in fog, are not visible). The Visible target filter
+// lives in the low or high filter word depending on its index, so the bit is
+// placed by value rather than assumed.
+bool CycleMod_PlayerSeesUnit(int p, unit u) {
+    int lo;
+    int hi;
+    lo = 0;
+    hi = 0;
+    if (c_targetFilterVisible >= 32) { hi = 1 << (c_targetFilterVisible - 32); }
+    else                             { lo = 1 << c_targetFilterVisible; }
+    return UnitFilterMatch(u, p, UnitFilter(lo, hi, 0, 0));
+}
+
+// Run from the scan loop. Walks the group BACKWARDS so removing a unit never
+// shifts one we have yet to visit.
+void CycleMod_VetTagTick() {
+    unit u;
+    int  i;
+    int  p;
+    int  tag;
+    int  stacks;
+    int  ownerTeam;
+    int  team;
+    bool notHidden;
+    bool show;
+
+    if (g_cycle_vetTagged == null) { return; }
+    i = UnitGroupCount(g_cycle_vetTagged, c_unitCountAll);
+    while (i >= 1) {
+        u = UnitGroupUnit(g_cycle_vetTagged, i);
+        i = i - 1;
+        if (u == null) { continue; }
+
+        stacks = 0;
+        if (UnitIsAlive(u)) { stacks = UnitBehaviorCount(u, CycleMod_HelperBehavior(6)); }
+        // Dead, or the stacks are gone (Testing mode switched Veteran off).
+        if (stacks == 0) {
+            CycleMod_VetTagDestroy(u);
+            continue;
+        }
+
+        tag = FixedToInt(UnitGetCustomValue(u, c_cycleStateVetTag)) - 1;
+        if (tag < 0) {
+            UnitGroupRemove(g_cycle_vetTagged, u);
+            continue;
+        }
+        if (stacks != FixedToInt(UnitGetCustomValue(u, c_cycleStateVetTagShown))) {
+            TextTagSetText(tag, StringToText(CycleMod_VetTagText(stacks)));
+            UnitSetCustomValue(u, c_cycleStateVetTagShown, IntToFixed(stacks));
+        }
+
+        // Inside a transport or bunker the unit is hidden: no floating tag.
+        notHidden = UnitFilterMatch(u, UnitGetOwner(u),
+            UnitFilter(0, 0, 0, (1 << (c_targetFilterHidden - 32))));
+        ownerTeam = CycleMod_TeamOfPlayer(UnitGetOwner(u));
+        p = 1;
+        while (p <= 15) {
+            team = CycleMod_TeamOfPlayer(p);
+            if (team != 0) {
+                show = notHidden;
+                if (show && team != ownerTeam) { show = CycleMod_PlayerSeesUnit(p, u); }
+                TextTagShow(tag, PlayerGroupSingle(p), show);
+            }
+            p = p + 1;
+        }
+    }
+}
+
 bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
     unit dead;
     unit killer;
@@ -4681,6 +5003,8 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
         if (killer != null && UnitGetOwner(killer) != UnitGetOwner(dead)
             && CycleMod_UnitModActive(killer, "TardigradeMod_VeteranForces")) {
             CycleMod_AddHelperBehavior(killer, 6);
+            CycleMod_StatAdd(UnitGetOwner(killer), 10, 1.0);
+            CycleMod_VetTagEnsure(killer);
             CycleMod_FloatText(UnitGetPosition(killer), "Veteran "
                 + IntToString(UnitBehaviorCount(killer, CycleMod_HelperBehavior(6))),
                 "FFD54A", PlayerGroupSingle(UnitGetOwner(killer)));
@@ -4690,6 +5014,9 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
         }
     }
 
+    // Take the veterancy tag down with the unit rather than leaving it to the
+    // next scan tick, so it doesn't hang in the air for half a second.
+    CycleMod_VetTagDestroy(dead);
     CycleMod_ForgetUnit(dead);
 
     // An automatic refinery kept its remaining gas in a custom value, not in
@@ -4765,6 +5092,7 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
     fixed now;
     fixed x;
     fixed y;
+    bool  armed;
 
     now = GameGetMissionTime();
     pos = UnitGetPosition(u);
@@ -4783,7 +5111,18 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
             UnitSetCustomValue(u, c_cycleStateLastY, y);
             UnitSetCustomValue(u, c_cycleStateStillTime, now);
         } else if ((now - UnitGetCustomValue(u, c_cycleStateStillTime)) >= c_cycleEntrenchDelay) {
+            // The behavior is re-applied every tick while the unit holds, so
+            // "count was 0" is the arming edge (it lapses 3s after the unit
+            // moves). Floats only with an enemy near: otherwise every army
+            // parked at a rally point would announce itself forever.
+            armed = UnitBehaviorCount(u, CycleMod_HelperBehavior(3)) > 0;
             CycleMod_AddHelperBehavior(u, 3);
+            if (!armed) {
+                CycleMod_StatAdd(UnitGetOwner(u), 6, 1.0);
+                if (CycleMod_EnemyNear(u, c_cycleArmFloatRange)) {
+                    CycleMod_FloatTextSized(pos, "Entrenched", "9FD3FF", Tardigrade_Viewers(), 16);
+                }
+            }
         }
     } else {
         // Anchor here too, so a unit whose side drafts nothing - or that is
@@ -4799,8 +5138,8 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
     // flag below) so it isn't endlessly re-applied - and re-armed - every 0.5s
     // scan tick while the unit sits idle waiting for a target.
     // CycleMod_OnUnitDamaged consumes it the instant the unit breaks idle and
-    // opens the one-second bonus window in its place. Note this arms structures
-    // too, which is why the damage handler must track them.
+    // opens the one-second bonus window in its place. Structures never arm
+    // (CycleMod_ModSkipsStructures).
     //
     // Nothing special is needed to stop a caster holding a permanent charge:
     // CycleMod_OnUnitDamaged stamps c_cycleStateLastAttack for ANY damage a
@@ -4812,6 +5151,9 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
         && FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)) >= c_cycleOverwatchDelay
         && UnitBehaviorCount(u, "TardigradeMod_OverwatchReady") == 0) {
         CycleMod_AddHelperBehavior(u, 4);
+        if (CycleMod_EnemyNear(u, c_cycleArmFloatRange)) {
+            CycleMod_FloatTextSized(pos, "Overwatch ready", "FFB84A", Tardigrade_Viewers(), 16);
+        }
         Debug_Log("Overwatch: " + UnitGetType(u) + " armed after "
             + IntToString(FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)))
             + "s idle");
@@ -5017,6 +5359,8 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
     while (true) {
         if (!c_cyclePhaseMode) {
             CycleMod_PanelFoldTick();
+            CycleMod_PanelStatsTick();
+            CycleMod_VetTagTick();
             if (!g_cycle_activationWarned && !g_cycle_delayedApplied
                 && GameGetMissionTime() >= c_cycleActivationDelay - c_cycleActivationWarnLead) {
                 g_cycle_activationWarned = true;
@@ -5183,8 +5527,8 @@ void CycleMod_SetPanelExpanded(int player, bool expanded) {
 
     viewer = CycleMod_PanelViewers(player);
 
-    if (expanded) { DialogSetSize(g_cycle_panelDlg[player], 470, 232); }
-    else          { DialogSetSize(g_cycle_panelDlg[player], 470, 34); }
+    if (expanded) { DialogSetSize(g_cycle_panelDlg[player], 600, 232); }
+    else          { DialogSetSize(g_cycle_panelDlg[player], 600, 34); }
 
     DialogControlSetVisible(g_cycle_panelTitle[player], viewer, expanded);
     DialogControlSetVisible(g_cycle_panelHdrMine[player], viewer, expanded);
@@ -5193,6 +5537,8 @@ void CycleMod_SetPanelExpanded(int player, bool expanded) {
     while (i <= c_cyclePicksEach) {
         DialogControlSetVisible(g_cycle_panelRowMine[player][i], viewer, expanded);
         DialogControlSetVisible(g_cycle_panelRowOpp[player][i], viewer, expanded);
+        DialogControlSetVisible(g_cycle_panelStatMine[player][i], viewer, expanded);
+        DialogControlSetVisible(g_cycle_panelStatOpp[player][i], viewer, expanded);
         i = i + 1;
     }
 
@@ -5248,6 +5594,53 @@ void CycleMod_PanelFoldTick() {
     }
 }
 
+// Run from the scan loop, throttled to about once a game second: write each
+// row's modifier stat into its label. Rows of a folded panel are skipped - the
+// next refresh after it opens (under a second) fills them.
+void CycleMod_PanelStatsTick() {
+    int         key;
+    int         i;
+    int         role;
+    int         mineTeam;
+    int         oppTeam;
+    int         mod;
+    playergroup viewer;
+
+    if (!g_cycle_panelBuilt) { return; }
+    if (GameGetMissionTime() < g_cycle_panelStatsAt + 1.0) { return; }
+    g_cycle_panelStatsAt = GameGetMissionTime();
+
+    key = 0;
+    while (key < 16) {
+        if (g_cycle_panelDlg[key] != c_invalidDialogId && g_cycle_panelDlg[key] != 0
+            && g_cycle_panelExpanded[key]) {
+            viewer   = CycleMod_PanelViewers(key);
+            role     = CycleMod_PanelRole(key);
+            mineTeam = 1;
+            oppTeam  = 2;
+            if (role == 2) {
+                mineTeam = 2;
+                oppTeam  = 1;
+            }
+            i = 1;
+            while (i <= c_cyclePicksEach) {
+                mod = g_cycle_panelModMine[key][i];
+                if (mod > 0) {
+                    DialogControlSetPropertyAsText(g_cycle_panelStatMine[key][i], c_triggerControlPropertyText,
+                        viewer, StringToText(CycleMod_StatText(mod, g_cycle_stat[mineTeam][mod])));
+                }
+                mod = g_cycle_panelModOpp[key][i];
+                if (mod > 0) {
+                    DialogControlSetPropertyAsText(g_cycle_panelStatOpp[key][i], c_triggerControlPropertyText,
+                        viewer, StringToText(CycleMod_StatText(mod, g_cycle_stat[oppTeam][mod])));
+                }
+                i = i + 1;
+            }
+        }
+        key = key + 1;
+    }
+}
+
 void CycleMod_InitPanelForPlayer(int player, trigger t) {
     playergroup viewer;
     int         role;
@@ -5258,7 +5651,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     viewer = CycleMod_PanelViewers(player);
     role   = CycleMod_PanelRole(player);   // key 0 is on no team -> spectator view
 
-    g_cycle_panelDlg[player] = DialogCreate(470, 232, c_anchorTop, 0, 22, false);
+    g_cycle_panelDlg[player] = DialogCreate(600, 232, c_anchorTop, 0, 22, false);
     Tardigrade_ObservableDialog(g_cycle_panelDlg[player]);
     DialogSetVisible(g_cycle_panelDlg[player], viewer, true);
     DialogSetImageVisible(g_cycle_panelDlg[player], true);
@@ -5276,7 +5669,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
 
     g_cycle_panelHdrMine[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_panelHdrMine[player], viewer, 450, 16);
-    DialogControlSetPosition(g_cycle_panelHdrMine[player], viewer, c_anchorTop, 8, 58);
+    DialogControlSetPosition(g_cycle_panelHdrMine[player], viewer, c_anchorTop, -65, 58);
     if (role == 0) {
         DialogControlSetPropertyAsText(g_cycle_panelHdrMine[player], c_triggerControlPropertyText,
             viewer, StringToText("<c val=\"7FD0FF\">PLAYER 1</c>"));
@@ -5291,15 +5684,19 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         else           { mineMod = CycleMod_Team1Mod(i); }
         g_cycle_panelRowMine[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
         DialogControlSetSize(g_cycle_panelRowMine[player][i], viewer, 450, 18);
-        DialogControlSetPosition(g_cycle_panelRowMine[player][i], viewer, c_anchorTop, 8, 76 + (i - 1) * 20);
+        DialogControlSetPosition(g_cycle_panelRowMine[player][i], viewer, c_anchorTop, -65, 76 + (i - 1) * 20);
         DialogControlSetPropertyAsText(g_cycle_panelRowMine[player][i], c_triggerControlPropertyText,
             viewer, StringToText(CycleMod_ModLine(mineMod)));
+        g_cycle_panelModMine[player][i] = mineMod;
+        g_cycle_panelStatMine[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
+        DialogControlSetSize(g_cycle_panelStatMine[player][i], viewer, 130, 18);
+        DialogControlSetPosition(g_cycle_panelStatMine[player][i], viewer, c_anchorTop, 225, 76 + (i - 1) * 20);
         i = i + 1;
     }
 
     g_cycle_panelHdrOpp[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_panelHdrOpp[player], viewer, 450, 16);
-    DialogControlSetPosition(g_cycle_panelHdrOpp[player], viewer, c_anchorTop, 8, 144);
+    DialogControlSetPosition(g_cycle_panelHdrOpp[player], viewer, c_anchorTop, -65, 144);
     if (role == 0) {
         DialogControlSetPropertyAsText(g_cycle_panelHdrOpp[player], c_triggerControlPropertyText,
             viewer, StringToText("<c val=\"FF9F7F\">PLAYER 2</c>"));
@@ -5314,9 +5711,13 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         else           { oppMod = CycleMod_Team2Mod(i); }
         g_cycle_panelRowOpp[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
         DialogControlSetSize(g_cycle_panelRowOpp[player][i], viewer, 450, 18);
-        DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, 8, 162 + (i - 1) * 20);
+        DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, -65, 162 + (i - 1) * 20);
         DialogControlSetPropertyAsText(g_cycle_panelRowOpp[player][i], c_triggerControlPropertyText,
             viewer, StringToText(CycleMod_ModLine(oppMod)));
+        g_cycle_panelModOpp[player][i] = oppMod;
+        g_cycle_panelStatOpp[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
+        DialogControlSetSize(g_cycle_panelStatOpp[player][i], viewer, 130, 18);
+        DialogControlSetPosition(g_cycle_panelStatOpp[player][i], viewer, c_anchorTop, 225, 162 + (i - 1) * 20);
         i = i + 1;
     }
 
