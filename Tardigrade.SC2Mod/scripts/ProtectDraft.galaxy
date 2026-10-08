@@ -391,6 +391,8 @@ void ProtectDraft_ApplyCard(int i, playergroup viewer, bool poolIsP1, bool showP
 
     DraftStyle_ApplyCard(g_prot_btnCard[i], viewer, state,
         DraftStyle_Card(state, tag, RosterUnitDisplayName(unitType), detail), false);
+    DraftStyle_SetTip(g_prot_btnCard[i], viewer,
+        DraftStyle_UnitTip(unitType, RosterUnitDisplayName(unitType), RosterUnitRole(unitType)));
     DialogControlSetEnabled(g_prot_btnCard[i], viewer, enable);
 }
 
@@ -697,6 +699,14 @@ void ProtectDraft_BeginStep() {
     g_prot_graceToken = g_prot_graceToken + 1;
     TriggerExecute(TriggerCreate("ProtectDraft_Grace"), false, false);
 
+    // "Your turn" cue for each human acting this step (once per step; a human
+    // deciding both tasks of a step is cued once per task).
+    t = 1;
+    while (t <= ProtectDraft_TaskCount()) {
+        DraftStyle_TurnCuePlayer(ProtectDraft_Decider(ProtectDraft_TaskActorIsP1(t)));
+        t = t + 1;
+    }
+
     ProtectDraft_UpdateUI();
 
     // Tournament: one clock for the whole step, even with two tasks running
@@ -757,6 +767,7 @@ bool ProtectDraft_OnClicked(bool testConds, bool runActions) {
 
     poolIsP1 = ProtectDraft_TaskPool(t);
     isPoints = (ProtectDraft_Kind() == c_protectStepPoints);
+    DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
 
     if (control == g_prot_btnDone) {
         if (g_prot_doneLocked) { return true; }

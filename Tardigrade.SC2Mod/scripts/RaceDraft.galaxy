@@ -514,6 +514,7 @@ void RaceDraft_SetRaceButton(int btn, int race, playergroup viewer, bool banPhas
 
     DraftStyle_ApplyCard(btn, viewer, state,
         DraftStyle_Card(state, "", RaceName(race), RaceDraft_RaceRole(race)), enabled);
+    DraftStyle_SetTip(btn, viewer, RaceName(race) + "<n/>" + RaceDraft_RaceRole(race));
 }
 
 // The three race buttons for one viewer. The waiting player gets them too,
@@ -549,6 +550,7 @@ void RaceDraft_UpdateAudienceUI() {
 }
 
 void RaceDraft_ChooseRandom();
+int  RaceDraft_UpPlayer();
 bool CycleMod_SideIsYolo(bool isP1);   // CycleMod.galaxy, included after this file
 
 void RaceDraft_UpdateUI() {
@@ -604,6 +606,9 @@ void RaceDraft_UpdateUI() {
         RaceDraft_ChooseRandom();
         return;
     }
+
+    // "Your turn" cue for whoever is up (once per step: this runs once per step).
+    DraftStyle_TurnCuePlayer(RaceDraft_UpPlayer());
 
     // Tournament: this step is on the clock (no-op in other modes).
     DraftTimer_Arm(g_draft_autoTrig);
@@ -708,6 +713,7 @@ bool RaceDraft_OnClicked(bool testConds, bool runActions) {
         return true;
     }
 
+    DraftStyle_ClickCue(PlayerGroupSingle(player));
     RaceDraft_Choose(selectedRace);
     return true;
 }

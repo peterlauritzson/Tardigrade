@@ -735,6 +735,8 @@ void RosterDraft_UpdateUI() {
     while (i <= c_rosterPoolMax) {
         if (i <= poolCount) {
             unitType = GetRosterPoolUnit(activeRace, i);
+            DraftStyle_SetTip(g_roster_btnPool[i], Tardigrade_Viewers(),
+                DraftStyle_UnitTip(unitType, RosterUnitDisplayName(unitType), RosterUnitRole(unitType)));
             slotState = RosterDraft_SlotState(poolIsP1, i, g_roster_phase == 1);
 
             shownState = RosterDraft_ShownState(slotState, activeOwnsPool);
@@ -1023,6 +1025,9 @@ void RosterDraft_BeginStep() {
         return;
     }
 
+    // "Your turn" cue (BeginStep runs once per step; selection clicks do not come here).
+    DraftStyle_TurnCuePlayer(RosterDraft_UpPlayer());
+
     // Tournament: this step is on the clock (no-op in other modes).
     DraftTimer_Arm(g_roster_autoTrig);
 }
@@ -1068,6 +1073,9 @@ bool RosterDraft_OnClicked(bool testConds, bool runActions) {
         return true;
     }
 
+    if (RosterDraft_SlotIsLive(poolIndex)) {
+        DraftStyle_ClickCue(PlayerGroupSingle(player));
+    }
     RosterDraft_Choose(poolIndex);
     return true;
 }

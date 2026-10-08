@@ -2,6 +2,16 @@
 DocInfo/DescShort=1-8
 DocInfo/Name=Tardigrade
 Behavior/Name/TardigradeMod_VeteranStack=Veteran
-Behavior/Tooltip/TardigradeMod_VeteranStack=Veteran Forces: each kill made this unit 3% faster at everything - movement, attack speed, cooldowns, build and morph rates, and life, shield and energy regeneration. Stacks up to 15.
+Behavior/Tooltip/TardigradeMod_VeteranStack=Veteran Forces: each kill of a real unit made this unit 3% faster at everything - movement, attack speed, cooldowns, build and morph rates, and life, shield and energy regeneration. Stacks up to 15.
 Behavior/Name/TardigradeMod_VeteranStackChild=Veteran
 Behavior/Tooltip/TardigradeMod_VeteranStackChild=Veteran Forces: this unit inherits its parent's stacks. Each gives +3% movement speed, attack speed, cooldown and charge recovery, and life, shield and energy regeneration. Stacks up to 15.
+Behavior/Name/TardigradeMod_ForcedMarch=Forced March
+Behavior/Tooltip/TardigradeMod_ForcedMarch=+40% movement speed while out of combat. Taking or dealing damage switches it off for 10 seconds.
+Behavior/Name/TardigradeMod_Entrenched=Entrenched
+Behavior/Tooltip/TardigradeMod_Entrenched=+2 armor and +1 range from holding position.
+Behavior/Name/TardigradeMod_OverwatchReady=Overwatch Ready
+Behavior/Tooltip/TardigradeMod_OverwatchReady=The next second of attacking deals +50% damage.
+Behavior/Name/TardigradeMod_AdrenalineRush=Adrenaline
+Behavior/Tooltip/TardigradeMod_AdrenalineRush=+50% movement speed after being hit.
+Behavior/Name/TardigradeMod_BlinkCooldown=Battle Blink Cooldown
+Behavior/Tooltip/TardigradeMod_BlinkCooldown=This unit just blinked. It can Battle Blink again when this expires and it is back above 65% health.

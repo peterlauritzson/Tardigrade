@@ -160,6 +160,16 @@ void Tardigrade_SummaryRerollButton(int btn, bool isP1) {
     }
 }
 
+// A decider who has not readied up is told what the button does.
+void Tardigrade_SummaryReadyHint(int player, bool ready) {
+    if (ready) { return; }
+    DialogControlSetPropertyAsText(g_sum_lblStatus, c_triggerControlPropertyText,
+        PlayerGroupSingle(player), StringToText(DraftStyle_Small(
+            "<c val=\"FFD54A\">Click READY to start now</c>      <c val=\"7FD0FF\">P1</c> "
+            + Tardigrade_SummaryReadyText(g_sum_readyP1)
+            + "      <c val=\"FF9F7F\">P2</c> " + Tardigrade_SummaryReadyText(g_sum_readyP2))));
+}
+
 void Tardigrade_SummaryRefresh() {
     DialogControlSetPropertyAsText(g_sum_lblP1, c_triggerControlPropertyText, Tardigrade_Viewers(),
         StringToText(Tardigrade_SummaryColumn(true)));
@@ -168,6 +178,8 @@ void Tardigrade_SummaryRefresh() {
     DialogControlSetPropertyAsText(g_sum_lblStatus, c_triggerControlPropertyText, Tardigrade_Viewers(),
         StringToText(DraftStyle_Small("<c val=\"7FD0FF\">P1</c> " + Tardigrade_SummaryReadyText(g_sum_readyP1)
             + "      <c val=\"FF9F7F\">P2</c> " + Tardigrade_SummaryReadyText(g_sum_readyP2))));
+    Tardigrade_SummaryReadyHint(g_draft_p1, g_sum_readyP1);
+    if (g_draft_p2 != g_draft_p1) { Tardigrade_SummaryReadyHint(g_draft_p2, g_sum_readyP2); }
 
     DialogControlSetVisible(g_sum_btnReady, Tardigrade_Viewers(), false);
     Tardigrade_SummaryReadyButton(g_draft_p1, g_sum_readyP1);
@@ -224,6 +236,7 @@ bool Tardigrade_SummaryOnClicked(bool testConds, bool runActions) {
 void Tardigrade_SummaryCountdown() {
     int lbl;
     int secs;
+    int lastCue;
 
     g_sum_readyP1   = false;
     g_sum_readyP2   = false;
@@ -280,9 +293,17 @@ void Tardigrade_SummaryCountdown() {
 
     // Counted in 0.25s real-time ticks so READY and REROLL (which move
     // g_sum_left from the click trigger) take effect within a quarter second.
+    lastCue = 99;
     g_sum_left = IntToFixed(c_tardigradeCountdown);
     while (g_sum_left > 0.0) {
         secs = FixedToInt(g_sum_left + 0.99);
+        // Beep once as each of the last 3 whole seconds is reached; a reroll that
+        // sends the clock back up re-arms it.
+        if (secs > 3) { lastCue = 99; }
+        else if (secs != lastCue) {
+            DraftStyle_TurnCue(Tardigrade_Viewers());
+            lastCue = secs;
+        }
         if (g_sum_readyP1 && g_sum_readyP2) {
             DialogControlSetPropertyAsText(g_sum_lblClock, c_triggerControlPropertyText, Tardigrade_Viewers(),
                 StringToText("<c val=\"00FF88\">Both ready  -  game starts in  " + IntToString(secs) + "</c>"));
@@ -299,6 +320,8 @@ void Tardigrade_SummaryCountdown() {
     g_sum_trigger = null;
     DialogControlSetPropertyAsText(g_sum_lblClock, c_triggerControlPropertyText,
         Tardigrade_Viewers(), StringToText("<c val=\"00FF88\">GO!</c>"));
+    SoundPlayForPlayer(SoundLink("UI_Bnet_MatchCountdownGo", -1), c_maxPlayers,
+        Tardigrade_Viewers(), 100.0, 0.0);
     Wait(0.7, c_timeReal);
 
     DialogDestroy(g_sum_dialog);

@@ -185,7 +185,8 @@
          because it is never on in a fight - the unit is out of contact,
          neither taking damage nor dealing it, whenever it applies. -->
     <CBehaviorBuff id="TardigradeMod_ForcedMarch">
-        <InfoFlags index="Hidden" value="1"/>
+        <!-- Visible: shows in the unit panel so the player can see it working. -->
+        <InfoIcon value="Assets\Textures\btn-command-move.dds"/>
         <Alignment value="Positive"/>
         <Duration value="8"/>
         <MaxStackCount value="1"/>
@@ -226,6 +227,22 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
+    <!-- Predator Protocol's healing cap. Each stack = 1% of max life + shields
+         healed by lifesteal in the last second; CycleMod_PredatorLeech refuses
+         to heal past MaxStackCount (c_cyclePredatorCap, keep the two equal).
+         Each stack must expire on its own timer, which is what makes this a
+         rolling one-second window; do NOT give it a refresh-on-add flag, or a
+         unit that keeps firing never drains. 1.4 game seconds = 1 real second.
+         Global clock so Veteran Forces' TimeScale doesn't shorten the window
+         and raise the cap. **Unverified:** that stacks added by one
+         UnitBehaviorAdd(count) each run down independently. -->
+    <CBehaviorBuff id="TardigradeMod_PredatorSated">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Neutral"/>
+        <TimeScaleSource Value="Global"/>
+        <Duration value="1.4"/>
+        <MaxStackCount value="8"/>
+    </CBehaviorBuff>
 
     <CBehaviorBuff id="TardigradeMod_EyesEverywhere">
         <InfoFlags index="Hidden" value="1"/>
@@ -249,7 +266,8 @@
          range the instant it starts - re-earning it still takes the full
          c_cycleEntrenchDelay. -->
     <CBehaviorBuff id="TardigradeMod_Entrenched">
-        <InfoFlags index="Hidden" value="1"/>
+        <!-- Visible: shows in the unit panel so the player can see it working. -->
+        <InfoIcon value="Assets\Textures\btn-command-holdposition.dds"/>
         <Alignment value="Positive"/>
         <!-- Global for the same reason as TardigradeMod_OverwatchFiring: this
              Duration is the grace period you keep the bonus for, so Veteran
@@ -301,7 +319,8 @@
          off EventUnitDamageAmount(), which covers every damage event the shot
          produces regardless of kind or effect type. -->
     <CBehaviorBuff id="TardigradeMod_OverwatchReady">
-        <InfoFlags index="Hidden" value="1"/>
+        <!-- Visible: shows in the unit panel so the player can see it working. -->
+        <InfoIcon value="Assets\Textures\btn-command-attack.dds"/>
         <Alignment value="Positive"/>
         <Duration value="300"/>
         <MaxStackCount value="1"/>
@@ -505,13 +524,22 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
+    <!-- 19: Martyrdom. Key-only marker like Adrenaline; the healing is script,
+         CycleMod_TryMartyrdom off the unit-died event. -->
+    <CBehaviorBuff id="TardigradeMod_Martyrdom">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
     <!-- The rush itself: +50% move speed. CycleMod_TryAdrenaline re-adds it on
          every hostile hit, which refreshes the Duration, so it lasts 3 real
          seconds from the LAST hit. 4.2 game seconds is 3 real on Faster.
          Global clock, like the other bonus windows (OverwatchFiring,
          Entrenched): Veteran Forces' TimeScale must not shorten it. -->
     <CBehaviorBuff id="TardigradeMod_AdrenalineRush">
-        <InfoFlags index="Hidden" value="1"/>
+        <!-- Visible: shows in the unit panel so the player can see it working. -->
+        <InfoIcon value="Assets\Textures\btn-ability-terran-stimpack-color.dds"/>
         <Alignment value="Positive"/>
         <TimeScaleSource Value="Global"/>
         <Duration value="4.2"/>
@@ -526,7 +554,8 @@
          on Faster. It is one of two gates: the unit must ALSO have climbed
          back to 65% (c_cycleStateBlinkSpent in CycleMod.galaxy). -->
     <CBehaviorBuff id="TardigradeMod_BlinkCooldown">
-        <InfoFlags index="Hidden" value="1"/>
+        <!-- Visible: shows in the unit panel so the player can see it working. -->
+        <InfoIcon value="Assets\Textures\btn-ability-protoss-blink-color.dds"/>
         <Alignment value="Neutral"/>
         <Duration value="17"/>
         <MaxStackCount value="1"/>

@@ -72,6 +72,7 @@ bool GameMode_OnClicked(bool testConds, bool runActions) {
         i = i + 1;
     }
     if (mode < 0) { return true; }
+    DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
 
     g_game_mode = mode;
     if (g_gmode_trigger != null) { TriggerDestroy(g_gmode_trigger); g_gmode_trigger = null; }
@@ -125,6 +126,7 @@ void GameMode_Select(int chooser, trigger callback) {
             DraftStyle_Card(c_draftStateOpen, "", GameMode_Name(i), GameMode_Desc(i)), true);
         DraftStyle_ApplyCard(g_gmode_btn[i], others, c_draftStateOpen,
             DraftStyle_Card(c_draftStateOpen, "", GameMode_Name(i), GameMode_Desc(i)), false);
+        DraftStyle_SetTip(g_gmode_btn[i], all, GameMode_Name(i) + "<n/>" + GameMode_Desc(i));
         i = i + 1;
     }
 
@@ -135,6 +137,7 @@ void GameMode_Select(int chooser, trigger callback) {
             c_triggerControlEventTypeClick);
         i = i + 1;
     }
+    DraftStyle_TurnCuePlayer(chooser);
 }
 
 
@@ -234,6 +237,7 @@ void DraftSelect_Undraw(int player) {
 // takes; openState / name / detail are how the screen draws the card, so it
 // can be drawn back when the player selects another one.
 void DraftSelect_Pick(int player, int value, int control, int openState, string name, string detail) {
+    DraftStyle_ClickCue(PlayerGroupSingle(player));
     if (g_dsel_has[player]) {
         if (g_dsel_control[player] == control) { return; }
         DraftSelect_Undraw(player);

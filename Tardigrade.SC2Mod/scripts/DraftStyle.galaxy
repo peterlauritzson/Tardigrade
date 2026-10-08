@@ -267,3 +267,44 @@ void DraftStyle_ApplyCard(int control, playergroup viewer, int state, string car
             || state == c_draftStateSelected));
 }
 
+
+//--------------------------------------------------------------------------------------------------
+// Audio cues. SoundPlayForPlayer with c_maxPlayers as the owner is the same
+// "no owner" form Blizzard's own NativeLib uses; -1 is c_soundIndexAny.
+// TurnCue: "it is your move". ClickCue: "your click was accepted".
+//--------------------------------------------------------------------------------------------------
+void DraftStyle_TurnCue(playergroup players) {
+    SoundPlayForPlayer(SoundLink("UI_BnetCountdownBeep", -1), c_maxPlayers, players, 100.0, 0.0);
+}
+
+void DraftStyle_ClickCue(playergroup players) {
+    SoundPlayForPlayer(SoundLink("UI_BnetClick", -1), c_maxPlayers, players, 100.0, 0.0);
+}
+
+// TurnCue for one player, only if they are a human (never an AI's turn).
+void DraftStyle_TurnCuePlayer(int player) {
+    if (PlayerType(player) == c_playerTypeUser) {
+        DraftStyle_TurnCue(PlayerGroupSingle(player));
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Hover tooltip for a card. Call after DraftStyle_ApplyCard wherever the
+// card's content is (re)assigned, so a reused control never keeps a stale one.
+//--------------------------------------------------------------------------------------------------
+void DraftStyle_SetTip(int control, playergroup viewer, string tip) {
+    DialogControlSetPropertyAsText(control, c_triggerControlPropertyTooltip, viewer,
+        StringToText(tip));
+}
+
+// Unit card tooltip body: "Name - Role" then cost (and supply if known).
+string DraftStyle_UnitTip(string unitType, string name, string role) {
+    string tip;
+    tip = name;
+    if (role != "") {
+        tip = tip + " - " + role;
+    }
+    tip = tip + "<n/>Cost: " + IntToString(UnitTypeGetCost(unitType, c_unitCostMinerals))
+        + " / " + IntToString(UnitTypeGetCost(unitType, c_unitCostVespene));
+    return tip;
+}

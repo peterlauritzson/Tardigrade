@@ -1,9 +1,9 @@
 //--------------------------------------------------------------------------------------------------
 // Cycle Modifier System
 //
-// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 18
-//   global battlefield modifiers, 17 of them on the board (YOLO is not). Each
-//   player bans 2 (17 -> 13), then picks 3, so seven board modifiers go unpicked
+// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 19
+//   global battlefield modifiers, 18 of them on the board (YOLO is not). Each
+//   player bans 2 (18 -> 14), then picks 3, so eight board modifiers go unpicked
 //   every game. Every pick is ALWAYS active
 //   in-game, but only for the drafting player's own units. A shared reference
 //   panel lists both sides' picks.
@@ -26,7 +26,7 @@ include "scripts/Debug"
 // The draft dialog lays the pool out in two columns of c_cycleModRows buttons.
 // Every array indexed by modifier is sized with the literal 20 - Galaxy array
 // sizes must be literals - so keep c_cycleModCount below 20 when adding more.
-const int c_cycleModCount   = 18;
+const int c_cycleModCount   = 19;
 const int c_cycleModRows    = 9;   // cards per board column; YOLO is not on the board
 // Top-left-justified stock core style for the picks panel (a plain label
 // centres vertically, so a short list would float mid-panel).
@@ -43,6 +43,7 @@ const int c_cycleModMineralsOnly = 15;
 const int c_cycleModYolo         = 16;
 const int c_cycleModFactoryLines = 17;
 const int c_cycleModAdrenaline   = 18;
+const int c_cycleModMartyrdom    = 19;
 
 // Minerals Only: every gas cost becomes minerals at this rate, and gas income is
 // paid out as minerals at the same rate (CycleMod_ConvertGasIncome).
@@ -204,6 +205,23 @@ const fixed  c_cycleBlinkRange     = 4.0;
 const string c_cycleBlinkEffect    = "TardigradeAbil_Blink";
 const string c_cycleBlinkCooldown  = "TardigradeMod_BlinkCooldown";
 
+// Predator Protocol: attacks heal for c_cyclePredatorLeech of the damage dealt,
+// capped at c_cyclePredatorCap percent of max life + shields per real second.
+// Uncapped, healing per second is DPS x 30%, so what matters is DPS relative to
+// a unit's own health: a stimmed Marine refilled ~10% of its bar a second
+// against ~2.5% for a Zealot or Roach, and a bio ball simply never went down.
+// The cap reins in exactly that ratio (and splash, which leeched off every unit
+// it hit) while beefier units rarely reach it.
+//
+// The window is kept by the engine, not by script: each stack of
+// c_cyclePredatorSated stands for 1% of max health healed in the last second,
+// and expires on its own (BehaviorData.xml). A hit's budget is the stacks
+// still free.
+const fixed  c_cyclePredatorLeech  = 0.30;
+const int    c_cyclePredatorCap    = 8;      // stacks, = % of max health per real second
+const fixed  c_cyclePredatorStep   = 0.01;   // fraction of max health one stack stands for
+const string c_cyclePredatorSated  = "TardigradeMod_PredatorSated";
+
 // Shared Damage: every hit on one of your units is half taken by it and half
 // handed out to your other units within this radius. The behavior absorbs the hit whole (see
 // BehaviorData.xml) and CycleMod_OnSharedDamageAbsorbed deals the split out
@@ -221,6 +239,7 @@ const string c_cycleBlinkCooldown  = "TardigradeMod_BlinkCooldown";
 const fixed  c_cycleShareRadius    = 3.0;
 const int    c_cycleShareMinTotal  = 1;   // a hit is never rounded away to nothing
 const int    c_cycleShareMinShare  = 1;   // smallest chunk a single partner can be handed
+const fixed  c_cycleShareFloor     = 0.40;  // a share never takes a partner below this fraction of max health
 const string c_cycleShareBehavior  = "TardigradeMod_SharedDamage";
 const string c_cycleShareEffect    = "TardigradeMod_SharedDamageHit";
 
@@ -237,12 +256,23 @@ const string c_cycleShareEffect    = "TardigradeMod_SharedDamageHit";
 const string c_cycleAdrenalineBehavior = "TardigradeMod_Adrenaline";
 const string c_cycleAdrenalineRush     = "TardigradeMod_AdrenalineRush";
 
+// Martyrdom: when one of your units dies, c_cycleMartyrFraction of its max life
+// + shields is handed out as healing to your units within c_cycleMartyrRadius.
+// Shared Damage run backwards - that one spreads a hit out so nobody dies, this
+// one spreads a death out as healing - and it uses the same radius and the same
+// eligible units (CycleMod_CanShareDamage) on both ends. The pick is a marker
+// that is never applied as a buff; CycleMod_TryMartyrdom runs off the
+// unit-died event.
+const string c_cycleMartyrBehavior = "TardigradeMod_Martyrdom";
+const fixed  c_cycleMartyrFraction = 0.20;
+const fixed  c_cycleMartyrRadius   = 3.0;
+
 // ── Draft state ──────────────────────────────────────────────────────────────
 trigger g_cycle_callback = null;
 int     g_cycle_p1;                 // Player A (picks first)
 int     g_cycle_p2;                 // Player B (picks second)
 int     g_cycle_pickIndex = 0;      // 0 = A picking, 1 = B picking
-bool[20] g_cycle_taken;             // [1..18] which mods are already claimed (keep > c_cycleModCount)
+bool[20] g_cycle_taken;             // [1..19] which mods are already claimed (keep > c_cycleModCount)
 
 // WHY a claimed modifier is claimed. g_cycle_taken only says a modifier is off
 // the table, which was enough while a claimed modifier disappeared. The board
@@ -253,7 +283,7 @@ const int c_cycleSlotBanned = 1;
 const int c_cycleSlotP1     = 2;
 const int c_cycleSlotP2     = 3;
 const int c_cycleSlotTaken  = 4;    // claimed by neither side (legacy phase mode)
-int[20] g_cycle_modState;           // [1..18] one of c_cycleSlot* (keep > c_cycleModCount)
+int[20] g_cycle_modState;           // [1..19] one of c_cycleSlot* (keep > c_cycleModCount)
 int[4]  g_cycle_chosen;             // [1..3] chosen mod indices (phase order)
 
 // ── Per-player draft state (c_cyclePhaseMode == false) ────────────────────
@@ -292,7 +322,12 @@ int[16] g_cycle_panelHdrOpp;
 int[16][4] g_cycle_panelRowMine;
 int[16][4] g_cycle_panelRowOpp;
 bool[16] g_cycle_panelExpanded;
+// Auto-fold: mission time at which a panel folds itself away (0 = never). Set
+// when the panel opens on its own (game start, activation); cleared the moment
+// its viewer clicks the toggle, so a player who chose a state keeps it.
+fixed[16] g_cycle_panelFoldAt;
 bool    g_cycle_delayedApplied = false;          // one-time 3-minute activation done
+bool    g_cycle_activationWarned = false;        // the "activating soon" heads-up was shown
 
 // Draft UI
 int    g_cycle_dialog   = c_invalidDialogId;
@@ -307,7 +342,7 @@ int    g_cycle_lblPicksBottom = c_invalidDialogControlId;
 // -150 on the per-player board, which makes room for the picks panel.
 int    g_cycle_boardShift     = 0;
 int    g_cycle_lblLegend = c_invalidDialogControlId; // what the card markers mean
-int[20] g_cycle_btnMod;             // [1..18] modifier buttons (keep > c_cycleModCount)
+int[20] g_cycle_btnMod;             // [1..19] modifier buttons (keep > c_cycleModCount)
 trigger g_cycle_draftTrig = null;
 trigger g_cycle_autoTrig  = null;   // CycleMod_DraftAutoAct, run by the Tournament timer
 
@@ -419,6 +454,9 @@ string CycleMod_Behavior(int idx) {
     // 18 is a key only: the rush is added off the damage event
     // (CycleMod_TryAdrenaline), not kept on by the scan.
     if (idx == 18) { return c_cycleAdrenalineBehavior; }
+    // 19 is a key only: the healing runs off the unit-died event
+    // (CycleMod_TryMartyrdom).
+    if (idx == 19) { return c_cycleMartyrBehavior; }
     return "";
 }
 
@@ -451,6 +489,7 @@ string CycleMod_Name(int idx) {
     if (idx == 16) { return "YOLO"; }
     if (idx == 17) { return "Factory Lines"; }
     if (idx == 18) { return "Adrenaline"; }
+    if (idx == 19) { return "Martyrdom"; }
     return "";
 }
 
@@ -473,7 +512,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 1)  { return "weapons hit ground and air; half damage to the new one"; }
     if (idx == 2)  { return "+40% move speed, lost on damage dealt or taken, back 10s later"; }
     if (idx == 3)  { return "your workers no longer cost supply"; }
-    if (idx == 4)  { return "attacks restore 30% of damage dealt"; }
+    if (idx == 4)  { return "attacks heal 30% of damage dealt, max 8% of HP per second"; }
     if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
     if (idx == 6)  { return "hold position 7.5s for +2 armor and +1 range"; }
     if (idx == 7)  { return "double energy regeneration, units and structures"; }
@@ -488,6 +527,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
     if (idx == 17) { return "everything but workers builds, trains and morphs 15% faster"; }
     if (idx == 18) { return "taking damage gives +50% move speed for 3s"; }
+    if (idx == 19) { return "a unit that dies heals nearby allies for 20% of its max HP"; }
     return "";
 }
 
@@ -1166,6 +1206,10 @@ void CycleMod_UpdateDraftUI() {
         return;
     }
 
+    // "Your turn" cue for the picker - this runs once per step, and not on a
+    // Tournament selection click.
+    DraftStyle_TurnCuePlayer(picker);
+
     // Tournament: this step is on the clock (no-op in other modes).
     DraftTimer_Arm(g_cycle_autoTrig);
 }
@@ -1319,6 +1363,9 @@ bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
         return true;
     }
 
+    if (CycleMod_DraftIsLive(idx)) {
+        DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+    }
     CycleMod_DraftChoose(idx);
     return true;
 }
@@ -1400,6 +1447,8 @@ void CycleMod_OpenDraftBoard() {
     while (i <= c_cycleModCount) {
         g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
         DraftStyle_InitButton(g_cycle_btnMod[i], Tardigrade_Viewers());
+        DraftStyle_SetTip(g_cycle_btnMod[i], Tardigrade_Viewers(),
+            CycleMod_Name(i) + "<n/>" + CycleMod_Desc(i));
         CycleMod_PlaceBoardButton(i);
         i = i + 1;
     }
@@ -1614,6 +1663,7 @@ bool CycleMod_OnYoloClicked(bool testConds, bool runActions) {
         return true;
     }
 
+    DraftStyle_ClickCue(PlayerGroupSingle(player));
     CycleMod_YoloDecide(side == 1, want);
     return true;
 }
@@ -1699,6 +1749,8 @@ void CycleMod_YoloChoiceStart() {
     while (style < c_cycleStyleCount) {
         g_cycle_yoloBtn[style] = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeButton);
         DraftStyle_InitButton(g_cycle_yoloBtn[style], Tardigrade_Viewers());
+        DraftStyle_SetTip(g_cycle_yoloBtn[style], Tardigrade_Viewers(),
+            CycleMod_YoloName(style) + "<n/>" + CycleMod_YoloDetail(style));
         DialogControlSetSize(g_cycle_yoloBtn[style], Tardigrade_Viewers(), 290, 56);
         DialogControlSetPosition(g_cycle_yoloBtn[style], Tardigrade_Viewers(),
             c_anchorTop, (style - 1) * 300, 190);
@@ -1707,6 +1759,9 @@ void CycleMod_YoloChoiceStart() {
         style = style + 1;
     }
 
+    // Everyone deciding gets the cue (a human on both sides, once).
+    DraftStyle_TurnCuePlayer(g_cycle_p1);
+    if (g_cycle_p2 != g_cycle_p1) { DraftStyle_TurnCuePlayer(g_cycle_p2); }
     CycleMod_YoloRefresh();
     DraftTimer_ArmPick(g_cycle_yoloAuto, g_cycle_yoloConfirm, "then Draft normally");
 }
@@ -1817,6 +1872,8 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     while (i <= c_cycleModCount) {
         g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
         DraftStyle_InitButton(g_cycle_btnMod[i], Tardigrade_Viewers());
+        DraftStyle_SetTip(g_cycle_btnMod[i], Tardigrade_Viewers(),
+            CycleMod_Name(i) + "<n/>" + CycleMod_Desc(i));
         CycleMod_PlaceBoardButton(i);
         i = i + 1;
     }
@@ -3584,12 +3641,33 @@ void CycleMod_ApplyCatalogMods(bool fromStart) {
     }
 }
 
+void CycleMod_PanelPeekAll(fixed seconds);   // defined with the panel, below
+void CycleMod_PanelFoldTick();
+
+// Heads-up shortly before activation (game seconds; ~10 on the clock). The
+// switch-over takes the map vision away from everyone at once, and a chat line
+// alone was easy to miss mid-fight.
+const fixed c_cycleActivationWarnLead = 14.0;
+
+void CycleMod_WarnActivation() {
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaSubtitle, StringToText(
+        "<c val=\"FFD54A\">Modifiers activate in 10 seconds - opening vision ends.</c>"));
+    SoundPlayForPlayer(SoundLink("UI_BnetCountdownBeep", -1), c_maxPlayers,
+        Tardigrade_Viewers(), 100.0, 0.0);
+}
+
 // One-time activation once the delay elapses (draft mode).
 void CycleMod_ActivateDelayedMods() {
     CycleMod_ApplyCatalogMods(false);
     UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
         "<c val=\"FFD54A\">Battlefield modifiers are now ACTIVE.</c>"
         + "  <c val=\"AAAAAA\">Opening vision ends - only a side that drafted Eyes Everywhere keeps it.</c>"));
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaSubtitle, StringToText(
+        "<c val=\"FFD54A\">MODIFIERS ACTIVE</c>"));
+    SoundPlayForPlayer(SoundLink("UI_Bnet_MatchCountdownGo", -1), c_maxPlayers,
+        Tardigrade_Viewers(), 100.0, 0.0);
+    // Re-open everyone's panel for a look at what just switched on.
+    CycleMod_PanelPeekAll(10.0);
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -3635,8 +3713,10 @@ void CycleMod_UpdateAutoRefinery(unit u) {
 // the victim. The victim takes ceil(X / 2) and the remaining floor(X / 2) is
 // dealt out in whole points to as many of the N as it stretches to, at least
 // c_cycleShareMinShare each - so a small hit reaches a couple of partners
-// rather than every unit in the blob. With nobody in range, or nothing left to
-// hand out, the victim takes all of X.
+// rather than every unit in the blob. A share never takes a partner below
+// c_cycleShareFloor of its max health; what they can't hold goes back to the
+// victim. With nobody in range, or a victim that would
+// die even on its own half (overkill is never shared), the victim takes all of X.
 //
 // Absorb-and-redeal rather than heal-back: the unit-damaged event fires AFTER
 // the damage has landed, so a hit that was lethal on its own would already have
@@ -3716,6 +3796,13 @@ unitgroup CycleMod_SharePartners(unit victim) {
     return partners;
 }
 
+// Current life + shields: the "health" Shared Damage measures against, since a
+// redealt share goes through shields first like any hit.
+fixed CycleMod_ShareHealth(unit u) {
+    return UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent)
+        + UnitGetPropertyFixed(u, c_unitPropShields, c_unitPropCurrent);
+}
+
 bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
     unit      victim;
     unit      attacker;
@@ -3725,10 +3812,10 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
     int       total;
     int       kept;
     int       rest;
-    int       taking;
-    int       baseShare;
-    int       extras;
+    int       left;
     int       share;
+    int       room;
+    int       reached;
     int       count;
     int       i;
 
@@ -3745,37 +3832,15 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
     total    = CycleMod_SharedHitAmount(victim, absorbed, EventUnitDamageEffect(),
         EventUnitDamageSourcePlayer());
 
-    // The victim keeps ceil(X / 2) outright. What is left is handed out in
-    // whole points, at least c_cycleShareMinShare per partner, which caps how
-    // many partners a hit can reach: a 4-damage hit has 2 to give and so
-    // touches two units however many are standing there. The leftover after an
-    // uneven division goes one extra point each to the first "extras" of them,
-    // so kept + every share adds back up to exactly X.
-    kept   = (total + 1) / 2;
-    rest   = total - kept;
-    taking = rest / c_cycleShareMinShare;
-    if (taking > count) { taking = count; }
-
-    if (taking > 0) {
-        baseShare = rest / taking;
-        extras    = rest - baseShare * taking;
-    } else {
-        // Nobody in range, or too little damage to hand out a single chunk.
-        kept      = total;
-        baseShare = 0;
-        extras    = 0;
-    }
-
-    // Debug mode only (solo tests): the exact split for every absorbed hit, so
-    // an odd-looking result can be checked against the numbers rather than
-    // eyeballed. "absorbed" is what the response caught, "total" is after the
-    // victim's armor and rounding, then what the victim keeps and how many of
-    // the partners in range actually get a piece.
-    Debug_Log("Shared Damage: " + UnitGetType(victim) + " hit by "
-        + EventUnitDamageEffect() + " absorbed " + FixedToString(absorbed, 2)
-        + " total " + IntToString(total) + " -> kept " + IntToString(kept)
-        + ", " + IntToString(taking) + " of " + IntToString(count)
-        + " partner(s) x " + IntToString(baseShare) + " (+1 to " + IntToString(extras) + ")");
+    // The victim keeps ceil(X / 2) and the rest is up for sharing - unless the
+    // victim dies even on its half. Then sharing saves nobody: in vanilla the
+    // part of the hit past its health would be wasted overkill, and handing
+    // half of it to the neighbours turned a single-target shot into free splash
+    // (a 5-health Zergling eating a 70 tank shell sprayed 35 around). So a
+    // victim that can't survive its own half takes the whole hit, alone.
+    kept = (total + 1) / 2;
+    if (count == 0 || IntToFixed(kept) >= CycleMod_ShareHealth(victim)) { kept = total; }
+    rest = total - kept;
 
     // Redealt in the attacker's name, so kill credit, Veteran Forces and
     // Predator Protocol all see the attacker's damage. If it is already gone
@@ -3784,21 +3849,57 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
     attacker = EventUnitDamageSourceUnit();
     if (attacker == null || !UnitIsAlive(attacker)) { attacker = victim; }
 
-    // Partners first and back to front: a share can kill, and a dead unit may
-    // drop out of the group mid-loop, which would shift the ones not yet hit.
-    // The victim goes last so it is still alive to author any shares it has to.
-    // Only the first "taking" of the group get a piece - the rest are in range
-    // but the pot ran out before it reached them.
-    i = taking;
-    while (i >= 1) {
+    // One pass over the partners, in whatever order the group has them - no
+    // sorting, linear in the number in range. Each step re-splits what is still
+    // in the pot evenly over the partners not yet visited, in whole points and
+    // at least c_cycleShareMinShare, so a small hit still stops after a couple
+    // of partners (a 4-damage bite has 2 to give: two partners, 1 each).
+    //
+    // A share never takes a partner below c_cycleShareFloor (40%) of its max
+    // life + shields: its room is what it has above that line, rounded down.
+    // So a share can never kill - which also means no partner drops out of the
+    // group mid-loop - and a unit already under 40% takes nothing at all: the
+    // fleeing 6-health Marine is left alone, the full-health Thor beside it
+    // takes as much as the even split asks. What a partner
+    // can't hold stays in the pot for the ones after it, and whatever is left
+    // at the end goes back onto the victim, so the pieces always add back up to
+    // exactly X. The victim may die of that leftover - it was the one shot at.
+    reached = 0;
+    left    = count;
+    i       = 1;
+    while (i <= count && rest > 0) {
         partner = UnitGroupUnit(partners, i);
-        share   = baseShare;
-        if (i <= extras) { share = share + 1; }
-        if (partner != null && UnitIsAlive(partner) && share > 0) {
-            UnitDamage(attacker, c_cycleShareEffect, partner, IntToFixed(share));
+        share   = (rest + left - 1) / left;
+        if (share < c_cycleShareMinShare) { share = c_cycleShareMinShare; }
+        if (share > rest) { share = rest; }
+        if (partner != null && UnitIsAlive(partner)) {
+            room = FixedToInt(CycleMod_ShareHealth(partner) - c_cycleShareFloor
+                * (UnitGetPropertyFixed(partner, c_unitPropLifeMax, c_unitPropCurrent)
+                + UnitGetPropertyFixed(partner, c_unitPropShieldsMax, c_unitPropCurrent)));
+            if (share > room) { share = room; }
+            if (share > 0) {
+                UnitDamage(attacker, c_cycleShareEffect, partner, IntToFixed(share));
+                rest    = rest - share;
+                reached = reached + 1;
+            }
         }
-        i = i - 1;
+        left = left - 1;
+        i    = i + 1;
     }
+    kept = kept + rest;
+
+    // Debug mode only (solo tests): the exact split for every absorbed hit, so
+    // an odd-looking result can be checked against the numbers rather than
+    // eyeballed. "absorbed" is what the response caught, "total" is after the
+    // victim's armor and rounding, then what the victim ended up taking (its
+    // half plus anything the partners couldn't hold) and how many of the
+    // partners in range actually got a piece.
+    Debug_Log("Shared Damage: " + UnitGetType(victim) + " hit by "
+        + EventUnitDamageEffect() + " absorbed " + FixedToString(absorbed, 2)
+        + " total " + IntToString(total) + " -> kept " + IntToString(kept)
+        + ", shared to " + IntToString(reached) + " of " + IntToString(count) + " partner(s)");
+
+    // The victim goes last so it is still alive to author any shares it has to.
     UnitDamage(attacker, c_cycleShareEffect, victim, IntToFixed(kept));
     return true;
 }
@@ -3858,6 +3959,24 @@ bool CycleMod_IsSpawnedChildType(string unitType) {
         || unitType == "LocustMPFlying" || unitType == "Broodling"
         || unitType == "BroodlingEscort" || unitType == "AutoTurret"
         || unitType == "InfestorTerran" || unitType == "DisruptorPhased";
+}
+
+// Whether killing this unit earns a Veteran Forces stack. Free or disposable
+// units don't: a Swarm Host's Locusts or a Brood Lord's Broodlings would
+// otherwise feed the enemy a stack each, for nothing. Spawned children,
+// Larva, Changelings, MULEs and hallucinations are all excluded. Interceptors
+// are the exception among spawned units: they cost minerals, so they count.
+bool CycleMod_IsVeteranWorthyVictim(unit u) {
+    string unitType;
+
+    if (!CycleMod_IsCombatUnit(u)) { return false; }
+    if (UnitTestState(u, c_unitStateHallucination)) { return false; }
+    unitType = UnitGetType(u);
+    if (unitType != "Interceptor" && CycleMod_IsSpawnedChildType(unitType)) { return false; }
+    return unitType != "Larva" && unitType != "MULE"
+        && unitType != "Changeling" && unitType != "ChangelingMarine"
+        && unitType != "ChangelingMarineShield" && unitType != "ChangelingZealot"
+        && unitType != "ChangelingZergling" && unitType != "ChangelingZerglingWings";
 }
 
 // The unit a kill belongs to: the spawner for a spawned unit, otherwise the
@@ -3963,6 +4082,25 @@ fixed CycleMod_UnitCost(string unitType, string resource, int player) {
     return StringToFixed(costText);
 }
 
+//--------------------------------------------------------------------------------------------------
+// Floating feedback: a short line of text that rises off a point and fades, so
+// a modifier that fires by itself (Battle Blink, Refund, Overwatch, Veteran)
+// is seen to fire. Without it those modifiers read as random - nothing on
+// screen says a unit just teleported because of a draft pick. Fogged, so an
+// opponent only sees what happens where they have vision.
+//--------------------------------------------------------------------------------------------------
+const fixed c_cycleFloatSeconds = 1.6;
+
+void CycleMod_FloatText(point where, string msg, string hex, playergroup players) {
+    int tag;
+    if (where == null) { return; }
+    tag = TextTagCreate(StringToText("<c val=\"" + hex + "\">" + msg + "</c>"),
+        20, where, 1.5, true, true, players);
+    TextTagSetVelocity(tag, 0.6, 90.0);
+    TextTagSetTime(tag, c_textTagTimeFadeOut, c_cycleFloatSeconds * 0.5);
+    TextTagSetTime(tag, c_textTagTimeDuration, c_cycleFloatSeconds);
+}
+
 // Types whose unit-died event can be a morph, a merge or a cancellation rather
 // than a death. Everything else only ever dies by actually dying. The Baneling
 // is deliberately absent - see above.
@@ -4006,6 +4144,14 @@ void CycleMod_PayRefund(unit dead, unit source) {
     }
     if (gas > 0.0) {
         PlayerModifyPropertyFixed(owner, c_playerPropVespene, c_playerPropOperAdd, gas);
+    }
+    // Owner only: the payout is their income, not the opponent's business.
+    if (gas > 0.0) {
+        CycleMod_FloatText(UnitGetPosition(dead), "+" + IntToString(FixedToInt(minerals))
+            + " / +" + IntToString(FixedToInt(gas)), "7FD0FF", PlayerGroupSingle(owner));
+    } else {
+        CycleMod_FloatText(UnitGetPosition(dead), "+" + IntToString(FixedToInt(minerals)),
+            "7FD0FF", PlayerGroupSingle(owner));
     }
     Debug_Log("Refund: " + unitType + " -> player " + IntToString(owner)
         + " +" + FixedToString(minerals, 2) + "m +" + FixedToString(gas, 2) + "g");
@@ -4104,6 +4250,9 @@ void CycleMod_TryBattleBlink(unit u, unit attacker) {
     UnitCreateEffectPoint(u, c_cycleBlinkEffect, to);
     UnitBehaviorAdd(u, c_cycleBlinkCooldown, u, 1);
     UnitSetCustomValue(u, c_cycleStateBlinkSpent, 1.0);
+    // The teleport itself is silent (see CURRENT_STATE "Battle Blink has no
+    // visual"), so mark the spot it left - players look where the unit was.
+    CycleMod_FloatText(from, "Blink!", "B48CFF", Tardigrade_Viewers());
     Debug_Log("Battle Blink: " + UnitGetType(u) + " at "
         + FixedToString(frac * 100.0, 0) + "% away from "
         + UnitGetType(attacker));
@@ -4121,6 +4270,196 @@ void CycleMod_TryAdrenaline(unit u) {
     if (CycleMod_IsShareExemptType(UnitGetType(u))) { return; }
     if (!CycleMod_UnitModActive(u, c_cycleAdrenalineBehavior)) { return; }
     UnitBehaviorAdd(u, c_cycleAdrenalineRush, u, 1);
+}
+
+// Healing the mods hand out goes to life first, then spills whatever is left
+// over into shields - otherwise it is dead weight on a full-health Protoss unit
+// that has taken shield damage. Shared by Predator Protocol and Martyrdom.
+void CycleMod_Mend(unit u, fixed amount) {
+    fixed currentLife;
+    fixed maxLife;
+    fixed currentShields;
+    fixed maxShields;
+    fixed overflow;
+
+    currentLife = UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent);
+    maxLife     = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent);
+
+    if (currentLife + amount > maxLife) {
+        overflow = currentLife + amount - maxLife;
+        UnitSetPropertyFixed(u, c_unitPropLife, maxLife);
+    } else {
+        overflow = 0.0;
+        UnitSetPropertyFixed(u, c_unitPropLife, currentLife + amount);
+    }
+
+    if (overflow > 0.0) {
+        maxShields = UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent);
+        if (maxShields > 0.0) {
+            currentShields = UnitGetPropertyFixed(u, c_unitPropShields, c_unitPropCurrent);
+            if (currentShields + overflow > maxShields) {
+                UnitSetPropertyFixed(u, c_unitPropShields, maxShields);
+            } else {
+                UnitSetPropertyFixed(u, c_unitPropShields, currentShields + overflow);
+            }
+        }
+    }
+}
+
+// How much CycleMod_Mend could still put into a unit: missing life + missing shields.
+fixed CycleMod_MendRoom(unit u) {
+    return UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent)
+        - UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent)
+        + UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent)
+        - UnitGetPropertyFixed(u, c_unitPropShields, c_unitPropCurrent);
+}
+
+// Predator Protocol's heal for one hit: c_cyclePredatorLeech of the damage,
+// limited to the stacks of c_cyclePredatorSated still free. The stacks a heal
+// uses are rounded to the nearest whole one (at least 1), so a unit can
+// overshoot its cap by half a stack on a hit, never more.
+void CycleMod_PredatorLeech(unit u, fixed dealt) {
+    fixed step;
+    fixed heal;
+    fixed budget;
+    int   stacks;
+    int   used;
+
+    step = (UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent)
+        + UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent)) * c_cyclePredatorStep;
+    if (step <= 0.0) { return; }
+
+    stacks = UnitBehaviorCount(u, c_cyclePredatorSated);
+    if (stacks >= c_cyclePredatorCap) { return; }
+    budget = IntToFixed(c_cyclePredatorCap - stacks) * step;
+
+    // Only what the unit can actually take spends budget, so a unit topped off
+    // mid-fight doesn't burn its window on healing that goes nowhere.
+    heal = dealt * c_cyclePredatorLeech;
+    if (heal > budget) { heal = budget; }
+    if (heal > CycleMod_MendRoom(u)) { heal = CycleMod_MendRoom(u); }
+    if (heal <= 0.0) { return; }
+
+    used = FixedToInt(heal / step + 0.5);
+    if (used < 1) { used = 1; }
+    CycleMod_Mend(u, heal);
+    UnitBehaviorAdd(u, c_cyclePredatorSated, u, used);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Martyrdom (modifier 19): a unit that dies heals your units around it for
+// c_cycleMartyrFraction of its own max life + shields (a Zealot's 150 -> 30).
+//
+// The pot is split evenly among the injured recipients, and anyone who needs
+// less than an even share is topped off and drops out, so what they didn't use
+// goes round again to the rest. Only what nobody can take is lost - which is
+// the "up to" in the description: a death next to a full-health army heals
+// nothing. Units at full health are left out of the split from the start, so
+// they never soak a share they can't use.
+//
+// Eligibility mirrors Shared Damage on both ends (CycleMod_CanShareDamage): no
+// structures, hallucinations, summons, larva, eggs or cocoons - a dying
+// Broodling or a popped hallucination must not be a free heal. A non-death
+// (Templar merging into an Archon, a cancelled morph) is filtered out the same
+// way Refund does it. Workers neither give nor take, like every other modifier.
+//--------------------------------------------------------------------------------------------------
+void CycleMod_TryMartyrdom(unit dead, unit source) {
+    unitgroup found;
+    unitgroup needy;
+    unit      candidate;
+    fixed     pool;
+    fixed     healed;
+    fixed     share;
+    fixed     room;
+    bool      settled;
+    int       count;
+    int       left;
+    int       rounds;
+    int       i;
+
+    if (dead == null) { return; }
+    if (!CycleMod_UnitModActive(dead, c_cycleMartyrBehavior)) { return; }
+    if (!CycleMod_CanShareDamage(dead)) { return; }
+    if (CycleMod_RefundCanVanish(dead) && (source == null || source == dead)) { return; }
+
+    pool = (UnitGetPropertyFixed(dead, c_unitPropLifeMax, c_unitPropCurrent)
+        + UnitGetPropertyFixed(dead, c_unitPropShieldsMax, c_unitPropCurrent))
+        * c_cycleMartyrFraction;
+    if (pool <= 0.0) { return; }
+
+    found = UnitGroupAlliance(UnitGetOwner(dead), c_unitAllianceAlly,
+        RegionCircle(UnitGetPosition(dead), c_cycleMartyrRadius),
+        UnitFilter(0, 0, (1 << c_targetFilterMissile),
+            (1 << (c_targetFilterStasis - 32)) | (1 << (c_targetFilterDead - 32))
+            | (1 << (c_targetFilterHidden - 32))), 0);
+
+    needy = UnitGroupEmpty();
+    count = UnitGroupCount(found, c_unitCountAll);
+    i = 1;
+    while (i <= count) {
+        candidate = UnitGroupUnit(found, i);
+        if (candidate != dead && UnitIsAlive(candidate)
+            && CycleMod_UnitModActive(candidate, c_cycleMartyrBehavior)
+            && CycleMod_CanShareDamage(candidate)
+            && CycleMod_MendRoom(candidate) > 0.0) {
+            UnitGroupAdd(needy, candidate);
+        }
+        i = i + 1;
+    }
+    count = UnitGroupCount(needy, c_unitCountAll);
+    if (count == 0) { return; }
+
+    // Settled in rounds. Each round either tops off at least one unit (which
+    // then has no room and sits out the next round) or, when every remaining
+    // unit needs more than an even share, hands each of them exactly that and
+    // empties the pot - so it ends in at most count + 1 rounds. The cap only
+    // matters if a unit somehow refuses healing and keeps reporting room.
+    healed = 0.0;
+    rounds = 0;
+    while (pool > 0.01 && rounds <= count) {
+        rounds = rounds + 1;
+        left = 0;
+        i = 1;
+        while (i <= count) {
+            if (CycleMod_MendRoom(UnitGroupUnit(needy, i)) > 0.0) { left = left + 1; }
+            i = i + 1;
+        }
+        if (left == 0) { break; }
+
+        share   = pool / IntToFixed(left);
+        settled = false;
+        i = 1;
+        while (i <= count) {
+            candidate = UnitGroupUnit(needy, i);
+            room = CycleMod_MendRoom(candidate);
+            if (room > 0.0 && room <= share) {
+                CycleMod_Mend(candidate, room);
+                pool    = pool - room;
+                healed  = healed + room;
+                settled = true;
+            }
+            i = i + 1;
+        }
+
+        if (!settled) {
+            i = 1;
+            while (i <= count) {
+                candidate = UnitGroupUnit(needy, i);
+                if (CycleMod_MendRoom(candidate) > 0.0) {
+                    CycleMod_Mend(candidate, share);
+                    healed = healed + share;
+                }
+                i = i + 1;
+            }
+            pool = 0.0;
+        }
+    }
+
+    if (healed < 1.0) { return; }
+    CycleMod_FloatText(UnitGetPosition(dead), "+" + IntToString(FixedToInt(healed + 0.5)),
+        "7FFF8A", PlayerGroupSingle(UnitGetOwner(dead)));
+    Debug_Log("Martyrdom: " + UnitGetType(dead) + " died, healed "
+        + FixedToString(healed, 2) + " across " + IntToString(count) + " injured unit(s)");
 }
 
 // Forced March drops the moment a unit is in contact, and "in contact" is both
@@ -4148,12 +4487,6 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     unit  target;
     unit  source;
     unit  overwatchOwner;
-    fixed currentLife;
-    fixed maxLife;
-    fixed currentShields;
-    fixed maxShields;
-    fixed healing;
-    fixed overflow;
     bool  overwatchArmed;
 
     target = EventUnit();
@@ -4250,6 +4583,8 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
             libNtve_gf_SetBehaviorCount(overwatchOwner, "TardigradeMod_OverwatchReady",
                 overwatchOwner, 0);
             UnitBehaviorAdd(overwatchOwner, "TardigradeMod_OverwatchFiring", overwatchOwner, 1);
+            CycleMod_FloatText(UnitGetPosition(overwatchOwner), "Overwatch!", "FFB84A",
+                Tardigrade_Viewers());
         }
         // A Baneling's +50% is already in its damage numbers. It should be dead
         // here and so never reach this at all, but if the engine ever does
@@ -4289,33 +4624,10 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
 
     if (!CycleMod_IsCombatUnit(source)) { return true; }
 
-    // Predator Protocol tops up life first, then spills whatever is left over
-    // into shields - otherwise the mod is dead weight on a full-health Protoss
-    // unit that has taken shield damage, or on any unit at full HP.
+    // Predator Protocol: 30% of the damage dealt, life first then shields,
+    // capped per second (CycleMod_PredatorLeech).
     if (CycleMod_UnitModActive(source, "TardigradeMod_PredatorProtocol")) {
-        currentLife = UnitGetPropertyFixed(source, c_unitPropLife, c_unitPropCurrent);
-        maxLife     = UnitGetPropertyFixed(source, c_unitPropLifeMax, c_unitPropCurrent);
-        healing     = EventUnitDamageAmount() * 0.30;
-
-        if (currentLife + healing > maxLife) {
-            overflow = currentLife + healing - maxLife;
-            UnitSetPropertyFixed(source, c_unitPropLife, maxLife);
-        } else {
-            overflow = 0.0;
-            UnitSetPropertyFixed(source, c_unitPropLife, currentLife + healing);
-        }
-
-        if (overflow > 0.0) {
-            maxShields = UnitGetPropertyFixed(source, c_unitPropShieldsMax, c_unitPropCurrent);
-            if (maxShields > 0.0) {
-                currentShields = UnitGetPropertyFixed(source, c_unitPropShields, c_unitPropCurrent);
-                if (currentShields + overflow > maxShields) {
-                    UnitSetPropertyFixed(source, c_unitPropShields, maxShields);
-                } else {
-                    UnitSetPropertyFixed(source, c_unitPropShields, currentShields + overflow);
-                }
-            }
-        }
+        CycleMod_PredatorLeech(source, EventUnitDamageAmount());
     }
     return true;
 }
@@ -4357,16 +4669,21 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
     // a Refund side gets a quarter back on a razed Barracks as well as on a
     // dead Marine.
     CycleMod_PayRefund(dead, killer);
+    // Martyrdom filters non-deaths the same way, so it takes the raw source too.
+    CycleMod_TryMartyrdom(dead, killer);
 
     if (killer == null) { killer = CycleMod_GetUnitRef(c_cycleKeyLastAttacker, dead); }
 
-    if (CycleMod_IsCombatUnit(dead)) {
+    if (CycleMod_IsVeteranWorthyVictim(dead)) {
         // An Interceptor's kill belongs to its Carrier, and so on.
         killer = CycleMod_VeteranRoot(killer);
 
         if (killer != null && UnitGetOwner(killer) != UnitGetOwner(dead)
             && CycleMod_UnitModActive(killer, "TardigradeMod_VeteranForces")) {
             CycleMod_AddHelperBehavior(killer, 6);
+            CycleMod_FloatText(UnitGetPosition(killer), "Veteran "
+                + IntToString(UnitBehaviorCount(killer, CycleMod_HelperBehavior(6))),
+                "FFD54A", PlayerGroupSingle(UnitGetOwner(killer)));
             Debug_Log("Veteran Forces: +1 to " + UnitGetType(killer) + " (now "
                 + IntToString(UnitBehaviorCount(killer, CycleMod_HelperBehavior(6)))
                 + ") for killing " + UnitGetType(dead));
@@ -4641,7 +4958,7 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
         || beh == "TardigradeMod_Refund" || beh == "TardigradeMod_AutoRefinery"
         || beh == "TardigradeMod_NoBans" || beh == "TardigradeMod_MineralsOnly"
         || beh == "TardigradeMod_Yolo" || beh == "TardigradeMod_FactoryLines"
-        || beh == c_cycleAdrenalineBehavior) {
+        || beh == c_cycleAdrenalineBehavior || beh == c_cycleMartyrBehavior) {
         return;
     }
     if (beh == c_cycleMarchBehavior) {
@@ -4699,6 +5016,12 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
 
     while (true) {
         if (!c_cyclePhaseMode) {
+            CycleMod_PanelFoldTick();
+            if (!g_cycle_activationWarned && !g_cycle_delayedApplied
+                && GameGetMissionTime() >= c_cycleActivationDelay - c_cycleActivationWarnLead) {
+                g_cycle_activationWarned = true;
+                CycleMod_WarnActivation();
+            }
             if (!g_cycle_delayedApplied && GameGetMissionTime() >= c_cycleActivationDelay) {
                 CycleMod_ActivateDelayedMods();
                 g_cycle_delayedApplied = true;
@@ -4889,7 +5212,40 @@ bool CycleMod_OnPanelToggle(bool testConds, bool runActions) {
     // Anyone who isn't on a team clicked the shared spectator panel.
     if (CycleMod_PanelRole(key) == 0) { key = 0; }
     CycleMod_SetPanelExpanded(key, !g_cycle_panelExpanded[key]);
+    g_cycle_panelFoldAt[key] = 0.0;   // the viewer chose; stop folding for them
     return true;
+}
+
+// Open every built panel and fold it again after `seconds` (real seconds; the
+// fold is timed in game seconds, 1.4x on Faster). A panel its viewer already
+// has open keeps no timer - they opened it, so it stays.
+void CycleMod_PanelPeekAll(fixed seconds) {
+    int key;
+    if (!g_cycle_panelBuilt) { return; }
+    key = 0;
+    while (key < 16) {
+        if (g_cycle_panelDlg[key] != c_invalidDialogId && g_cycle_panelDlg[key] != 0) {
+            if (!g_cycle_panelExpanded[key]) {
+                CycleMod_SetPanelExpanded(key, true);
+                g_cycle_panelFoldAt[key] = GameGetMissionTime() + seconds * 1.4;
+            }
+        }
+        key = key + 1;
+    }
+}
+
+// Run from the scan loop: fold every panel whose time is up.
+void CycleMod_PanelFoldTick() {
+    int key;
+    if (!g_cycle_panelBuilt) { return; }
+    key = 0;
+    while (key < 16) {
+        if (g_cycle_panelFoldAt[key] > 0.0 && GameGetMissionTime() >= g_cycle_panelFoldAt[key]) {
+            g_cycle_panelFoldAt[key] = 0.0;
+            CycleMod_SetPanelExpanded(key, false);
+        }
+        key = key + 1;
+    }
 }
 
 void CycleMod_InitPanelForPlayer(int player, trigger t) {
@@ -4964,9 +5320,11 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         i = i + 1;
     }
 
-    // Starts open: this panel was always-on before, and the point of the toggle
-    // is to let people get it out of the way, not to hide it by default.
+    // Starts open so everyone reads their picks once, then folds itself after
+    // ~20 real seconds: left open it covered 232px of the top-centre for the
+    // whole game. It re-opens for a look at activation (CycleMod_PanelPeekAll).
     CycleMod_SetPanelExpanded(player, true);
+    g_cycle_panelFoldAt[player] = GameGetMissionTime() + 28.0;
     if (player == 0) {
         TriggerAddEventDialogControl(t, c_playerAny, g_cycle_panelBtn[player], c_triggerControlEventTypeClick);
     } else {
