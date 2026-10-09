@@ -1,5 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
+    <!-- The Queen button: Spawning Pool AND (Queen drafted OR Queens <
+         Hatcheries). Queens are counted QueuedOrBetter, so one already
+         training uses up its Hatchery's slot, and burrowed Queens (a separate
+         unit type) count too. Alias_Hatchery is on Hatchery, Lair and Hive
+         alike. TechTreeCheat is off on the counts, as on the stock Mothership
+         limit and the Open Skies flag, so a cheat can't read them as met. -->
+    <CRequirementAnd id="TardigradeReqNode_Queen">
+        <OperandArray value="CountUnitSpawningPoolCompleteOnlyTechTreeCheat"/>
+        <OperandArray value="TardigradeReqNode_QueenAllowed"/>
+    </CRequirementAnd>
+    <CRequirementOr id="TardigradeReqNode_QueenAllowed">
+        <OperandArray value="TardigradeReqNode_QueenDrafted"/>
+        <OperandArray value="TardigradeReqNode_QueenBelowHatch"/>
+    </CRequirementOr>
+    <CRequirementCountUpgrade id="TardigradeReqNode_QueenDrafted">
+        <Count Link="TardigradeUpg_QueenUncapped" State="CompleteOnly"/>
+        <Flags index="TechTreeCheat" value="0"/>
+    </CRequirementCountUpgrade>
+    <CRequirementLT id="TardigradeReqNode_QueenBelowHatch">
+        <Tooltip value="Tardigrade/Requirement/QueenPerHatch"/>
+        <OperandArray index="0" value="TardigradeReqNode_QueenCount"/>
+        <OperandArray index="1" value="TardigradeReqNode_HatchCount"/>
+    </CRequirementLT>
+    <CRequirementSum id="TardigradeReqNode_QueenCount">
+        <OperandArray value="TardigradeReqNode_QueenUp"/>
+        <OperandArray value="TardigradeReqNode_QueenBurrowed"/>
+    </CRequirementSum>
+    <CRequirementCountUnit id="TardigradeReqNode_QueenUp">
+        <Count Link="Queen" State="QueuedOrBetter"/>
+        <Flags index="TechTreeCheat" value="0"/>
+    </CRequirementCountUnit>
+    <CRequirementCountUnit id="TardigradeReqNode_QueenBurrowed">
+        <Count Link="QueenBurrowed" State="QueuedOrBetter"/>
+        <Flags index="TechTreeCheat" value="0"/>
+    </CRequirementCountUnit>
+    <CRequirementCountUnit id="TardigradeReqNode_HatchCount">
+        <Count Link="Alias_Hatchery" State="CompleteOnly"/>
+        <Flags index="TechTreeCheat" value="0"/>
+    </CRequirementCountUnit>
+
     <!-- Satisfied once TardigradeUpg_OpenSkies is complete for the player. The
          TechTreeCheat flag is off on purpose: testing mode unlocks every unit,
          and with the cheat flag on this node would read as satisfied for

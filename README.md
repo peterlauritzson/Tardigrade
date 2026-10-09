@@ -97,7 +97,7 @@ data files store game seconds, which tick 1.4× quicker.
 
 | # | Modifier | Effect (applies to your units only) |
 |---|---|---|
-| 1 | Open Skies | All your weapons can target ground and air. Against the plane a unit couldn't hit before, it deals half damage (Zealot vs air, Phoenix vs ground); units that already hit both are unchanged |
+| 1 | Open Skies | All your weapons can target ground and air. Against the plane a unit couldn't hit before, it deals half damage (Zealot vs air, Phoenix vs ground); units that already hit both, and structures, are unchanged |
 | 2 | Forced March | +40% move speed on all your units. Being in combat switches it off — taking damage or dealing it, either one. It comes back 10s after the last time the unit was hit or attacked |
 | 3 | Free Labor | Your workers no longer cost supply |
 | 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full — up to 8% of the unit's max health (life + shields) per second |
@@ -113,7 +113,7 @@ data files store game seconds, which tick 1.4× quicker.
 | 14 | Shared Damage | Every hit on one of your units (after armor): it keeps half, rounded up, and the other half is dealt out in whole points — at least 1 each — to as many of your other units within 3 range as it stretches to. A shared piece never takes a unit below 40% of its max health (life + shields), and a unit already under 40% takes none, so it can never kill a unit that wasn't shot at; what the others can't hold goes back onto the unit that was hit. A unit that would die even on its own half takes the full hit and shares nothing (no spreading the overkill), and a unit alone takes the full hit |
 | 15 | Minerals Only | **Live from 0:00.** Nothing you buy costs gas: every gas cost is added to the mineral cost at 1.5× and set to 0 (a 100/100 upgrade costs 250/0, a Stalker 125/50 costs 200/0). Units, structures, morphs and upgrades are all converted. Any gas you mine (or get from Auto Refineries or Refund) is turned into minerals at the same 1.5× (a 4-gas trip pays 6 minerals), so refineries are still worth taking |
 | 16 | YOLO | **Not on the board — a choice made on its own "YOLO?" screen before the race draft.** Each player picks *Draft normally* or *Go YOLO*; the choice is hidden until both have locked in, and both may go YOLO. Going YOLO makes your whole draft chance: your **race ban or pick** is made at random, **3 random modifiers** rolled from the whole pool (bans and your opponent's picks don't matter; No Bans can come up and means +1 unit), your modifier bans made at random, and no unit draft — your roster is **7 units** at random from your race's pool (instead of 6), with nothing guaranteed. Against a normal drafter everything is revealed at the normal draft's pace: each of your pick turns rolls one modifier or one unit on the spot (your 6th unit turn rolls the 7th too). Your opponent can't ban from your unit pool, and your unit bans are random too. If both go YOLO the modifier board is skipped entirely and everything is rolled at once. In Tournament mode the screen has the usual 10s; undecided = draft normally |
-| 17 | Factory Lines | Everything you build, train, warp in or morph into is 15% faster: structures, add-ons, units, warp gate recharge, research, and morphs like Orbital, Lair or Baneling. Not workers |
+| 17 | Factory Lines | Everything you build, train, warp in or morph into is 15% faster: structures, add-ons, units, warp gate recharge, research, and morphs like Orbital, Lair or Baneling. Hatcheries also spawn larva 15% faster. Not workers |
 | 18 | Adrenaline | Taking damage from an enemy gives the unit +50% move speed for 3s; every hit restarts the 3s |
 | 19 | Martyrdom | When one of your units dies, 20% of its max health (life + shields) heals your other units within 3 range — split evenly among the injured ones, life first then shields. Anyone who needs less than their share is topped off and the rest goes to the others; what nobody can use is lost. Like Shared Damage, summons, hallucinations, eggs and workers neither give nor receive it |
 
@@ -175,6 +175,12 @@ Special cases:
 
 - **Detection floor:** Observer (Protoss) and Overseer (Zerg) sit outside the
   pool entirely and are **always buildable**, so detection is never drafted away.
+- **Queen floor:** the Queen is in the Zerg pool and can be banned, but Zerg
+  can always train **one Queen per completed Hatchery / Lair / Hive**, drafted
+  or not, so injects and creep never go away. Without the Queen drafted, the
+  normal Queen button greys out once your Queens (training, alive or burrowed)
+  match your Hatcheries; its tooltip says so. Drafting the Queen removes the
+  cap.
 - **Derived units are their own picks.** Hellbat, Archon, Baneling, Ravager,
   Lurker and Brood Lord are only available if drafted — you can't train them
   or transform/merge into them otherwise (Hellion ↔ Hellbat and the templar

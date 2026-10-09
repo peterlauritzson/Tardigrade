@@ -327,10 +327,8 @@ int[16] g_cycle_panelHdrMine;
 int[16] g_cycle_panelHdrOpp;
 int[16][4] g_cycle_panelRowMine;
 int[16][4] g_cycle_panelRowOpp;
-// Live stat label at the right end of each row (see CycleMod_PanelStatsTick) and
-// the modifier index each row shows, so a refresh can look its number up.
-int[16][4] g_cycle_panelStatMine;
-int[16][4] g_cycle_panelStatOpp;
+// The modifier index each row shows, so the stat refresh can look its number
+// up (see CycleMod_PanelStatsTick).
 int[16][4] g_cycle_panelModMine;
 int[16][4] g_cycle_panelModOpp;
 fixed   g_cycle_panelStatsAt = 0.0;   // mission time of the last stat refresh
@@ -386,6 +384,8 @@ const int c_cycleStateLastAttack   = 6;
 const int c_cycleStateEconomicEgg  = 7;
 const int c_cycleStateAutoGas      = 8;   // gas building: mission time its last auto trip was paid up to
 const int c_cycleStateAutoGasLeft  = 9;   // gas building: gas it still holds, once auto (see CycleMod_AutoRefineryTick)
+// 10/11 are the veterancy tag's, declared with it further down.
+const int c_cycleStateEntrenchShown = 12; // 1 = this entrenchment already floated (see CycleMod_EntrenchFloat)
 // Bound on the Open Skies WEAPON CATALOG cache only - Galaxy array sizes must
 // be constants, and the game data holds far fewer weapons than this. It is no
 // longer any kind of limit on units: per-unit state is keyed by unit tag.
@@ -411,9 +411,9 @@ const string c_cycleOpenSkiesUpgrade = "TardigradeUpg_OpenSkies";
 // 4 covers everything in the melee data (the widest live array is the
 // Mothership's 3) with room to spare. Sized with a literal like the arrays
 // above - keep it >= c_cycleSkipLimit.
-const int    c_cycleSkipLimit       = 64;
+const int    c_cycleSkipLimit       = 128;
 const int    c_cycleUnitWeaponProbe = 4;
-string[64]   g_cycle_skipWeapon;
+string[128]  g_cycle_skipWeapon;
 int          g_cycle_skipCount = 0;
 bool         g_cycle_skipBuilt = false;
 // Per-unit references (who last hit a unit; which unit owns a spawn's kills)
@@ -464,8 +464,8 @@ void CycleMod_FloatText(point where, string msg, string hex, playergroup players
 }
 
 //--------------------------------------------------------------------------------------------------
-// Live modifier stats, shown beside each row of the in-game Active Modifiers
-// panel: what each side's modifier has actually done so far this match.
+// Live modifier stats, shown in the hover tooltip of the in-game Active Modifiers
+// toggle button: what each side's modifier has actually done so far this match.
 // Indexed [team 1..2][modifier 1..19]; a team's number is credited to the team
 // that BENEFITS (the healed unit's owner, the blinking unit's owner...).
 //--------------------------------------------------------------------------------------------------
@@ -614,7 +614,7 @@ string CycleMod_Name(int idx) {
 //   Adrenaline rush          4.2 game ->  3   real
 // CycleMod_ActivationClockText does the same conversion for the activation time.
 string CycleMod_Desc(int idx) {
-    if (idx == 1)  { return "weapons hit ground and air; half damage to the new one"; }
+    if (idx == 1)  { return "units hit ground and air; half damage to the new one"; }
     if (idx == 2)  { return "+40% move speed, lost on damage dealt or taken, back 10s later"; }
     if (idx == 3)  { return "your workers no longer cost supply"; }
     if (idx == 4)  { return "attacks heal 30% of damage dealt, max 8% of HP per second"; }
@@ -630,7 +630,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
     if (idx == 15) { return "from 0:00: gas costs and gas mined both 1.5x minerals"; }
     if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
-    if (idx == 17) { return "everything but workers builds, morphs and researches 15% faster"; }
+    if (idx == 17) { return "builds, morphs, research and larva 15% faster; not workers"; }
     if (idx == 18) { return "taking damage gives +50% move speed for 3s"; }
     if (idx == 19) { return "a unit that dies heals nearby allies for 20% of its max HP"; }
     return "";
@@ -822,12 +822,15 @@ bool CycleMod_ModsLive() {
 // Fortress or a cannon wall would bank Veteran stacks no army could match.
 // Refund is about losing an army, not a base: a quarter back on every
 // building razed would soften the one loss that is meant to end games.
+// Open Skies is listed for its per-unit penalty buff; the structure weapons
+// themselves are held back in CycleMod_EnsureOpenSkiesSkipList.
 // Spawned children are unaffected: the Auto-Turret is a structure, but Veteran
 // asks about its Raven (CycleMod_VeteranRoot) and its stacks are copied by
 // CycleMod_SyncVeteranStacks, which does not come through here.
 bool CycleMod_ModSkipsStructures(string beh) {
     return beh == "TardigradeMod_Entrenchment" || beh == "TardigradeMod_Overwatch"
-        || beh == "TardigradeMod_VeteranForces" || beh == "TardigradeMod_Refund";
+        || beh == "TardigradeMod_VeteranForces" || beh == "TardigradeMod_Refund"
+        || beh == "TardigradeMod_OpenSkies";
 }
 
 bool CycleMod_UnitModActive(unit u, string beh) {
@@ -1182,19 +1185,24 @@ bool CycleMod_DraftPickerIsP1() {
 
 void CycleMod_DraftChooseRandom();
 
-// One side's picks for the panel: a heading, then three numbered slots, each a
-// name over its description once filled. A YOLO side's slots fill as its pick
-// turns come up (CycleMod_AdvancePick rolls them), which is the only place a
-// roll of a banned or already-taken modifier can be seen.
+// One side's picks for the panel: a heading with the side's race (the race
+// draft is over by now), then three numbered slots, each a name over its
+// description once filled - laid out like the unit draft's modifier column
+// (RosterDraft_ModBlock). A YOLO side's slots fill as its pick turns come up
+// (CycleMod_AdvancePick rolls them), which is the only place a roll of a
+// banned or already-taken modifier can be seen.
 string CycleMod_PicksBlock(bool isP1, string heading, string clr) {
     string s;
     int    i;
     int    idx;
+    int    race;
 
-    s = "<c val=\"" + clr + "\">" + heading + "</c>";
+    if (isP1) { race = g_draft_p1Race; } else { race = g_draft_p2Race; }
+    s = "<c val=\"" + clr + "\">" + heading + "</c>  <c val=\"777777\">" + RaceName(race) + "</c>";
     if (CycleMod_SideIsYolo(isP1)) {
         s = s + "  <c val=\"FFD700\">YOLO</c> " + DraftStyle_Small("<c val=\"B8A060\">rolled at random</c>");
     }
+    if (CycleMod_SideIsProtect(isP1)) { s = s + "  <c val=\"FFD700\">PROTECT</c>"; }
     i = 1;
     while (i <= c_cyclePicksEach) {
         if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
@@ -1533,18 +1541,20 @@ bool CycleMod_DraftAutoAct(bool testConds, bool runActions) {
 //--------------------------------------------------------------------------------------------------
 void CycleMod_OpenDraftBoard() {
     int i;
+    int lblSection;
 
-    // Dialog: 940 x 660. Left, the board: two columns of nine buttons (YOLO
-    // is not on the board), then the legend. Buttons start at y=80 on a 60px
-    // pitch: 80 + 9*60 = 620, the legend sits at 626, plus a margin. Right,
-    // both sides' picks. With c_anchorTop an x offset places a control's
-    // centre relative to the dialog's (470): the board's columns move from
-    // -150/+150 to -300/0 (g_cycle_boardShift), the panel is left 620, width
-    // 300 -> +300.
+    // Dialog: 940 x 660. Left, both sides' race and picks - the same column
+    // the unit draft keeps its modifiers in, so the two screens read alike.
+    // Right, the board: two columns of nine buttons (YOLO is not on the
+    // board), then the legend. Buttons start at y=80 on a 60px pitch:
+    // 80 + 9*60 = 620, the legend sits at 626, plus a margin. With
+    // c_anchorTop an x offset places a control's centre relative to the
+    // dialog's (470): the panel is left 20, width 300 -> -300; the board's
+    // columns move from -150/+150 to 0/+300 (g_cycle_boardShift).
     g_cycle_dialog = DialogCreate(940, 660, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
-    g_cycle_boardShift = -150;
+    g_cycle_boardShift = 150;
 
     g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblTitle, Tardigrade_Viewers(), 900, 26);
@@ -1554,16 +1564,23 @@ void CycleMod_OpenDraftBoard() {
     DialogControlSetSize(g_cycle_lblSub, Tardigrade_Viewers(), 900, 20);
     DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 48);
 
+    lblSection = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(lblSection, Tardigrade_Viewers(), 300, 14);
+    DialogControlSetPosition(lblSection, Tardigrade_Viewers(), c_anchorTop, -300, 68);
+    DialogControlSetPropertyAsText(lblSection, c_triggerControlPropertyText,
+        Tardigrade_Viewers(),
+        StringToText(DraftStyle_Small("<c val=\"555555\">MODIFIERS  (per player) ──────────</c>")));
+
     g_cycle_lblPicksTop = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     g_cycle_lblPicksBottom = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetPropertyAsString(g_cycle_lblPicksTop, c_triggerControlPropertyStyle,
         Tardigrade_Viewers(), c_cyclePicksPanelStyle);
     DialogControlSetPropertyAsString(g_cycle_lblPicksBottom, c_triggerControlPropertyStyle,
         Tardigrade_Viewers(), c_cyclePicksPanelStyle);
-    DialogControlSetSize(g_cycle_lblPicksTop, Tardigrade_Viewers(), 300, 270);
-    DialogControlSetPosition(g_cycle_lblPicksTop, Tardigrade_Viewers(), c_anchorTop, 300, 80);
+    DialogControlSetSize(g_cycle_lblPicksTop, Tardigrade_Viewers(), 300, 262);
+    DialogControlSetPosition(g_cycle_lblPicksTop, Tardigrade_Viewers(), c_anchorTop, -300, 88);
     DialogControlSetSize(g_cycle_lblPicksBottom, Tardigrade_Viewers(), 300, 270);
-    DialogControlSetPosition(g_cycle_lblPicksBottom, Tardigrade_Viewers(), c_anchorTop, 300, 360);
+    DialogControlSetPosition(g_cycle_lblPicksBottom, Tardigrade_Viewers(), c_anchorTop, -300, 360);
 
     i = 1;
     while (i <= c_cycleModCount) {
@@ -2088,6 +2105,23 @@ bool CycleMod_EnemyNear(unit u, fixed range) {
     return false;
 }
 
+// "Entrenched" float, at most once per entrenchment. Arming usually happens
+// before the enemy shows up - you dig in, then they come - and the arm-time
+// float only shows with an enemy already near, so the moment that matters is
+// the first fight: the unit's first hostile hit taken, or its first attack with
+// an enemy around. CycleMod_UpdateConditionalBehaviors clears the flag on each
+// new arming. The helper behavior lingers ~2s after the unit moves off, so a
+// unit stepping out of position can still float once on its way out - that is
+// still the bonus it is fighting with.
+void CycleMod_EntrenchFloat(unit u, bool needEnemy) {
+    if (u == null || !UnitIsAlive(u)) { return; }
+    if (UnitGetCustomValue(u, c_cycleStateEntrenchShown) > 0.0) { return; }
+    if (UnitBehaviorCount(u, CycleMod_HelperBehavior(3)) == 0) { return; }
+    if (needEnemy && !CycleMod_EnemyNear(u, c_cycleArmFloatRange)) { return; }
+    UnitSetCustomValue(u, c_cycleStateEntrenchShown, 1.0);
+    CycleMod_FloatTextSized(UnitGetPosition(u), "Entrenched", "9FD3FF", Tardigrade_Viewers(), 16);
+}
+
 // Damage whose Overwatch bonus is baked into the numbers by
 // CycleMod_ApplyOverwatchDamageTeam, and which the trigger must therefore
 // leave alone so the two can't stack. All of a Baneling's damage; only a Widow
@@ -2373,7 +2407,7 @@ string CycleMod_UnitWeaponSlot(string unitType, int slot) {
 }
 
 // Walk the Unit catalog and collect the weapons of every unit that already
-// reaches both planes. Two cheap reads per unarmed unit (which is most of the
+// reaches both planes, and of every structure. Two cheap reads per unarmed unit (which is most of the
 // catalog) and a second pass only for the handful that qualify.
 void CycleMod_EnsureOpenSkiesSkipList() {
     int    catalogCount;
@@ -2411,7 +2445,11 @@ void CycleMod_EnsureOpenSkiesSkipList() {
         // dual-plane weapon has no rival to be mis-selected over. Pass two only
         // runs for those few units, so re-reading the links is cheaper than
         // carrying a scratch array through the whole sweep.
-        if (slotCount > 1 && coverage == 3) {
+        //
+        // Structures are skipped whole as well: Open Skies is about armies, so a
+        // Spine Crawler never shoots air and a Missile Turret never shoots ground.
+        if ((slotCount > 1 && coverage == 3)
+            || (slotCount > 0 && UnitTypeTestAttribute(unitType, c_unitAttributeStructure))) {
             slot = 0;
             while (slot < c_cycleUnitWeaponProbe) {
                 weapon = CycleMod_UnitWeaponSlot(unitType, slot);
@@ -2617,6 +2655,8 @@ bool CycleMod_OnOpenSkiesSplash(bool testConds, bool runActions) {
     // A dead source deals nothing through UnitDamage. Should the attacker have
     // died since it fired, its splash is lost - accepted for these five.
     if (caster == null || !UnitIsAlive(caster)) { return true; }
+    // Open Skies leaves structures alone (the Planetary Fortress, here).
+    if (UnitTypeTestAttribute(UnitGetType(caster), c_unitAttributeStructure)) { return true; }
     attacker = caster;
 
     outer = CycleMod_OSRingRadius(idx, 1);
@@ -3283,7 +3323,8 @@ string CycleMod_WorkerGatherAbil(int i) {
 // Factory Lines (modifier 17): everything the side builds, trains, warps in or
 // morphs into goes up 15% faster (build rate, so time / 1.15) - structures,
 // add-ons, units, research, and production morphs like Orbital, Lair or
-// Baneling. Workers are the exception.
+// Baneling - and Hatcheries spawn larva 15% faster (CycleMod_FactoryLarvaForPlayer).
+// Workers are the exception.
 //
 // Per-player catalog, like Minerals Only: each time field is set from its
 // shipped value (CycleMod_CatalogBase), so testing mode switching it off and on
@@ -3450,10 +3491,29 @@ void CycleMod_EnsureProdCache() {
         + ", " + IntToString(g_cycle_prodCount) + " time fields");
 }
 
+// Natural larva: a Hatchery / Lair / Hive spawns one every SpawnLarva
+// InfoArray[0].Delay (15 game seconds), up to 3. Larva is what a Zerg side's
+// production rate actually hangs on, so a faster egg with the same larva would
+// barely be faster at all. InfoArray[1] is the inject release (0.25s), left
+// alone, as is the Queen's inject timer - that is a spell, not production.
+void CycleMod_FactoryLarvaForPlayer(int player, bool on) {
+    string base;
+
+    base = CycleMod_CatalogBase(c_gameCatalogBehavior, "SpawnLarva", "InfoArray[0].Delay", player);
+    if (StringToFixed(base) <= 0.0) { return; }
+    if (on) {
+        CatalogFieldValueSet(c_gameCatalogBehavior, "SpawnLarva", "InfoArray[0].Delay", player,
+            FixedToString(StringToFixed(base) / c_cycleFactoryRate, 4));
+    } else {
+        CatalogFieldValueSet(c_gameCatalogBehavior, "SpawnLarva", "InfoArray[0].Delay", player, base);
+    }
+}
+
 void CycleMod_FactoryLinesForPlayer(int player, bool on) {
     string base;
     int    i;
 
+    CycleMod_FactoryLarvaForPlayer(player, on);
     CycleMod_EnsureProdCache();
     i = 0;
     while (i < g_cycle_prodCount) {
@@ -4516,6 +4576,28 @@ fixed CycleMod_MendRoom(unit u) {
         - UnitGetPropertyFixed(u, c_unitPropShields, c_unitPropCurrent);
 }
 
+// The damage one hit did to the target's life AND shields, for Predator
+// Protocol's leech. EventUnitDamageAmount() alone is what reached life: the
+// part shields soaked is reported as absorbed, so a leech off the amount
+// alone got next to nothing out of any Protoss target with shields up.
+// Damage soaked by a behavior shield (Guardian Shield-style responses, Shared
+// Damage's absorb) is taken back out - it never touched the target's vitals,
+// and Shared Damage re-deals it as shares that leech on their own. Never more
+// than the hit attempted, never less than what reached life.
+// **Unverified:** that EventUnitDamageAbsorbed() is the shield-soaked part in a
+// plain damaged event. The debug log line in CycleMod_PredatorLeech prints all
+// four numbers for hits on shielded targets, so one test settles it.
+fixed CycleMod_HitVitalsDealt() {
+    fixed dealt;
+    fixed attempted;
+
+    dealt = EventUnitDamageAmount() + EventUnitDamageAbsorbed() - EventUnitDamageBehaviorShield();
+    attempted = EventUnitDamageAttempted();
+    if (attempted > 0.0 && dealt > attempted) { dealt = attempted; }
+    if (dealt < EventUnitDamageAmount()) { dealt = EventUnitDamageAmount(); }
+    return dealt;
+}
+
 // Predator Protocol's heal for one hit: c_cyclePredatorLeech of the damage,
 // limited to the stacks of c_cyclePredatorSated still free. The stacks a heal
 // uses are rounded to the nearest whole one (at least 1), so a unit can
@@ -4823,15 +4905,24 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     if (CycleMod_IsHostileTarget(source, target)) {
         CycleMod_TryBattleBlink(target, source);
         CycleMod_TryAdrenaline(target);
+        CycleMod_EntrenchFloat(target, false);
     }
     CycleMod_BreakMarch(target);
 
     if (!CycleMod_IsCombatUnit(source)) { return true; }
 
-    // Predator Protocol: 30% of the damage dealt, life first then shields,
-    // capped per second (CycleMod_PredatorLeech).
+    // Predator Protocol: 30% of the damage dealt to life + shields, healed
+    // life first then shields, capped per second (CycleMod_PredatorLeech).
     if (CycleMod_UnitModActive(source, "TardigradeMod_PredatorProtocol")) {
-        CycleMod_PredatorLeech(source, EventUnitDamageAmount());
+        if (UnitGetPropertyFixed(target, c_unitPropShieldsMax, c_unitPropCurrent) > 0.0) {
+            Debug_Log("Predator: " + UnitGetType(source) + " -> " + UnitGetType(target)
+                + " amount=" + FixedToString(EventUnitDamageAmount(), 2)
+                + " absorbed=" + FixedToString(EventUnitDamageAbsorbed(), 2)
+                + " behShield=" + FixedToString(EventUnitDamageBehaviorShield(), 2)
+                + " attempted=" + FixedToString(EventUnitDamageAttempted(), 2)
+                + " -> leech base " + FixedToString(CycleMod_HitVitalsDealt(), 2));
+        }
+        CycleMod_PredatorLeech(source, CycleMod_HitVitalsDealt());
     }
     return true;
 }
@@ -4854,6 +4945,10 @@ bool CycleMod_OnUnitStartedAttack(bool testConds, bool runActions) {
     // and the slowdown arrives as the unit engages instead of a projectile
     // flight later. The damage path in CycleMod_OnUnitDamaged covers the rest.
     CycleMod_BreakMarch(EventUnit());
+    // An entrenched line that shoots first may never be hit, so its first
+    // attack is a payoff moment too. Needs an enemy near: this event also
+    // fires on rocks and other neutral targets.
+    CycleMod_EntrenchFloat(EventUnit(), true);
     return true;
 }
 
@@ -5119,9 +5214,8 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
             CycleMod_AddHelperBehavior(u, 3);
             if (!armed) {
                 CycleMod_StatAdd(UnitGetOwner(u), 6, 1.0);
-                if (CycleMod_EnemyNear(u, c_cycleArmFloatRange)) {
-                    CycleMod_FloatTextSized(pos, "Entrenched", "9FD3FF", Tardigrade_Viewers(), 16);
-                }
+                UnitSetCustomValue(u, c_cycleStateEntrenchShown, 0.0);
+                CycleMod_EntrenchFloat(u, true);
             }
         }
     } else {
@@ -5527,8 +5621,8 @@ void CycleMod_SetPanelExpanded(int player, bool expanded) {
 
     viewer = CycleMod_PanelViewers(player);
 
-    if (expanded) { DialogSetSize(g_cycle_panelDlg[player], 600, 232); }
-    else          { DialogSetSize(g_cycle_panelDlg[player], 600, 34); }
+    if (expanded) { DialogSetSize(g_cycle_panelDlg[player], 470, 232); }
+    else          { DialogSetSize(g_cycle_panelDlg[player], 470, 34); }
 
     DialogControlSetVisible(g_cycle_panelTitle[player], viewer, expanded);
     DialogControlSetVisible(g_cycle_panelHdrMine[player], viewer, expanded);
@@ -5537,8 +5631,6 @@ void CycleMod_SetPanelExpanded(int player, bool expanded) {
     while (i <= c_cyclePicksEach) {
         DialogControlSetVisible(g_cycle_panelRowMine[player][i], viewer, expanded);
         DialogControlSetVisible(g_cycle_panelRowOpp[player][i], viewer, expanded);
-        DialogControlSetVisible(g_cycle_panelStatMine[player][i], viewer, expanded);
-        DialogControlSetVisible(g_cycle_panelStatOpp[player][i], viewer, expanded);
         i = i + 1;
     }
 
@@ -5594,17 +5686,42 @@ void CycleMod_PanelFoldTick() {
     }
 }
 
-// Run from the scan loop, throttled to about once a game second: write each
-// row's modifier stat into its label. Rows of a folded panel are skipped - the
-// next refresh after it opens (under a second) fills them.
+// One side's block of the stats tooltip: "Name  <stat>" per modifier that has
+// something to show, or a single "nothing yet" line.
+string CycleMod_StatTipBlock(int key, bool mine, int team) {
+    string out;
+    string stat;
+    int    i;
+    int    mod;
+
+    out = "";
+    i = 1;
+    while (i <= c_cyclePicksEach) {
+        if (mine) { mod = g_cycle_panelModMine[key][i]; }
+        else      { mod = g_cycle_panelModOpp[key][i]; }
+        if (mod > 0) {
+            stat = CycleMod_StatText(mod, g_cycle_stat[team][mod]);
+            if (stat != "") {
+                out = out + "<n/>" + CycleMod_Name(mod) + "  " + stat;
+            }
+        }
+        i = i + 1;
+    }
+    if (out == "") { out = "<n/><c val=\"AAAAAA\">nothing yet</c>"; }
+    return out;
+}
+
+// Run from the scan loop, throttled to about once a game second: refresh the
+// hover tooltip on each panel's toggle button with what the modifiers have
+// done so far. A player's tooltip covers their own side only - the opponent's
+// numbers are theirs to discover - while the audience panel shows both. Lives
+// on the button rather than beside each row so the open panel stays a plain
+// list, and so it can be read with the panel folded.
 void CycleMod_PanelStatsTick() {
     int         key;
-    int         i;
     int         role;
     int         mineTeam;
-    int         oppTeam;
-    int         mod;
-    playergroup viewer;
+    string      tip;
 
     if (!g_cycle_panelBuilt) { return; }
     if (GameGetMissionTime() < g_cycle_panelStatsAt + 1.0) { return; }
@@ -5612,30 +5729,17 @@ void CycleMod_PanelStatsTick() {
 
     key = 0;
     while (key < 16) {
-        if (g_cycle_panelDlg[key] != c_invalidDialogId && g_cycle_panelDlg[key] != 0
-            && g_cycle_panelExpanded[key]) {
-            viewer   = CycleMod_PanelViewers(key);
-            role     = CycleMod_PanelRole(key);
-            mineTeam = 1;
-            oppTeam  = 2;
-            if (role == 2) {
-                mineTeam = 2;
-                oppTeam  = 1;
+        if (g_cycle_panelDlg[key] != c_invalidDialogId && g_cycle_panelDlg[key] != 0) {
+            role = CycleMod_PanelRole(key);
+            if (role == 0) {
+                tip = "<c val=\"7FD0FF\">PLAYER 1</c>" + CycleMod_StatTipBlock(key, true, 1)
+                    + "<n/><n/><c val=\"FF9F7F\">PLAYER 2</c>" + CycleMod_StatTipBlock(key, false, 2);
+            } else {
+                mineTeam = role;
+                tip = "<c val=\"7FD0FF\">Your modifiers so far</c>" + CycleMod_StatTipBlock(key, true, mineTeam);
             }
-            i = 1;
-            while (i <= c_cyclePicksEach) {
-                mod = g_cycle_panelModMine[key][i];
-                if (mod > 0) {
-                    DialogControlSetPropertyAsText(g_cycle_panelStatMine[key][i], c_triggerControlPropertyText,
-                        viewer, StringToText(CycleMod_StatText(mod, g_cycle_stat[mineTeam][mod])));
-                }
-                mod = g_cycle_panelModOpp[key][i];
-                if (mod > 0) {
-                    DialogControlSetPropertyAsText(g_cycle_panelStatOpp[key][i], c_triggerControlPropertyText,
-                        viewer, StringToText(CycleMod_StatText(mod, g_cycle_stat[oppTeam][mod])));
-                }
-                i = i + 1;
-            }
+            DialogControlSetPropertyAsText(g_cycle_panelBtn[key], c_triggerControlPropertyTooltip,
+                CycleMod_PanelViewers(key), StringToText(tip));
         }
         key = key + 1;
     }
@@ -5651,7 +5755,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     viewer = CycleMod_PanelViewers(player);
     role   = CycleMod_PanelRole(player);   // key 0 is on no team -> spectator view
 
-    g_cycle_panelDlg[player] = DialogCreate(600, 232, c_anchorTop, 0, 22, false);
+    g_cycle_panelDlg[player] = DialogCreate(470, 232, c_anchorTop, 0, 22, false);
     Tardigrade_ObservableDialog(g_cycle_panelDlg[player]);
     DialogSetVisible(g_cycle_panelDlg[player], viewer, true);
     DialogSetImageVisible(g_cycle_panelDlg[player], true);
@@ -5669,7 +5773,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
 
     g_cycle_panelHdrMine[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_panelHdrMine[player], viewer, 450, 16);
-    DialogControlSetPosition(g_cycle_panelHdrMine[player], viewer, c_anchorTop, -65, 58);
+    DialogControlSetPosition(g_cycle_panelHdrMine[player], viewer, c_anchorTop, 8, 58);
     if (role == 0) {
         DialogControlSetPropertyAsText(g_cycle_panelHdrMine[player], c_triggerControlPropertyText,
             viewer, StringToText("<c val=\"7FD0FF\">PLAYER 1</c>"));
@@ -5684,19 +5788,16 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         else           { mineMod = CycleMod_Team1Mod(i); }
         g_cycle_panelRowMine[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
         DialogControlSetSize(g_cycle_panelRowMine[player][i], viewer, 450, 18);
-        DialogControlSetPosition(g_cycle_panelRowMine[player][i], viewer, c_anchorTop, -65, 76 + (i - 1) * 20);
+        DialogControlSetPosition(g_cycle_panelRowMine[player][i], viewer, c_anchorTop, 8, 76 + (i - 1) * 20);
         DialogControlSetPropertyAsText(g_cycle_panelRowMine[player][i], c_triggerControlPropertyText,
             viewer, StringToText(CycleMod_ModLine(mineMod)));
         g_cycle_panelModMine[player][i] = mineMod;
-        g_cycle_panelStatMine[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
-        DialogControlSetSize(g_cycle_panelStatMine[player][i], viewer, 130, 18);
-        DialogControlSetPosition(g_cycle_panelStatMine[player][i], viewer, c_anchorTop, 225, 76 + (i - 1) * 20);
         i = i + 1;
     }
 
     g_cycle_panelHdrOpp[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_panelHdrOpp[player], viewer, 450, 16);
-    DialogControlSetPosition(g_cycle_panelHdrOpp[player], viewer, c_anchorTop, -65, 144);
+    DialogControlSetPosition(g_cycle_panelHdrOpp[player], viewer, c_anchorTop, 8, 144);
     if (role == 0) {
         DialogControlSetPropertyAsText(g_cycle_panelHdrOpp[player], c_triggerControlPropertyText,
             viewer, StringToText("<c val=\"FF9F7F\">PLAYER 2</c>"));
@@ -5711,13 +5812,10 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         else           { oppMod = CycleMod_Team2Mod(i); }
         g_cycle_panelRowOpp[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
         DialogControlSetSize(g_cycle_panelRowOpp[player][i], viewer, 450, 18);
-        DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, -65, 162 + (i - 1) * 20);
+        DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, 8, 162 + (i - 1) * 20);
         DialogControlSetPropertyAsText(g_cycle_panelRowOpp[player][i], c_triggerControlPropertyText,
             viewer, StringToText(CycleMod_ModLine(oppMod)));
         g_cycle_panelModOpp[player][i] = oppMod;
-        g_cycle_panelStatOpp[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
-        DialogControlSetSize(g_cycle_panelStatOpp[player][i], viewer, 130, 18);
-        DialogControlSetPosition(g_cycle_panelStatOpp[player][i], viewer, c_anchorTop, 225, 162 + (i - 1) * 20);
         i = i + 1;
     }
 

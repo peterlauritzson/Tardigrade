@@ -218,7 +218,7 @@ string RosterUnitRole(string unitType) {
     if (unitType == "Mothership")   { return "Cloak Field  ·  Capital"; }
     // Zerg
     if (unitType == "Zergling")     { return "Rush  ·  Swarm"; }
-    if (unitType == "Queen")        { return "Inject  ·  Transfuse"; }
+    if (unitType == "Queen")        { return "Uncapped  ·  else 1 per Hatchery"; }
     if (unitType == "Roach")        { return "Regen  ·  Tank"; }
     if (unitType == "Hydralisk")    { return "Ranged Swarm"; }
     if (unitType == "Infestor")     { return "Neural Parasite  ·  CC"; }

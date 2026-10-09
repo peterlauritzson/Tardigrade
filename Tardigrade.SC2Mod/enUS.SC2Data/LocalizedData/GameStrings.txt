@@ -15,3 +15,5 @@ Behavior/Name/TardigradeMod_AdrenalineRush=Adrenaline
 Behavior/Tooltip/TardigradeMod_AdrenalineRush=+50% movement speed after being hit.
 Behavior/Name/TardigradeMod_BlinkCooldown=Battle Blink Cooldown
 Behavior/Tooltip/TardigradeMod_BlinkCooldown=This unit just blinked. It can Battle Blink again when this expires and it is back above 65% health.
+Tardigrade/Requirement/QueenPerHatch=a Hatchery without a Queen (1 Queen per Hatchery)
+Button/Tooltip/Queen=Defensive unit. Can use Spawn Larvae, Spawn Creep Tumor, and Transfusion. Moves much faster on creep.<n/><n/><c val="ffff8a">Can attack ground and air units.</c><n/><n/><c val="FFD54A">Not in your roster? You can still train one Queen per completed Hatchery, Lair or Hive.</c> Queens training, alive or burrowed count toward it. Drafting the Queen removes the cap.

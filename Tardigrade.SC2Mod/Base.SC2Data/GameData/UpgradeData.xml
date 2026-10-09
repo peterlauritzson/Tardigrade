@@ -19,6 +19,16 @@
         <MaxLevel value="1"/>
     </CUpgrade>
 
+    <!-- Queen drafted, as a player flag the data can read: lifts the
+         one-Queen-per-Hatchery cap on the Queen button (TardigradeReq_Queen).
+         Granted by RosterEnforce_GateQueen, and to everyone in Testing mode.
+         No effects, never on a command card. -->
+    <CUpgrade id="TardigradeUpg_QueenUncapped">
+        <EditorCategories value="Race:Zerg,UpgradeType:Talents"/>
+        <Icon value="Assets\Textures\btn-unit-zerg-queen.dds"/>
+        <MaxLevel value="1"/>
+    </CUpgrade>
+
     <!-- Zerg melee upgrades for the Baneling's Open Skies air splash
          (EffectData.xml), the same steps Blizzard gives VolatileBurstU / U2:
          +2 and +2 vs Light per level on units, +5 on structures. Appended per

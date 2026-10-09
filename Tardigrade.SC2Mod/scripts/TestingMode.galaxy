@@ -401,6 +401,8 @@ void TestingMode_SetupTeam(playergroup team) {
         PlayerModifyPropertyInt(p, c_playerPropMinerals, c_playerPropOperSetTo, c_testingBank);
         PlayerModifyPropertyInt(p, c_playerPropVespene, c_playerPropOperSetTo, c_testingBank);
         TestingMode_SpawnWorkers(p);
+        RosterEnforce_HideFallbacks(p);
+        RosterEnforce_UncapQueen(p);
         if (PlayerType(p) == c_playerTypeUser && p >= 1 && p <= 15) {
             TestingMode_InitPanel(p);
         }

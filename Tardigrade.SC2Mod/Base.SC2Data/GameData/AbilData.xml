@@ -88,4 +88,21 @@
         </InfoArray>
     </CAbilWarpTrain>
 
+    <!-- =====================================================================
+         TARDIGRADE: ONE QUEEN PER HATCHERY, ALWAYS
+         The Queen is draftable and bannable, but a Zerg side with no Queen
+         loses injects and creep altogether, so every Zerg side may always
+         train one Queen per completed Hatchery / Lair / Hive - drafted or not.
+         The normal Queen button simply gets a different requirement:
+         TardigradeReq_Queen = Spawning Pool AND (Queen drafted OR fewer Queens
+         than Hatcheries). "Queen drafted" is TardigradeUpg_QueenUncapped, a
+         hidden per-player flag RosterEnforce_GateQueen grants. Without it the
+         button greys out at the cap, and its tooltip (GameStrings.txt) says why.
+    ===================================================================== -->
+    <CAbilTrain id="TrainQueen">
+        <InfoArray index="Train1">
+            <Button DefaultButtonFace="Queen" Requirements="TardigradeReq_Queen"/>
+        </InfoArray>
+    </CAbilTrain>
+
 </Catalog>

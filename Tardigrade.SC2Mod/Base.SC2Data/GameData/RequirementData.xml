@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
 
+    <!-- The Queen button (AbilData.xml, TrainQueen Train1): a Spawning Pool,
+         and either the Queen drafted or fewer Queens than Hatcheries. -->
+    <CRequirement id="TardigradeReq_Queen">
+        <NodeArray index="Use" Link="TardigradeReqNode_Queen"/>
+    </CRequirement>
+
     <!-- Open Skies player flag - see UpgradeData.xml and ValidatorData.xml. -->
     <CRequirement id="TardigradeReq_OpenSkies">
         <NodeArray index="Use" Link="TardigradeReqNode_OpenSkies"/>

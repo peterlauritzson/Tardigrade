@@ -3,7 +3,8 @@
 //
 // After the drafts resolve, each team may only build the 6 unit types it
 // drafted (7 for a YOLO roster) - derived units (Hellbat, Archon, the Zerg
-// morphs) included. Not applied at all in Testing mode. Every
+// morphs) included. One exception: Zerg always gets one Queen per Hatchery,
+// drafted or not (RosterEnforce_GateQueen). Not applied at all in Testing mode. Every
 // other combat unit in the race's arsenal is disabled for that team via
 // TechTreeUnitAllow(..., false), and transforms into them are blocked too.
 //
@@ -147,6 +148,39 @@ void RosterEnforce_GateLarvaFallbacks(int player, int whichRoster) {
     RosterEnforce_GateLarvaFallback(player, whichRoster, "Zergling",  15);  // Train16 Baneling
 }
 
+//--------------------------------------------------------------------------------------------------
+// Queen: draftable and bannable like any unit, but a Zerg side always gets one
+// Queen per completed Hatchery / Lair / Hive - without one it has no injects
+// and no creep at all. The unit is never disallowed; the normal Queen button's
+// requirement (TardigradeReq_Queen, RequirementNodeData.xml) caps it at the
+// Hatchery count unless the player owns TardigradeUpg_QueenUncapped, which is
+// granted here when the Queen was drafted.
+//--------------------------------------------------------------------------------------------------
+void RosterEnforce_UncapQueen(int player) {
+    if (TechTreeUpgradeCount(player, "TardigradeUpg_QueenUncapped", c_techCountCompleteOnly) == 0) {
+        TechTreeUpgradeAddLevel(player, "TardigradeUpg_QueenUncapped", 1);
+    }
+}
+
+void RosterEnforce_GateQueen(int player, int whichRoster) {
+    if (RosterEnforce_IsAllowed(whichRoster, "Queen")) {
+        RosterEnforce_UncapQueen(player);
+    }
+}
+
+// Testing mode: no roster, so every parent is allowed - and by the rule above
+// every fallback goes. Otherwise each one shares its parent's card cell with
+// the parent (Archon over High Templar, Ravager over Roach, ...) and only one
+// of the two renders. All races, since anyone can build anything there.
+void RosterEnforce_HideFallbacks(int player) {
+    TechTreeAbilityAllow(player, AbilityCommand("GatewayTrain", 7), false);    // Train8  Archon
+    TechTreeAbilityAllow(player, AbilityCommand("WarpGateTrain", 7), false);   // Train8  Archon
+    TechTreeAbilityAllow(player, AbilityCommand("LarvaTrain", 5), false);      // Train6  Ravager
+    TechTreeAbilityAllow(player, AbilityCommand("LarvaTrain", 8), false);      // Train9  Lurker
+    TechTreeAbilityAllow(player, AbilityCommand("LarvaTrain", 13), false);     // Train14 Brood Lord
+    TechTreeAbilityAllow(player, AbilityCommand("LarvaTrain", 15), false);     // Train16 Baneling
+}
+
 // Disable every non-allowed master unit for a single player.
 void RosterEnforce_ApplyToPlayer(int player, int race, int whichRoster) {
     int    n;
@@ -163,7 +197,9 @@ void RosterEnforce_ApplyToPlayer(int player, int race, int whichRoster) {
         else if (race == c_tardigrade_raceProtoss) { unitType = g_enfProtoss[i]; }
         else                                      { unitType = g_enfZerg[i]; }
 
-        if (!RosterEnforce_IsAllowed(whichRoster, unitType)) {
+        // The Queen is capped by its button's requirement instead
+        // (RosterEnforce_GateQueen).
+        if (unitType != "Queen" && !RosterEnforce_IsAllowed(whichRoster, unitType)) {
             TechTreeUnitAllow(player, unitType, false);
         }
         i = i + 1;
@@ -171,6 +207,7 @@ void RosterEnforce_ApplyToPlayer(int player, int race, int whichRoster) {
 
     if (race == c_tardigrade_raceZerg) {
         RosterEnforce_GateLarvaFallbacks(player, whichRoster);
+        RosterEnforce_GateQueen(player, whichRoster);
     } else if (race == c_tardigrade_raceProtoss) {
         RosterEnforce_GateArchonFallback(player, whichRoster);
     }
