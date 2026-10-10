@@ -4189,9 +4189,13 @@ bool CycleMod_OnSharedDamageAbsorbed(bool testConds, bool runActions) {
 // the fixed arrays this replaced.
 const string c_cycleKeyLastAttacker = "TgLA_";   // who last damaged this unit
 
-// Veteran Forces' spawner link is NOT kept here - it is a buff on the spawned
-// unit whose caster is the spawner (BehaviorData.xml TardigradeMod_VeteranLink).
-const string c_cycleVeteranLink = "TardigradeMod_VeteranLink";
+// Veteran Forces' spawner link: spawned child -> the root that owns its kills.
+// It used to be a buff on the child whose CASTER was the spawner, read back with
+// UnitBehaviorEffectUnit(.., c_effectLocationCasterUnit, ..). That read came
+// back null - a script-added buff with no effects has no effect tree to name a
+// caster - so every Locust kept its own kills: the stack and the float landed
+// on the Locust, the Swarm Host never earned anything and never sped up.
+const string c_cycleKeyVeteranLink = "TgVL_";
 
 // The stack a SPAWNED unit carries. Same +3% per stack as the spawner's
 // TardigradeMod_VeteranStack, spelled out stat by stat so it carries no
@@ -4219,6 +4223,8 @@ void CycleMod_SetUnitRef(string prefix, unit u, unit value) {
 void CycleMod_ForgetUnit(unit u) {
     string key;
     key = CycleMod_UnitKey(c_cycleKeyLastAttacker, u);
+    if (DataTableValueExists(true, key)) { DataTableValueRemove(true, key); }
+    key = CycleMod_UnitKey(c_cycleKeyVeteranLink, u);
     if (DataTableValueExists(true, key)) { DataTableValueRemove(true, key); }
 }
 
@@ -4255,9 +4261,9 @@ unit CycleMod_VeteranRoot(unit u) {
     if (u == null) { return null; }
     if (!CycleMod_IsSpawnedChildType(UnitGetType(u))) { return u; }
 
-    // The spawner is the caster of the link buff CycleMod_OnUnitSpawned put on
-    // this unit - the buff IS the record, so there is nothing to clean up.
-    root = UnitBehaviorEffectUnit(u, c_cycleVeteranLink, c_effectLocationCasterUnit, 0);
+    // Written by CycleMod_OnUnitSpawned or CycleMod_FallbackVeteranLink, keyed
+    // by unit tag, so it survives a Locust's flying-to-ground morph.
+    root = CycleMod_GetUnitRef(c_cycleKeyVeteranLink, u);
     // Interceptors also have an engine-level link to their Carrier, which
     // covers them even if the spawn event never fired.
     if (root == null) { root = UnitGetMagazine(u); }
@@ -4287,6 +4293,81 @@ void CycleMod_SyncVeteranStacks(unit child) {
     if (count > UnitBehaviorCount(child, c_cycleVeteranStackChild)) {
         libNtve_gf_SetBehaviorCount(child, c_cycleVeteranStackChild, child, count);
     }
+}
+
+// Fallback for a spawned unit the spawn event never linked. Without the link a
+// Locust's kills stayed on the Locust - the Swarm Host never earned a stack -
+// and the scan had no parent to mirror stacks from, so the Locusts never sped
+// up either. The unit-created event's coverage of effect-spawned units is not
+// something we can verify from data, so the scan backs it up: the first time it
+// sees an unlinked child, the nearest friendly unit of a type that spawns it is
+// taken as the spawner.
+//
+// Run once, on the scan tick that first registers the unit, so the child is at
+// most half a second out of its spawner. The radius covers how far it can be by
+// then: a Brood Lord drops Broodlings at its 10 range, and a Disruptor's nova
+// moves fast. Same owner only, so a wrong pick can only hand stacks between two
+// of the same player's spawners. One known stretch: Broodlings from a dying Zerg
+// structure near a Brood Lord get linked to that Brood Lord.
+const fixed c_cycleSpawnerSearchRadius = 12.0;
+
+// Nearest unit of type spawnerType owned by owner within the search radius of
+// pos, or best if that is closer. Returns best when there is none.
+unit CycleMod_CloserSpawner(string spawnerType, int owner, point pos, unit best) {
+    unitgroup found;
+    unit      candidate;
+
+    found = UnitGroup(spawnerType, owner, RegionCircle(pos, c_cycleSpawnerSearchRadius),
+        UnitFilter(0, 0, 0, (1 << (c_targetFilterDead - 32))), 0);
+    candidate = UnitGroupClosestToPoint(found, pos);
+    if (candidate == null) { return best; }
+    if (best == null
+        || DistanceBetweenPoints(UnitGetPosition(candidate), pos)
+            < DistanceBetweenPoints(UnitGetPosition(best), pos)) {
+        return candidate;
+    }
+    return best;
+}
+
+void CycleMod_FallbackVeteranLink(unit child) {
+    string childType;
+    int    owner;
+    point  pos;
+    unit   spawner;
+
+    childType = UnitGetType(child);
+    if (!CycleMod_IsSpawnedChildType(childType)) { return; }
+    if (CycleMod_GetUnitRef(c_cycleKeyVeteranLink, child) != null) { return; }
+    // Interceptors are covered by their engine-level Carrier link.
+    if (childType == "Interceptor") { return; }
+
+    owner = UnitGetOwner(child);
+    pos = UnitGetPosition(child);
+    spawner = null;
+    if (childType == "LocustMP" || childType == "LocustMPFlying") {
+        spawner = CycleMod_CloserSpawner("SwarmHostMP", owner, pos, spawner);
+        spawner = CycleMod_CloserSpawner("SwarmHostBurrowedMP", owner, pos, spawner);
+        // A ground Locust can be a fresh unit dropped by a flying one that has
+        // already crossed the map, far from any Swarm Host. The flyer it came
+        // from is right there and roots back to the Swarm Host itself.
+        if (childType == "LocustMP") {
+            spawner = CycleMod_CloserSpawner("LocustMPFlying", owner, pos, spawner);
+        }
+    } else if (childType == "Broodling" || childType == "BroodlingEscort") {
+        spawner = CycleMod_CloserSpawner("BroodLord", owner, pos, spawner);
+    } else if (childType == "AutoTurret") {
+        spawner = CycleMod_CloserSpawner("Raven", owner, pos, spawner);
+    } else if (childType == "InfestorTerran") {
+        spawner = CycleMod_CloserSpawner("Infestor", owner, pos, spawner);
+        spawner = CycleMod_CloserSpawner("InfestorBurrowed", owner, pos, spawner);
+    } else if (childType == "DisruptorPhased") {
+        spawner = CycleMod_CloserSpawner("Disruptor", owner, pos, spawner);
+    }
+    if (spawner == null || spawner == child) { return; }
+
+    CycleMod_SetUnitRef(c_cycleKeyVeteranLink, child, CycleMod_VeteranRoot(spawner));
+    Debug_Log("Veteran Forces: " + childType + " linked by fallback to "
+        + UnitGetType(CycleMod_VeteranRoot(spawner)));
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -5095,7 +5176,11 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
         // An Interceptor's kill belongs to its Carrier, and so on.
         killer = CycleMod_VeteranRoot(killer);
 
+        // A child whose spawner can't be found (dead, or never linked) earns
+        // nothing: the stack would die with it, and the spawner's TimeScale
+        // version would run its timed life down.
         if (killer != null && UnitGetOwner(killer) != UnitGetOwner(dead)
+            && !CycleMod_IsSpawnedChildType(UnitGetType(killer))
             && CycleMod_UnitModActive(killer, "TardigradeMod_VeteranForces")) {
             CycleMod_AddHelperBehavior(killer, 6);
             CycleMod_StatAdd(UnitGetOwner(killer), 10, 1.0);
@@ -5175,9 +5260,9 @@ bool CycleMod_OnUnitSpawned(bool testConds, bool runActions) {
     if (UnitGetOwner(child) != UnitGetOwner(parent)) { return true; }
 
     CycleMod_RegisterUnit(child);
-    // The spawner's own root, so a chain still ends at the real owner, and the
-    // caster of this buff is what CycleMod_VeteranRoot reads back later.
-    UnitBehaviorAdd(child, c_cycleVeteranLink, CycleMod_VeteranRoot(parent), 1);
+    // The spawner's own root, so a chain still ends at the real owner; this is
+    // what CycleMod_VeteranRoot reads back later.
+    CycleMod_SetUnitRef(c_cycleKeyVeteranLink, child, CycleMod_VeteranRoot(parent));
     CycleMod_SyncVeteranStacks(child);
     return true;
 }
@@ -5240,6 +5325,22 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
     // unit deals, spell included, so a Storm's first tick counts as attacking
     // and the High Templar is no longer idle for the rest of it.
     CycleMod_UpdateBlinkRearm(u);
+
+    // Caustic Spray is the exception. It is a channel, not a weapon, so
+    // started-attack never fires for it, and its damage ticks do not reach
+    // CycleMod_OnUnitDamaged with the Corruptor as their source - a spraying
+    // Corruptor kept its charge and re-armed mid-channel. VoidMulti keeps
+    // ChannelingCausticSpray on it for as long as it sprays, so that is the
+    // signal: count it as attacking and drop any charge it was holding. There
+    // is no damage event to put the +50% on, so the charge is cancelled rather
+    // than spent.
+    if (UnitBehaviorCount(u, "ChannelingCausticSpray") > 0) {
+        UnitSetCustomValue(u, c_cycleStateLastAttack, now);
+        if (UnitBehaviorCount(u, "TardigradeMod_OverwatchReady") > 0) {
+            libNtve_gf_SetBehaviorCount(u, "TardigradeMod_OverwatchReady", u, 0);
+            Debug_Log("Overwatch: " + UnitGetType(u) + " charge cancelled by Caustic Spray");
+        }
+    }
 
     if (CycleMod_UnitModActive(u, "TardigradeMod_Overwatch")
         && FixedToInt(now - UnitGetCustomValue(u, c_cycleStateLastAttack)) >= c_cycleOverwatchDelay
@@ -5479,6 +5580,11 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
             i = 1;
             while (i <= count) {
                 u = UnitGroupUnit(ug, i);
+                // First sighting: link a spawned unit the spawn event missed,
+                // while it is still next to whatever spawned it.
+                if (FixedToInt(UnitGetCustomValue(u, c_cycleStateRegistered)) == 0) {
+                    CycleMod_FallbackVeteranLink(u);
+                }
                 CycleMod_RegisterUnit(u);
                 if (c_cyclePhaseMode) {
                     // Legacy: apply the single active phase behavior, clear the other two.

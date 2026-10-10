@@ -359,14 +359,11 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
-    <!-- Veteran Forces, spawned units: the link from an Interceptor to its
-         Carrier, a Locust to its Swarm Host, a Broodling to its Brood Lord, an
-         Auto-Turret to its Raven. The buff itself does nothing; what matters is
-         that CycleMod_OnUnitSpawned applies it with the SPAWNER as the caster,
-         so CycleMod_VeteranRoot can read the spawner back out of it with
-         UnitBehaviorEffectUnit(.., c_effectLocationCasterUnit, ..). Keeping the
-         link on the unit means it is cleaned up with the unit, with no
-         bookkeeping to maintain. Permanent (no Duration), one stack. -->
+    <!-- UNUSED. Was Veteran Forces' child->spawner link, read back as this
+         buff's caster with UnitBehaviorEffectUnit(.., c_effectLocationCasterUnit,
+         ..). That returns null for a buff added from script with no effects, so
+         every Locust kept its own kills. The link now lives in the DataTable
+         (c_cycleKeyVeteranLink in CycleMod.galaxy). Do not go back to this. -->
     <CBehaviorBuff id="TardigradeMod_VeteranLink">
         <InfoFlags index="Hidden" value="1"/>
         <MaxStackCount value="1"/>
