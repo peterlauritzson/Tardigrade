@@ -270,7 +270,7 @@ const string c_cycleAdrenalineRush     = "TardigradeMod_AdrenalineRush";
 // that is never applied as a buff; CycleMod_TryMartyrdom runs off the
 // unit-died event.
 const string c_cycleMartyrBehavior = "TardigradeMod_Martyrdom";
-const fixed  c_cycleMartyrFraction = 0.20;
+const fixed  c_cycleMartyrFraction = 0.35;
 const fixed  c_cycleMartyrRadius   = 3.0;
 
 // ── Draft state ──────────────────────────────────────────────────────────────
@@ -632,7 +632,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
     if (idx == 17) { return "builds, morphs, research and larva 15% faster; not workers"; }
     if (idx == 18) { return "taking damage gives +50% move speed for 3s"; }
-    if (idx == 19) { return "a unit that dies heals nearby allies for 20% of its max HP"; }
+    if (idx == 19) { return "a unit that dies heals nearby allies for 35% of its max HP"; }
     return "";
 }
 
@@ -2188,6 +2188,15 @@ bool CycleMod_IsShareExemptType(string unitType) {
         || unitType == "Changeling" || unitType == "ChangelingMarine"
         || unitType == "ChangelingMarineShield" || unitType == "ChangelingZealot"
         || unitType == "ChangelingZergling" || unitType == "ChangelingZerglingWings";
+}
+
+// Units Forced March must not speed up. Their move speed is not travel: the
+// Disruptor's nova and the Adept's shade are timed shots whose reach IS their
+// speed, and a flying Locust's swoop is its whole threat window. Ground
+// Locusts, Interceptors and Broodlings may march - it only shortens a walk.
+bool CycleMod_IsMarchExemptType(string unitType) {
+    return unitType == "DisruptorPhased" || unitType == "AdeptPhaseShift"
+        || unitType == "LocustMPFlying";
 }
 
 bool CycleMod_CanShareDamage(unit candidate) {
@@ -4714,7 +4723,7 @@ void CycleMod_PredatorLeech(unit u, fixed dealt) {
 
 //--------------------------------------------------------------------------------------------------
 // Martyrdom (modifier 19): a unit that dies heals your units around it for
-// c_cycleMartyrFraction of its own max life + shields (a Zealot's 150 -> 30).
+// c_cycleMartyrFraction of its own max life + shields (a Zealot's 150 -> 52).
 //
 // The pot is split evenly among the injured recipients, and anyone who needs
 // less than an even share is topped off and drops out, so what they didn't use
@@ -4748,9 +4757,18 @@ void CycleMod_TryMartyrdom(unit dead, unit source) {
     if (!CycleMod_CanShareDamage(dead)) { return; }
     if (CycleMod_RefundCanVanish(dead) && (source == null || source == dead)) { return; }
 
-    pool = (UnitGetPropertyFixed(dead, c_unitPropLifeMax, c_unitPropCurrent)
-        + UnitGetPropertyFixed(dead, c_unitPropShieldsMax, c_unitPropCurrent))
-        * c_cycleMartyrFraction;
+    // Read off the unit first, so max-health upgrades count, but a
+    // unit inside its own death event may already report 0 max life - which
+    // made the whole pot 0 and the modifier silently do nothing. The catalog
+    // value for the type is the floor.
+    pool = UnitGetPropertyFixed(dead, c_unitPropLifeMax, c_unitPropCurrent)
+        + UnitGetPropertyFixed(dead, c_unitPropShieldsMax, c_unitPropCurrent);
+    room = StringToFixed(CatalogFieldValueGet(c_gameCatalogUnit, UnitGetType(dead),
+            "LifeMax", UnitGetOwner(dead)))
+        + StringToFixed(CatalogFieldValueGet(c_gameCatalogUnit, UnitGetType(dead),
+            "ShieldsMax", UnitGetOwner(dead)));
+    if (room > pool) { pool = room; }
+    pool = pool * c_cycleMartyrFraction;
     if (pool <= 0.0) { return; }
 
     found = UnitGroupAlliance(UnitGetOwner(dead), c_unitAllianceAlly,
@@ -5505,7 +5523,8 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
         // immediate rather than up to half a scan tick late; this branch is
         // what keeps it off afterwards, and what turns it back on once
         // MarchBroken expires.
-        if (CycleMod_UnitModActive(u, beh) && UnitBehaviorCount(u, c_cycleMarchBroken) == 0) {
+        if (CycleMod_UnitModActive(u, beh) && UnitBehaviorCount(u, c_cycleMarchBroken) == 0
+            && !CycleMod_IsMarchExemptType(UnitGetType(u))) {
             UnitBehaviorAdd(u, beh, u, 1);
         } else {
             libNtve_gf_SetBehaviorCount(u, beh, u, 0);

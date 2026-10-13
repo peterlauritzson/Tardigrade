@@ -1,3 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Catalog>
+    <!-- =====================================================================
+         TARDIGRADE: ARCHON WARP-IN MODEL
+         Stock Archons only ever come from a merge, so the Archon actor has no
+         BuildModel - and a unit under construction with no BuildModel shows
+         its finished model. With the direct Gateway / Warp Gate build
+         (AbilData.xml) that made a warping-in Archon look fully formed for the
+         whole warp. There is no Archon warp-in model, so it borrows the High
+         Templar's: two of them is what an Archon normally costs.
+    ===================================================================== -->
+    <CActorUnit id="Archon">
+        <BuildModel value="HighTemplarWarpIn"/>
+    </CActorUnit>
 </Catalog>
