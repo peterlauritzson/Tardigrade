@@ -186,10 +186,10 @@ const bool   c_cycleAutoGasRedirect = true;
 const string c_cycleMarchBehavior = "TardigradeMod_ForcedMarch";
 const string c_cycleMarchBroken   = "TardigradeMod_MarchBroken";
 
-// Refund (was Salvage): anything of yours that is lost pays back a quarter of
+// Refund (was Salvage): anything of yours that is lost pays back 17.5% of
 // what it cost. Replaces the old clickable salvage entirely - see
 // CycleMod_PayRefund for which deaths count as a loss.
-const fixed c_cycleRefundFraction = 0.25;
+const fixed c_cycleRefundFraction = 0.175;
 
 // Battle Blink, now automatic. A unit that drops to this fraction of its
 // maximum life teleports c_cycleBlinkRange away from whatever last hit it.
@@ -626,7 +626,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 10) { return "unit kills: permanent +3% to all speeds and regen, to 15"; }
     if (idx == 11) { return "from 0:00: gas mines itself (1/3 rate away from a base); 200m"; }
     if (idx == 12) { return "no unit bans against you; YOLO: +1 unit; Protect: +4 points"; }
-    if (idx == 13) { return "any unit of yours that dies refunds 25% of its cost"; }
+    if (idx == 13) { return "any unit of yours that dies refunds 17.5% of its cost"; }
     if (idx == 14) { return "half of each hit on a unit is spread to nearby allies"; }
     if (idx == 15) { return "from 0:00: gas costs and gas mined both 1.5x minerals"; }
     if (idx == 16) { return "chosen before the draft: 3 random mods + 7 random units"; }
@@ -820,7 +820,7 @@ bool CycleMod_ModsLive() {
 // sit permanently Entrenched; it spends most of its life idle, so every cannon
 // and spine would open each fight on an Overwatch charge; and a Planetary
 // Fortress or a cannon wall would bank Veteran stacks no army could match.
-// Refund is about losing an army, not a base: a quarter back on every
+// Refund is about losing an army, not a base: 17.5% back on every
 // building razed would soften the one loss that is meant to end games.
 // Open Skies is listed for its per-unit penalty buff; the structure weapons
 // themselves are held back in CycleMod_EnsureOpenSkiesSkipList.
@@ -4380,14 +4380,14 @@ void CycleMod_FallbackVeteranLink(unit child) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Refund (modifier 13): a quarter of the cost of anything of yours that is
+// Refund (modifier 13): 17.5% of the cost of anything of yours that is
 // lost comes straight back. Replaces the old Salvage ability outright - no
 // command-card button, no hotkey, no 5-second channel to interrupt.
 //
 // "Lost" is any death, whoever caused it: an enemy, your own Siege Tank's
 // splash, your own Baneling. Friendly fire is
 // not an exploit worth guarding against - killing your own unit to get a
-// quarter of it back still costs you the other three quarters.
+// 17.5% of it back still costs you the other 82.5%.
 //
 // What is NOT a loss is the unit-died event firing for something that was
 // never a death, and those are what the gate below keeps out:
@@ -4478,8 +4478,8 @@ void CycleMod_PayRefund(unit dead, unit source) {
     gas      = CycleMod_UnitCost(unitType, "Vespene", owner) * c_cycleRefundFraction;
     if (minerals <= 0.0 && gas <= 0.0) { return; }
 
-    // Paid as fixed, not rounded to whole resources: a Marine is 50/4 = 12.5,
-    // and rounding every payout down would quietly lose an eighth of the
+    // Paid as fixed, not rounded to whole resources: a Marine is 50 * 0.175 = 8.75,
+    // and rounding every payout down would quietly lose nearly a tenth of the
     // modifier across an army's worth of deaths.
     if (minerals > 0.0) {
         PlayerModifyPropertyFixed(owner, c_playerPropMinerals, c_playerPropOperAdd, minerals);
@@ -5182,7 +5182,7 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
 
     // Refund takes the raw source, before the last-attacker fallback: a stale
     // attacker would turn a morph into a paying "death". Structures included -
-    // a Refund side gets a quarter back on a razed Barracks as well as on a
+    // a Refund side gets 17.5% back on a razed Barracks as well as on a
     // dead Marine.
     CycleMod_PayRefund(dead, killer);
     // Martyrdom filters non-deaths the same way, so it takes the raw source too.
