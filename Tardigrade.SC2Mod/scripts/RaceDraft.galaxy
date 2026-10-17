@@ -46,6 +46,7 @@ int g_draft_btnAutoRun = c_invalidDialogControlId;
 int g_draft_btnAutoTerran = c_invalidDialogControlId;
 int g_draft_btnAutoProtoss = c_invalidDialogControlId;
 int g_draft_btnAutoZerg = c_invalidDialogControlId;
+int g_draft_btnYolo = c_invalidDialogControlId;   // the race stage's YOLO button
 
 //--------------------------------------------------------------------------------------------------
 // Audience / Spectator helpers
@@ -551,7 +552,11 @@ void RaceDraft_UpdateAudienceUI() {
 
 void RaceDraft_ChooseRandom();
 int  RaceDraft_UpPlayer();
-bool CycleMod_SideIsYolo(bool isP1);   // CycleMod.galaxy, included after this file
+// CycleMod.galaxy, included after this file: the per-stage YOLO state and button.
+bool CycleMod_SideIsYolo(bool isP1, int stage);
+void CycleMod_SideMarkActed(bool isP1, int stage);
+int  CycleMod_YoloPress(int player, int stage, bool upIsP1);
+void CycleMod_YoloButtonUpdate(int btn, int stage, bool upIsP1);
 
 void RaceDraft_UpdateUI() {
     if (g_draft_phase == 0) {
@@ -599,9 +604,12 @@ void RaceDraft_UpdateUI() {
         RaceDraft_UpdateAudienceUI();
     }
 
+    // The YOLO button, for whichever side can still use it.
+    CycleMod_YoloButtonUpdate(g_draft_btnYolo, c_stageRace, g_draft_phase == 0);
+
     // A YOLO side's ban (P1) or pick (P2) is made for it, at random, on the
-    // spot (the YOLO? screen ran before this draft - CycleMod_YoloChoice).
-    if (CycleMod_SideIsYolo(g_draft_phase == 0)) {
+    // spot (it pressed the YOLO button, here or earlier in this stage).
+    if (CycleMod_SideIsYolo(g_draft_phase == 0, c_stageRace)) {
         DraftTimer_Disarm();
         RaceDraft_ChooseRandom();
         return;
@@ -623,6 +631,9 @@ void RaceDraft_Choose(int race) {
     // has to refuse it here. Its button is also disabled for every viewer, but
     // a click that slipped through would otherwise hand out the banned race.
     if (race == 0 || race == g_draft_bannedRace) { return; }
+
+    // The side's own first choice ends its chance to go YOLO.
+    CycleMod_SideMarkActed(g_draft_phase == 0, c_stageRace);
 
     if (g_draft_phase == 0) {
         g_draft_bannedRace = race;
@@ -667,8 +678,23 @@ bool RaceDraft_OnClicked(bool testConds, bool runActions) {
     int control = EventDialogControl();
     int player = EventPlayer();
     int selectedRace = 0;
+    int yoloSide = 0;
 
     if (Tardigrade_HasAudience() && PlayerGroupHasPlayer(Tardigrade_Audience(), player)) {
+        return true;
+    }
+
+    // YOLO: this side's race ban / pick is random from here on. If it is its
+    // turn the random action is taken now (RaceDraft_UpdateUI does it).
+    if (control == g_draft_btnYolo) {
+        yoloSide = CycleMod_YoloPress(player, c_stageRace, g_draft_phase == 0);
+        if (yoloSide == 0) { return true; }
+        DraftStyle_ClickCue(PlayerGroupSingle(player));
+        if ((yoloSide == 1) == (g_draft_phase == 0)) {
+            RaceDraft_UpdateUI();
+        } else {
+            CycleMod_YoloButtonUpdate(g_draft_btnYolo, c_stageRace, g_draft_phase == 0);
+        }
         return true;
     }
 
@@ -898,7 +924,7 @@ void RaceDraft_ShowDraft(trigger callback) {
     g_draft_autoTrig = TriggerCreate("RaceDraft_AutoAct");
 
     // Create UI
-    g_draft_dialog = DialogCreate(500, 500, c_anchorCenter, 0, 0, true);
+    g_draft_dialog = DialogCreate(500, 560, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_draft_dialog);
     DialogSetTitle(g_draft_dialog, StringToText("Tardigrade  -  Race Draft"));
     DialogSetVisible(g_draft_dialog, Tardigrade_Viewers(), true);
@@ -927,6 +953,13 @@ void RaceDraft_ShowDraft(trigger callback) {
     DialogControlSetSize(g_draft_btnZerg, Tardigrade_Viewers(), 240, 54);
     DialogControlSetPosition(g_draft_btnZerg, Tardigrade_Viewers(), c_anchorTop, 0, 270);
     DialogControlSetPropertyAsText(g_draft_btnZerg, c_triggerControlPropertyText, Tardigrade_Viewers(), StringToText("Zerg"));
+
+    // YOLO button (hidden until RaceDraft_UpdateUI shows it to a side that can use it).
+    g_draft_btnYolo = DialogControlCreate(g_draft_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_draft_btnYolo, Tardigrade_Viewers());
+    DialogControlSetSize(g_draft_btnYolo, Tardigrade_Viewers(), 240, 54);
+    DialogControlSetPosition(g_draft_btnYolo, Tardigrade_Viewers(), c_anchorTop, 0, 484);
+    DialogControlSetVisible(g_draft_btnYolo, Tardigrade_Viewers(), false);
 
     // Debug skip button
     if (g_debugLevel > c_debug_None) {
@@ -963,6 +996,7 @@ void RaceDraft_ShowDraft(trigger callback) {
     TriggerAddEventDialogControl(g_draft_trigger, c_playerAny, g_draft_btnTerran, c_triggerControlEventTypeClick);
     TriggerAddEventDialogControl(g_draft_trigger, c_playerAny, g_draft_btnProtoss, c_triggerControlEventTypeClick);
     TriggerAddEventDialogControl(g_draft_trigger, c_playerAny, g_draft_btnZerg, c_triggerControlEventTypeClick);
+    TriggerAddEventDialogControl(g_draft_trigger, c_playerAny, g_draft_btnYolo, c_triggerControlEventTypeClick);
     if (g_debugLevel > c_debug_None && g_draft_btnAutoRun != c_invalidDialogControlId) {
         TriggerAddEventDialogControl(g_draft_trigger, c_playerAny, g_draft_btnAutoRun, c_triggerControlEventTypeClick);
         if (g_draft_btnAutoTerran != c_invalidDialogControlId) {

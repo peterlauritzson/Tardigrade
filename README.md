@@ -13,7 +13,19 @@ conditions.
 ## Game modes
 
 Before anything else, team 1's player (or the only human, in a game against
-the AI) picks a mode. Everyone else sees the choice being made.
+the AI) sets the game up on one **setup screen**: a mode, how units are chosen,
+and how modifiers are chosen, then **Start**. Everyone else sees the same screen,
+disabled, updating as the choices are made. The defaults are Casual, Alternating
+draft and Free draft.
+
+| Setup row | Options |
+|---|---|
+| **Mode** | Casual / Tournament / Testing (below) |
+| **Roster** | **Full roster:** every unit is allowed and there is no unit draft (the in-game roster panel is not shown, and No Bans is unavailable). **Alternating draft:** the unit draft below |
+| **Modifiers** | **Free draft:** the modifier draft below. **Buckets:** the bucket draft - one ban in each of four buckets, then four picks, one from each (see the Modifier Draft) |
+
+The Roster and Modifiers rows are greyed out in Testing, which has no draft.
+
 
 | Mode | What changes |
 |---|---|
@@ -38,18 +50,21 @@ both players. Draft progress is shown
 on the draft screens only; nothing is posted to chat.
 
 ```
-Mode → Draft style → Race Draft → Modifier Draft → Unit Draft → Summary (30s) → Game
+Setup → Race Draft → Modifier Draft → Unit Draft → Summary (30s) → Game
 ```
 
 Throughout, **P1** is the player who bans first and **P2** is the player who
 picks first. Referees and spectators see every draft screen read-only.
 
-### 0. Draft style
+### YOLO
 
-Before any draft, each player secretly chooses to **draft normally**, **go
-YOLO** (fully random — see modifier 16) or **Protect and Ban** (see the Unit
-Draft). The choices are revealed together; each player's choice only affects
-their own side.
+Every draft stage - race, modifiers and units - has a **YOLO** button for each
+human player. It stays there until you make your own first choice (a ban or a
+pick) in that stage, then disappears. Pressing it is announced to everyone, and
+from then on **your turns in that stage are random**. It is per stage: going
+YOLO on the race says nothing about your modifiers or units. If it is your turn
+when you press, the random action happens at once. An AI side never goes YOLO.
+What YOLO means in each stage is described in the stage and under modifier 16.
 
 ### 1. Race Draft
 
@@ -57,7 +72,7 @@ their own side.
 - **P2 picks** their race from the remaining two.
 - **P1** is assigned the last remaining race.
 
-A YOLO side's ban or pick is made at random, so its race is chance too.
+A side that pressed YOLO on this stage has its ban or pick made at random, so its race is chance.
 
 In team games (2v2, 3v3, …) each team plays a **single shared race** — the whole
 team is set to the drafted race. Starting workers, town hall and supply spawn
@@ -66,16 +81,25 @@ rather than hardcoded, so it tracks whatever the current patch uses.
 
 ### 2. Modifier Draft
 
-The board holds **16
+The board holds **22
 battlefield modifiers** (YOLO isn't one of the cards). This is a **per-player**
 draft — there is no rotation and no shared phase:
 
-- Each player **bans 2** (16 → 12), ban order `P1, P2, P1, P2`.
-- Each player then **picks 3** (12 → 6), snake order `P1, P2, P2, P1, P1, P2`.
+- Each player **bans 2** (22 → 18), ban order `P1, P2, P1, P2`.
+- Each player then **picks 3** (18 → 12), snake order `P1, P2, P2, P1, P1, P2`.
 
-Six modifiers go unpicked in a normal game. Each pick is **always active in-game, but
+Twelve modifiers go unpicked in a normal game. Each pick is **always active in-game, but
 only for the picking side's own units** — never the opponent's. A top-center
 panel lists both sides' picks (YOURS / OPPONENT).
+
+**Buckets draft.** If the setup screen's Modifiers row is **Buckets**, the board is
+four columns - **Command**, **Maneuver**, **Endurance**, **Firepower** - and the
+draft runs differently: 4 bans (`P1, P2, P1, P2`), each in a bucket nobody has
+banned from yet, so every bucket loses exactly one; then 8 picks (`P1, P2, P2, P1,
+P1, P2, P2, P1`), each from a bucket you don't have yet (never a banned card or
+one your opponent took). You end with **four modifiers, one from each bucket**.
+Cards you can't use right now are greyed out. YOLO works the same, but its random
+choices obey those rules. No Bans and YOLO are not on the bucket board.
 
 All modifiers stay **dormant at first** and switch on at **about 2:09 on the game
 clock** (`c_cycleActivationDelay` = 180 game seconds in `CycleMod.galaxy`; the clock
@@ -91,7 +115,7 @@ unit draft that immediately follows.
 Modifiers **never affect workers** (SCV, Probe, Drone, MULE), except Free
 Labor and Auto Refineries, which are about workers to begin with.
 
-The 19 modifiers. **Every duration below is in real seconds**, the way you
+The 23 modifiers. **Every duration below is in real seconds**, the way you
 experience it on Faster — the same numbers the in-game descriptions use. The
 data files store game seconds, which tick 1.4× quicker.
 
@@ -101,21 +125,25 @@ data files store game seconds, which tick 1.4× quicker.
 | 2 | Forced March | +40% move speed on all your units. Being in combat switches it off — taking damage or dealing it, either one. It comes back 10s after the last time the unit was hit or attacked. Disruptor novas, Adept shades and flying Locusts are not sped up |
 | 3 | Free Labor | Your workers no longer cost supply |
 | 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full — up to 8% of the unit's max health (life + shields) per second |
-| 5 | Eyes Everywhere | The battlefield and hidden units are revealed, for you only (excludes neutrals — minerals, Xel'Naga towers, critters) |
+| 5 | Eyes Everywhere | The battlefield and hidden units are revealed, for you only (excludes neutrals — minerals, Xel'Naga towers, critters). The modifier tooltip also shows how many workers the enemy has alive (burrowed drones and workers in refineries or transports included, MULEs not) |
 | 6 | Entrenchment | Your units gain +2 armor and +1 range after holding position for 7.5s. “Holding” is lenient — drifting up to 1.5 from where you settled still counts, so being bumped by an ally or shuffling to acquire a target doesn't reset it. Once earned it lingers ~2s after you move off, but re-earning it takes the full 7.5s. Units only — structures never entrench |
 | 7 | Arcane Surge | Double energy regeneration on all your units and structures |
 | 8 | Overwatch | After 10s without attacking, a unit deals +50% damage for its next 1s of attacking — everything it lands inside that window, not just the first shot. Spells count as attacking, so a caster opens the window and is then "active". Banelings always get it (they only ever attack once). Units only — static defense never arms |
 | 9 | Battle Blink | Automatic: a unit that drops to 30% health teleports 8 range straight back from whatever last hit it. Once per 12s per unit — no button, no hotkey |
 | 10 | Veteran Forces | Each kill grants a permanent +3% to movement speed, attack speed, ability cooldowns/charges, and life/shield/energy regeneration, stacking to 15 (shown on the unit as "Veteran"). Units only — kills by structures earn nothing. Kills by Interceptors, Locusts, Broodlings and Auto-Turrets count for the unit that spawned them. Killing free or disposable units (Locusts, Broodlings, Larva, Changelings, MULEs, hallucinations) earns nothing |
 | 11 | Auto Refineries | **Live from 0:00.** Your finished gas buildings mine by themselves at the three-worker rate (rich geysers double). One with none of your finished town halls within 10 mines at a third of that rate. Workers physically can't harvest them — the building stops being a resource at all, and its worker counter disappears. Your Refineries / Assimilators / Extractors (and rich versions) cost **200 minerals** |
-| 12 | No Bans | Depends on your drafting style. **Draft normally:** your opponent gets no bans against your pool in the unit draft; their ban turns are skipped. **YOLO:** 1 extra random unit (8 instead of 7) — YOLO rolls can now land on it. **Protect and Ban:** 4 extra points to place (24 instead of 20); the bans still happen |
+| 12 | No Bans | Your opponent gets no bans against your pool in the unit draft; their ban turns are skipped. If you went YOLO on the unit stage: 1 extra random unit (8 instead of 7) — YOLO rolls can now land on it. Unavailable (greyed out on the board) with Full roster, which has no unit draft |
 | 13 | Refund | Any unit of yours that dies pays back 17.5% of its cost (a Marine returns 8.75 minerals), whoever killed it - a detonating Baneling counts. Workers and buildings are excluded. Things that vanish without dying pay nothing: morphs (Zergling into Baneling), Archon merges, eggs and cocoons, units timing out |
 | 14 | Shared Damage | Every hit on one of your units (after armor): it keeps half, rounded up, and the other half is dealt out in whole points — at least 1 each — to as many of your other units within 3 range as it stretches to. A shared piece never takes a unit below 40% of its max health (life + shields), and a unit already under 40% takes none, so it can never kill a unit that wasn't shot at; what the others can't hold goes back onto the unit that was hit. A unit that would die even on its own half takes the full hit and shares nothing (no spreading the overkill), and a unit alone takes the full hit |
 | 15 | Minerals Only | **Live from 0:00.** Nothing you buy costs gas: every gas cost is added to the mineral cost at 1.5× and set to 0 (a 100/100 upgrade costs 250/0, a Stalker 125/50 costs 200/0). Units, structures, morphs and upgrades are all converted. Any gas you mine (or get from Auto Refineries or Refund) is turned into minerals at the same 1.5× (a 4-gas trip pays 6 minerals), so refineries are still worth taking |
-| 16 | YOLO | **Not on the board — a choice made on its own "YOLO?" screen before the race draft.** Each player picks *Draft normally* or *Go YOLO*; the choice is hidden until both have locked in, and both may go YOLO. Going YOLO makes your whole draft chance: your **race ban or pick** is made at random, **3 random modifiers** rolled from the whole pool (bans and your opponent's picks don't matter; No Bans can come up and means +1 unit), your modifier bans made at random, and no unit draft — your roster is **7 units** at random from your race's pool (instead of 6), with nothing guaranteed. Against a normal drafter everything is revealed at the normal draft's pace: each of your pick turns rolls one modifier or one unit on the spot (your 6th unit turn rolls the 7th too). Your opponent can't ban from your unit pool, and your unit bans are random too. If both go YOLO the modifier board is skipped entirely and everything is rolled at once. In Tournament mode the screen has the usual 10s; undecided = draft normally |
+| 16 | YOLO | **Not on the board — a button on each draft stage** (see YOLO above). On the **modifier** stage your bans are made at random and your picks rolled from the whole pool (bans and your opponent's picks don't matter; No Bans can come up and means +1 unit if you are YOLO on units); if both sides go YOLO there the board is skipped and all six are rolled at once. On the **race** stage your ban or pick is random. On the **unit** stage your roster is **7 units** at random from your race's pool (instead of 6), with nothing guaranteed, revealed at the normal draft's pace (your 6th unit turn rolls the 7th too); your opponent can't ban from your pool, and your own bans are random |
 | 17 | Factory Lines | Everything you build, train, warp in or morph into is 15% faster: structures, add-ons, units, warp gate recharge, research, and morphs like Orbital, Lair or Baneling. Hatcheries also spawn larva 15% faster. Not workers |
 | 18 | Adrenaline | Taking damage from an enemy gives the unit +50% move speed for 3s; every hit restarts the 3s |
 | 19 | Martyrdom | When one of your units dies, 35% of its max health (life + shields) heals your other units within 3 range — split evenly among the injured ones, life first then shields. Anyone who needs less than their share is topped off and the rest goes to the others; what nobody can use is lost. Like Shared Damage, summons, hallucinations, eggs and workers neither give nor receive it |
+| 20 | Quickstep | Your units (workers excepted) accelerate and brake instantly and turn twice as fast, standing turns included |
+| 21 | Reinforcements | Every unit you create gets +50% move speed for 30s (shown on the unit as "Reinforcements"). Not workers, buildings, hallucinations, larva, eggs or spawned units like Interceptors and Locusts |
+| 22 | Field Repair | A unit that has taken no damage for 5s regains 3% of its max health every second until full or hit again. Health only — Protoss shields already regenerate by themselves. Not buildings or workers |
+| 23 | Photon Coating | The first 8s of each fight, a unit takes 20% less damage (shown on the unit as "Photon Coating"). A fight starts when the unit deals or takes damage, or begins an attack; the coating re-arms after 20s with none of that. Not buildings or workers |
 
 **No modifier grants a clickable ability.** Every pick is either always-on or
 fires itself off a condition. Battle Blink, Salvage and Medivac Boost all used
@@ -140,24 +168,11 @@ arsenal is bannable and pickable.
   protected side bans twice in a row.
 - **Final snake picks:** the remaining 4 each, until both rosters hold 6.
 
-A side that drafted **YOLO** sits this out: each of its pick turns rolls a
-random unit on the spot (its 6th turn rolls the 7th as well), bans against it
-are dropped, and its own bans are made at random for it. If both sides are
-YOLO, both 7-unit rosters are dealt before the first pick.
-
-A side that chose **Protect and Ban** doesn't pick either. Before the unit
-draft it places **20 points** on units of its pool (click a unit: +1, `-1`
-next to it: take one back) and locks in once all 20 are placed; the opponent
-can't see them yet. The opponent then bans from that pool: a ban costs the
-unit's points, up to **9 points** in total, and can be undone until they click
-**Ban complete**. Units left at 0 points are banned for free. The side keeps
-every unit with points that wasn't banned — stack points to make a unit
-unbannable, or spread them for more units that are each cheap to ban. Normal
-bans against it are dropped; its own ban turns against a normal drafter stay.
-A YOLO opponent bans at random. In Tournament mode placing points and banning
-get 30 seconds each; at zero, unplaced points land on random units and the
-bans made so far stand. The numbers are `c_protectPoints`,
-`c_protectBanBudget` and `c_protectStepSeconds` in `ProtectDraft.galaxy`.
+A side that pressed **YOLO** on this stage sits the rest out: each of its pick
+turns rolls a random unit on the spot (its 6th turn rolls the 7th as well), bans
+against it are dropped, and its own bans are made at random for it. The schedule
+is rebuilt when the button is pressed; if both sides are YOLO, both 7-unit
+rosters are dealt at once. With **Full roster** this whole stage is skipped.
 
 Both rosters are shown live (YOUR / OPPONENT) so players can counter-draft,
 each with a line listing what was banned from it. A panel on the left lists
@@ -234,7 +249,7 @@ randomize races, rosters and modifiers.
 | `DraftStyle.galaxy` | Shared card styling for every draft screen. |
 | `RaceDraft.galaxy` | Race ban/pick; team, viewer and spectator globals. |
 | `RosterDraft.galaxy` | Unit draft UI (opening picks → bans → final picks) + in-game roster HUD. |
-| `ProtectDraft.galaxy` | Protect and Ban: the points + bans screen that replaces a side's unit draft. |
+| `ProtectDraft.galaxy` | Protect and Ban: the points + bans screen that replaces a side's unit draft. Dormant: nothing reaches it any more (see IDEAS.md). |
 | `RosterEnforce.galaxy` | Disables every non-drafted combat unit; grants coupled units. |
 | `CycleMod.galaxy` | Modifier draft + per-player in-game modifiers (legacy rotating-phase system kept behind `c_cyclePhaseMode`). |
 | `Debug.galaxy` | Solo-test detection, auto-run, logging. |

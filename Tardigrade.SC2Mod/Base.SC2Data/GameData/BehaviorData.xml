@@ -544,6 +544,77 @@
         <Modification MoveSpeedMultiplier="1.5"/>
     </CBehaviorBuff>
 
+    <!-- 20: Quickstep. Key-only marker; the effect is a per-player catalog edit
+         of Acceleration / Deceleration / TurningRate / StationaryTurningRate
+         (CycleMod_QuickstepForPlayer). -->
+    <CBehaviorBuff id="TardigradeMod_Quickstep">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <!-- 21: Reinforcements. Key-only marker; the buff is TardigradeMod_ReinforcementsRush. -->
+    <CBehaviorBuff id="TardigradeMod_Reinforcements">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <!-- 22: Field Repair. Key-only marker; the healing is script
+         (CycleMod_TryFieldRepair, from the scan). -->
+    <CBehaviorBuff id="TardigradeMod_FieldRepair">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <!-- 23: Photon Coating. Key-only marker; the coating is
+         TardigradeMod_PhotonCoatingActive, added off combat events
+         (CycleMod_TryPhotonCoating). -->
+    <CBehaviorBuff id="TardigradeMod_PhotonCoating">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Positive"/>
+        <Duration value="8"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <!-- Reinforcements' speed buff: +50% move speed for 42 game seconds (30 real
+         on Faster), added once when a unit is created. Global clock so Veteran
+         Forces' TimeScale cannot shorten it. -->
+    <CBehaviorBuff id="TardigradeMod_ReinforcementsRush">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-metabolicboost.dds"/>
+        <Alignment value="Positive"/>
+        <TimeScaleSource Value="Global"/>
+        <Duration value="42"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="1.5"/>
+    </CBehaviorBuff>
+    <!-- Photon Coating's window: damage taken x0.8 for 11.2 game seconds (8 real).
+         A damage response with no Location acts on damage the unit TAKES, the
+         same shape as Shared Damage's absorb below. Kill-flag effects are
+         excluded so an expiring summon or a Baneling's own Suicide is not
+         trimmed. Global clock, as above. -->
+    <CBehaviorBuff id="TardigradeMod_PhotonCoatingActive">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-shieldslevel1.dds"/>
+        <Alignment value="Positive"/>
+        <TimeScaleSource Value="Global"/>
+        <Duration value="11.2"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse ModifyFraction="0.8">
+            <Chance value="1"/>
+            <ExcludeEffectArray value="Suicide"/>
+            <ExcludeEffectArray value="SuicideRemove"/>
+            <ExcludeEffectArray value="Kill"/>
+            <ExcludeEffectArray value="KillRemove"/>
+            <ExcludeEffectArray value="KillCaster"/>
+            <ExcludeEffectArray value="KillSource"/>
+            <ExcludeEffectArray value="KillTargetDeathNormal"/>
+            <ExcludeEffectArray value="Sacrifice"/>
+            <ExcludeEffectArray value="KillHallucination"/>
+            <ExcludeEffectArray value="MULEFate"/>
+            <ExcludeEffectArray value="AdeptPhaseShiftKillDummy"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
     <!-- Battle Blink's cooldown. CycleMod_TryBattleBlink adds this the moment
          it teleports a unit and refuses to fire again while it is up, so the
          engine expiring the buff IS the cooldown - there is no timer to keep

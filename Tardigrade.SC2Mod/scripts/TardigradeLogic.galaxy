@@ -3,25 +3,26 @@
 //
 // Pre-game chain, run on map init:
 //
-//   0. Game Mode     - Casual / Tournament / Testing, picked by team 1's human
-//                      (GameMode.galaxy). Testing skips everything below and
-//                      starts a sandbox (TestingMode.galaxy).
-//   1. Draft style   - each side secretly chooses to draft normally, go YOLO
-//                      or Protect and Ban (CycleMod_YoloChoice). A YOLO side's
-//                      race ban/pick, modifiers and units are all random. A
-//                      Protect and Ban side drafts race and modifiers normally
-//                      and gets its units from the points stage in step 4.
-//   2. Race Draft    - P1 bans a race, P2 picks, P1 gets the remainder.
+//   0. Setup         - one screen, picked by team 1's human (GameMode.galaxy):
+//                      Mode (Casual / Tournament / Testing), Roster (Full
+//                      roster / Alternating draft) and Modifiers (Buckets / Free
+//                      draft), then Start. Testing skips everything below and
+//                      starts a sandbox (TestingMode.galaxy). Full roster skips
+//                      step 3 and allows every unit. Buckets runs the
+//                      bucket draft (one ban per bucket, four picks a side).
+//   1. Race Draft    - P1 bans a race, P2 picks, P1 gets the remainder.
 //                      Each team is set to a single race.
-//   3. Modifier Draft - each player bans 2 of 16 global modifiers, then picks
+//   2. Modifier Draft - each player bans 2 of 22 global modifiers, then picks
 //                      3. Each pick is ALWAYS active in-game, but only for the
 //                      drafting player's own units (no rotation, no phases).
-//                      No Bans acts on step 4.
-//   4. Unit Draft    - Protect and Ban sides first (ProtectDraft.galaxy): the
-//                      side places points on its units, the opponent bans up to
-//                      a points budget, the side keeps the rest. Then, for the
-//                      others: opening picks, bans, final picks; each side ends
-//                      with 6 units (7 for YOLO). Enforced in-game.
+//                      No Bans acts on step 3 (and is N/A with Full roster).
+//   3. Unit Draft    - opening picks, bans, final picks; each side ends with 6
+//                      units (7 for YOLO). Enforced in-game.
+//
+// Every draft stage has a YOLO button for each human side, until that side makes
+// its own first choice in the stage: from then on its turns in THAT stage are
+// random (CycleMod_YoloPress). Protect and Ban is dormant: ProtectDraft.galaxy is
+// intact but nothing reaches it.
 //
 // In Tournament mode every draft step above has a time limit, and a click only
 // selects; Confirm takes the selection. At zero the selection is taken, or a
@@ -88,11 +89,11 @@ string Tardigrade_SummaryColumn(bool isP1) {
     else      { col = "FF9F7F"; tag = "P2"; race = g_roster_p2Race; count = g_cycle_p2Count; rerolls = g_sum_rerollsP2; }
 
     s = "<c val=\"" + col + "\">" + tag + "  " + c_draftDot + "  " + RaceName(race) + "</c>";
-    if (CycleMod_SideIsYolo(isP1)) {
-        s = s + "   <c val=\"FFD54A\">YOLO</c>";
-        if (rerolls > 0) {
-            s = s + "  <c val=\"AAAAAA\">(rerolled x" + IntToString(rerolls) + ")</c>";
-        }
+    if (CycleMod_YoloStagesText(isP1) != "") {
+        s = s + "   <c val=\"FFD54A\">YOLO</c> <c val=\"AAAAAA\">(" + CycleMod_YoloStagesText(isP1) + ")</c>";
+    }
+    if (CycleMod_SideIsYolo(isP1, c_stageRoster) && rerolls > 0) {
+        s = s + "  <c val=\"AAAAAA\">(rerolled x" + IntToString(rerolls) + ")</c>";
     }
     if (CycleMod_SideIsProtect(isP1)) { s = s + "   <c val=\"FFD54A\">PROTECT AND BAN</c>"; }
 
@@ -106,6 +107,10 @@ string Tardigrade_SummaryColumn(bool isP1) {
     }
     if (count == 0) { s = s + "\n<c val=\"7A7A7A\">none</c>"; }
 
+    if (GameMode_IsFullRoster()) {
+        s = s + "\n\n<c val=\"FFD54A\">UNITS</c>  <c val=\"7A7A7A\">(all)</c>\nFull roster";
+        return s;
+    }
     s = s + "\n\n<c val=\"FFD54A\">UNITS</c>  <c val=\"7A7A7A\">(" + IntToString(RosterDraft_Count(isP1)) + ")</c>";
     i = 1;
     while (i <= c_rosterMaxSize) {
@@ -146,7 +151,7 @@ void Tardigrade_SummaryRerollButton(int btn, bool isP1) {
     int         count;
 
     DialogControlSetVisible(btn, Tardigrade_Viewers(), false);
-    if (!CycleMod_SideIsYolo(isP1)) { return; }
+    if (!CycleMod_SideIsYolo(isP1, c_stageRoster)) { return; }
     if (isP1) { viewer = PlayerGroupSingle(g_draft_p1); } else { viewer = PlayerGroupSingle(g_draft_p2); }
 
     count = RosterDraft_Count(isP1);
@@ -230,7 +235,7 @@ bool Tardigrade_SummaryOnClicked(bool testConds, bool runActions) {
     return true;
 }
 
-// Dialog layout (780 x 650): title, clock, ready status; the two columns
+// Dialog layout (780 x 710): title, clock, ready status; the two columns
 // (x -185 / +185, 350 wide); a REROLL under a YOLO side's column; READY at
 // the bottom.
 void Tardigrade_SummaryCountdown() {
@@ -243,7 +248,7 @@ void Tardigrade_SummaryCountdown() {
     g_sum_rerollsP1 = 0;
     g_sum_rerollsP2 = 0;
 
-    g_sum_dialog = DialogCreate(780, 650, c_anchorCenter, 0, 0, true);
+    g_sum_dialog = DialogCreate(780, 710, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_sum_dialog);
     DialogSetVisible(g_sum_dialog, Tardigrade_Viewers(), true);
 
@@ -262,27 +267,27 @@ void Tardigrade_SummaryCountdown() {
     DialogControlSetPosition(g_sum_lblStatus, Tardigrade_Viewers(), c_anchorTop, 0, 76);
 
     g_sum_lblP1 = DialogControlCreate(g_sum_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_sum_lblP1, Tardigrade_Viewers(), 350, 420);
+    DialogControlSetSize(g_sum_lblP1, Tardigrade_Viewers(), 350, 480);
     DialogControlSetPosition(g_sum_lblP1, Tardigrade_Viewers(), c_anchorTop, -185, 100);
 
     g_sum_lblP2 = DialogControlCreate(g_sum_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_sum_lblP2, Tardigrade_Viewers(), 350, 420);
+    DialogControlSetSize(g_sum_lblP2, Tardigrade_Viewers(), 350, 480);
     DialogControlSetPosition(g_sum_lblP2, Tardigrade_Viewers(), c_anchorTop, 185, 100);
 
     g_sum_btnRerollP1 = DialogControlCreate(g_sum_dialog, c_triggerControlTypeButton);
     DraftStyle_InitButton(g_sum_btnRerollP1, Tardigrade_Viewers());
     DialogControlSetSize(g_sum_btnRerollP1, Tardigrade_Viewers(), 300, 48);
-    DialogControlSetPosition(g_sum_btnRerollP1, Tardigrade_Viewers(), c_anchorTop, -185, 530);
+    DialogControlSetPosition(g_sum_btnRerollP1, Tardigrade_Viewers(), c_anchorTop, -185, 590);
 
     g_sum_btnRerollP2 = DialogControlCreate(g_sum_dialog, c_triggerControlTypeButton);
     DraftStyle_InitButton(g_sum_btnRerollP2, Tardigrade_Viewers());
     DialogControlSetSize(g_sum_btnRerollP2, Tardigrade_Viewers(), 300, 48);
-    DialogControlSetPosition(g_sum_btnRerollP2, Tardigrade_Viewers(), c_anchorTop, 185, 530);
+    DialogControlSetPosition(g_sum_btnRerollP2, Tardigrade_Viewers(), c_anchorTop, 185, 590);
 
     g_sum_btnReady = DialogControlCreate(g_sum_dialog, c_triggerControlTypeButton);
     DraftStyle_InitButton(g_sum_btnReady, Tardigrade_Viewers());
     DialogControlSetSize(g_sum_btnReady, Tardigrade_Viewers(), 320, 48);
-    DialogControlSetPosition(g_sum_btnReady, Tardigrade_Viewers(), c_anchorTop, 0, 588);
+    DialogControlSetPosition(g_sum_btnReady, Tardigrade_Viewers(), c_anchorTop, 0, 648);
 
     g_sum_trigger = TriggerCreate("Tardigrade_SummaryOnClicked");
     TriggerAddEventDialogControl(g_sum_trigger, c_playerAny, g_sum_btnReady, c_triggerControlEventTypeClick);
@@ -345,7 +350,10 @@ void Tardigrade_StartGame() {
 
     // Enforced after the summary, not before: a YOLO side can reroll its
     // roster there.
-    RosterEnforce_ApplyAll();
+    // Full roster: nothing is disallowed, only the morph fallbacks are tidied
+    // (RosterEnforce_ApplyFullRoster).
+    if (GameMode_IsFullRoster()) { RosterEnforce_ApplyFullRoster(); }
+    else                         { RosterEnforce_ApplyAll(); }
 
     // Now that the countdown is done, spawn the workers + extra unit (e.g.
     // Overlord) for real and set them mining - nothing sits mining or
@@ -353,7 +361,8 @@ void Tardigrade_StartGame() {
     Tardigrade_SpawnDeferredWorkers();
 
     // In-game roster reference HUD (toggle button + your 6 units).
-    RosterHUD_Init();
+    // (No roster to show with Full roster.)
+    if (!GameMode_IsFullRoster()) { RosterHUD_Init(); }
 
     // Start the day/dusk/night cycle and unpause.
     CycleMod_StartCycle();
@@ -428,15 +437,16 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
     g_cycle_p2      = g_draft_p2;
     g_cycle_p1Count = 0;
     g_cycle_p2Count = 0;
-    // YOLO is a meta pick, not a modifier (CycleMod_TakeYolo) - never rolled
-    // here. The flags the YOLO? screen set are kept: the rosters below honour them.
+    // YOLO is a per-stage button, not a modifier - never rolled here, and this
+    // auto-run never presses it.
     usedMask  = 1 << (c_cycleModYolo - 1);
+    if (CycleMod_ModUnavailable(c_cycleModNoBans)) { usedMask = usedMask | (1 << (c_cycleModNoBans - 1)); }
     pickCount = 1;
-    while (pickCount <= c_cyclePickTotal) {
+    while (pickCount <= CycleMod_PickTotal()) {
         pick = RandomInt(1, c_cycleModCount);
         if ((usedMask & (1 << (pick - 1))) == 0) {
             usedMask = usedMask | (1 << (pick - 1));
-            if (pickCount <= c_cyclePicksEach) {
+            if (pickCount <= CycleMod_PicksEach()) {
                 CycleMod_SetSideMod(true, pick, true);
                 g_cycle_chosen[pickCount] = pick;   // keep legacy phase array populated too
             } else {
@@ -523,6 +533,18 @@ bool Tardigrade_OnRosterFinished(bool testConds, bool runActions) {
 //--------------------------------------------------------------------------------------------------
 bool Tardigrade_OnCycleFinished(bool testConds, bool runActions) {
     trigger rosterCallback;
+
+    // Full roster: no unit draft at all. The roster globals the summary and the
+    // game start read are filled in here instead of by RosterDraft_Start (the
+    // unit lists stay empty - every unit is allowed).
+    if (GameMode_IsFullRoster()) {
+        g_roster_p1     = g_draft_p1;
+        g_roster_p2     = g_draft_p2;
+        g_roster_p1Race = g_draft_p1Race;
+        g_roster_p2Race = g_draft_p2Race;
+        Tardigrade_StartGame();
+        return true;
+    }
     rosterCallback = TriggerCreate("Tardigrade_OnRosterFinished");
     RosterDraft_Start(rosterCallback,
         g_draft_p1, g_draft_p2,
@@ -541,22 +563,15 @@ bool Tardigrade_OnDraftFinished(bool testConds, bool runActions) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Callback: YOLO? decided -> the race draft.
-//--------------------------------------------------------------------------------------------------
-bool Tardigrade_OnYoloChosen(bool testConds, bool runActions) {
-    RaceDraft_ShowDraft(TriggerCreate("Tardigrade_OnDraftFinished"));
-    return true;
-}
-
-//--------------------------------------------------------------------------------------------------
-// Callback: game mode chosen -> the YOLO? screen, or straight into Testing mode.
+// Callback: setup done (Start pressed) -> the race draft, or straight into
+// Testing mode.
 //--------------------------------------------------------------------------------------------------
 bool Tardigrade_OnModeChosen(bool testConds, bool runActions) {
     if (GameMode_IsTesting()) {
         TestingMode_Start();
         return true;
     }
-    CycleMod_YoloChoice(TriggerCreate("Tardigrade_OnYoloChosen"), g_draft_p1, g_draft_p2);
+    RaceDraft_ShowDraft(TriggerCreate("Tardigrade_OnDraftFinished"));
     return true;
 }
 
@@ -569,7 +584,7 @@ void Tardigrade_Init() {
         Debug_SetAutoRunTrigger(TriggerCreate("Tardigrade_DebugAutoRun"));
     }
 
-    // Setup (teams, pause, draft lock), then Mode -> YOLO? -> Race -> Cycle -> Unit -> Game.
+    // Setup (teams, pause, draft lock), then Setup screen -> Race -> Modifiers -> Units -> Game.
     if (!RaceDraft_Setup()) {
         // No human to draft: skip to the next step, as the draft always has.
         TriggerExecute(TriggerCreate("Tardigrade_OnDraftFinished"), false, false);

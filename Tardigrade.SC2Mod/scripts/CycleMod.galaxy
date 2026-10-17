@@ -1,9 +1,9 @@
 //--------------------------------------------------------------------------------------------------
 // Cycle Modifier System
 //
-// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 19
-//   global battlefield modifiers, 18 of them on the board (YOLO is not). Each
-//   player bans 2 (18 -> 14), then picks 3, so eight board modifiers go unpicked
+// Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 23
+//   global battlefield modifiers, 22 of them on the board (YOLO is not). Each
+//   player bans 2 (22 -> 18), then picks 3, so twelve board modifiers go unpicked
 //   every game. Every pick is ALWAYS active
 //   in-game, but only for the drafting player's own units. A shared reference
 //   panel lists both sides' picks.
@@ -24,10 +24,10 @@ include "scripts/Debug"
 
 // Number of modifiers in the pool and how many are drafted (= number of phases).
 // The draft dialog lays the pool out in two columns of c_cycleModRows buttons.
-// Every array indexed by modifier is sized with the literal 20 - Galaxy array
-// sizes must be literals - so keep c_cycleModCount below 20 when adding more.
-const int c_cycleModCount   = 19;
-const int c_cycleModRows    = 9;   // cards per board column; YOLO is not on the board
+// Every array indexed by modifier is sized with the literal 24 - Galaxy array
+// sizes must be literals - so keep c_cycleModCount below 24 when adding more.
+const int c_cycleModCount   = 23;
+const int c_cycleModRows    = 11;  // cards per board column; YOLO is not on the board
 // Top-left-justified stock core style for the picks panel (a plain label
 // centres vertically, so a short list would float mid-panel).
 const string c_cyclePicksPanelStyle = "HelpWelcomePanelSubText";
@@ -44,6 +44,18 @@ const int c_cycleModYolo         = 16;
 const int c_cycleModFactoryLines = 17;
 const int c_cycleModAdrenaline   = 18;
 const int c_cycleModMartyrdom    = 19;
+const int c_cycleModQuickstep    = 20;
+const int c_cycleModReinforce    = 21;
+const int c_cycleModFieldRepair  = 22;
+const int c_cycleModPhotonCoat   = 23;
+
+// Draft buckets: a modifier's family. Not used yet - a later bucket-draft mode
+// will draw one modifier per bucket. See CycleMod_Bucket.
+const int c_cycleBucketNone      = 0;
+const int c_cycleBucketCommand   = 1;
+const int c_cycleBucketManeuver  = 2;
+const int c_cycleBucketEndurance = 3;
+const int c_cycleBucketFirepower = 4;
 
 // Minerals Only: every gas cost becomes minerals at this rate, and gas income is
 // paid out as minerals at the same rate (CycleMod_ConvertGasIncome).
@@ -66,8 +78,8 @@ const bool c_cyclePhaseMode  = false;
 
 // Per-player draft: 2 bans each (14 -> 10) then 3 picks each (10 -> 4 unpicked).
 const int  c_cycleBanTotal   = 4;   // total bans (2 per player)
-const int  c_cyclePickTotal  = 6;   // total picks (3 per player)
-const int  c_cyclePicksEach  = 3;
+const int  c_cyclePickTotal  = 6;   // free draft only - ask CycleMod_PickTotal()
+const int  c_cyclePicksEach  = 3;   // free draft only - ask CycleMod_PicksEach() (4 with buckets)
 const fixed c_cycleActivationDelay = 180.0;  // buffs go live 3 minutes into the game
 
 // Idle/still thresholds for the two "hold position and be rewarded" modifiers.
@@ -270,6 +282,27 @@ const string c_cycleAdrenalineRush     = "TardigradeMod_AdrenalineRush";
 // that is never applied as a buff; CycleMod_TryMartyrdom runs off the
 // unit-died event.
 const string c_cycleMartyrBehavior = "TardigradeMod_Martyrdom";
+
+// Reinforcements: a newly created unit gets +50% move speed for 30 real seconds
+// (42 game). The buff carries its own Duration; the pick is a marker.
+const string c_cycleReinforceBehavior = "TardigradeMod_Reinforcements";
+const string c_cycleReinforceBuff     = "TardigradeMod_ReinforcementsRush";
+
+// Field Repair: a unit that has taken no damage for c_cycleFieldRepairDelay
+// game seconds (5 real) regains 3% of max life per real second, healed on the
+// 0.5-game-second scan tick. Life only - Protoss shields already regenerate.
+const string c_cycleFieldRepairBehavior = "TardigradeMod_FieldRepair";
+const fixed  c_cycleFieldRepairDelay    = 7.0;
+const fixed  c_cycleFieldRepairRate     = 0.03;   // of max life per REAL second
+
+// Photon Coating: the first 8 real seconds (11.2 game) of each fight take 20%
+// less damage. The unit re-arms once c_cyclePhotonRearm game seconds (20 real)
+// have passed with no combat event on it.
+const string c_cyclePhotonBehavior = "TardigradeMod_PhotonCoating";
+const string c_cyclePhotonBuff     = "TardigradeMod_PhotonCoatingActive";
+const fixed  c_cyclePhotonRearm    = 28.0;
+const fixed  c_cyclePhotonReduction = 0.2;
+
 const fixed  c_cycleMartyrFraction = 0.35;
 const fixed  c_cycleMartyrRadius   = 3.0;
 
@@ -278,7 +311,7 @@ trigger g_cycle_callback = null;
 int     g_cycle_p1;                 // Player A (picks first)
 int     g_cycle_p2;                 // Player B (picks second)
 int     g_cycle_pickIndex = 0;      // 0 = A picking, 1 = B picking
-bool[20] g_cycle_taken;             // [1..19] which mods are already claimed (keep > c_cycleModCount)
+bool[24] g_cycle_taken;             // [1..23] which mods are already claimed (keep > c_cycleModCount)
 
 // WHY a claimed modifier is claimed. g_cycle_taken only says a modifier is off
 // the table, which was enough while a claimed modifier disappeared. The board
@@ -289,32 +322,37 @@ const int c_cycleSlotBanned = 1;
 const int c_cycleSlotP1     = 2;
 const int c_cycleSlotP2     = 3;
 const int c_cycleSlotTaken  = 4;    // claimed by neither side (legacy phase mode)
-int[20] g_cycle_modState;           // [1..19] one of c_cycleSlot* (keep > c_cycleModCount)
-int[4]  g_cycle_chosen;             // [1..3] chosen mod indices (phase order)
+int[24] g_cycle_modState;           // [1..23] one of c_cycleSlot* (keep > c_cycleModCount)
+int[5]  g_cycle_chosen;             // [1..3] chosen mod indices (phase order; legacy phase mode)
 
 // ── Per-player draft state (c_cyclePhaseMode == false) ────────────────────
 // Each side's ACTIVE modifiers, [1..count]. The draft fills three each; testing
 // mode adds and removes them live (CycleMod_SetSideMod), so they are sized for
 // the whole pool and every reader goes by the count, not by c_cyclePicksEach.
-int[20] g_cycle_p1Mods;             // [1..g_cycle_p1Count] modifier indices active for P1
-int[20] g_cycle_p2Mods;             // [1..g_cycle_p2Count] modifier indices active for P2
+int[24] g_cycle_p1Mods;             // [1..g_cycle_p1Count] modifier indices active for P1
+int[24] g_cycle_p2Mods;             // [1..g_cycle_p2Count] modifier indices active for P2
 int     g_cycle_p1Count    = 0;
 int     g_cycle_p2Count    = 0;
-// YOLO is a flag on the side, not an entry in its list: it is a meta pick
-// that replaces the side's draft, not a modifier (see CycleMod_TakeYolo).
-bool    g_cycle_p1Yolo     = false;
-bool    g_cycle_p2Yolo     = false;
-// Protect & Ban: a roster drafting style chosen on the same screen as YOLO.
-// The side's race and modifiers are drafted normally; its units come from the
-// points stage in ProtectDraft.galaxy instead of the pick/ban draft.
+// YOLO is a flag on the side PER STAGE (c_stageRace / c_stageMod / c_stageRoster
+// in GameMode.galaxy), not an entry in its list: a side presses the YOLO button
+// on a stage's dialog and from then on that stage's turns for it are random.
+// g_cycle_pXActed is "this side has made its own first choice (a ban or a pick)
+// in the stage" - after that the button is gone and YOLO can't be taken.
+bool[3] g_cycle_p1Yolo;
+bool[3] g_cycle_p2Yolo;
+bool[3] g_cycle_p1Acted;
+bool[3] g_cycle_p2Acted;
+// Protect & Ban is DORMANT: nothing sets these any more (the drafting-style
+// screen that did is gone), so every Protect branch below is unreachable. The
+// points stage itself is intact in ProtectDraft.galaxy - see IDEAS.md.
 bool    g_cycle_p1Protect  = false;
 bool    g_cycle_p2Protect  = false;
 int     g_cycle_draftPhase = 0;     // 0 = ban, 1 = pick
 int     g_cycle_stepIndex  = 1;     // step within the current phase order
 int[5]  g_cycle_banOrder;           // [1..4] picker per ban step
 bool[5] g_cycle_banIsP1;
-int[7]  g_cycle_pickOrder;          // [1..6] picker per pick step
-bool[7] g_cycle_pickIsP1;
+int[9]  g_cycle_pickOrder;          // [1..CycleMod_PickTotal()] picker per pick step (6, or 8 for buckets)
+bool[9] g_cycle_pickIsP1;
 // In-game modifier reference panel. One dialog PER VIEWER rather than a single
 // shared one, so each player can minimise their own copy: DialogSetSize takes no
 // playergroup, so a shared dialog cannot be resized for one player without
@@ -325,12 +363,12 @@ int[16] g_cycle_panelBtn;
 int[16] g_cycle_panelTitle;
 int[16] g_cycle_panelHdrMine;
 int[16] g_cycle_panelHdrOpp;
-int[16][4] g_cycle_panelRowMine;
-int[16][4] g_cycle_panelRowOpp;
+int[16][5] g_cycle_panelRowMine;   // [player][1..CycleMod_PicksEach()]
+int[16][5] g_cycle_panelRowOpp;
 // The modifier index each row shows, so the stat refresh can look its number
 // up (see CycleMod_PanelStatsTick).
-int[16][4] g_cycle_panelModMine;
-int[16][4] g_cycle_panelModOpp;
+int[16][5] g_cycle_panelModMine;
+int[16][5] g_cycle_panelModOpp;
 fixed   g_cycle_panelStatsAt = 0.0;   // mission time of the last stat refresh
 bool[16] g_cycle_panelExpanded;
 // Auto-fold: mission time at which a panel folds itself away (0 = never). Set
@@ -353,8 +391,10 @@ int    g_cycle_lblPicksBottom = c_invalidDialogControlId;
 // -150 on the per-player board, which makes room for the picks panel.
 int    g_cycle_boardShift     = 0;
 int    g_cycle_lblLegend = c_invalidDialogControlId; // what the card markers mean
-int[20] g_cycle_btnMod;             // [1..19] modifier buttons (keep > c_cycleModCount)
+int[24] g_cycle_btnMod;             // [1..23] modifier buttons (keep > c_cycleModCount)
 trigger g_cycle_draftTrig = null;
+int     g_cycle_btnYolo   = c_invalidDialogControlId;   // the modifier stage's YOLO button
+trigger g_cycle_stageYoloTrig = null;
 trigger g_cycle_autoTrig  = null;   // CycleMod_DraftAutoAct, run by the Tournament timer
 
 // ── Cycle (in-game) state ───────────────────────────────────────────────────
@@ -378,10 +418,10 @@ const int c_cycleStateRegistered   = 0;
 const int c_cycleStateLastX        = 1;
 const int c_cycleStateLastY        = 2;
 const int c_cycleStateStillTime    = 3;
-const int c_cycleStateAdrenalReady = 4;   // unused leftover of Adrenal Response
+const int c_cycleStateLastDamaged  = 4;   // Field Repair: mission time the unit last took damage
 const int c_cycleStateBlinkSpent   = 5;   // 1 = blinked, not yet back to c_cycleBlinkRearm
 const int c_cycleStateLastAttack   = 6;
-const int c_cycleStateEconomicEgg  = 7;
+const int c_cycleStatePhotonLastCombat = 7;   // Photon Coating: mission time of the unit's last combat event (0 = never)
 const int c_cycleStateAutoGas      = 8;   // gas building: mission time its last auto trip was paid up to
 const int c_cycleStateAutoGasLeft  = 9;   // gas building: gas it still holds, once auto (see CycleMod_AutoRefineryTick)
 // 10/11 are the veterancy tag's, declared with it further down.
@@ -466,10 +506,10 @@ void CycleMod_FloatText(point where, string msg, string hex, playergroup players
 //--------------------------------------------------------------------------------------------------
 // Live modifier stats, shown in the hover tooltip of the in-game Active Modifiers
 // toggle button: what each side's modifier has actually done so far this match.
-// Indexed [team 1..2][modifier 1..19]; a team's number is credited to the team
+// Indexed [team 1..2][modifier 1..23]; a team's number is credited to the team
 // that BENEFITS (the healed unit's owner, the blinking unit's owner...).
 //--------------------------------------------------------------------------------------------------
-fixed[3][20] g_cycle_stat;
+fixed[3][24] g_cycle_stat;
 
 // 1 / 2 for a player on that team, 0 for anyone else (spectators, neutrals).
 // CycleMod_PanelRole, further down, answers the same question for the panel.
@@ -515,6 +555,10 @@ string CycleMod_StatText(int modIdx, fixed v) {
     else if (modIdx == 18) { suffix = " rushes"; }
     else if (modIdx == 6)  { suffix = " holds"; }
     else if (modIdx == 14) { suffix = " shared"; }
+    else if (modIdx == 22) { suffix = " repaired"; }
+    else if (modIdx == 23) { suffix = " prevented"; }
+    else if (modIdx == 21) { suffix = " reinforced"; }
+    else if (modIdx == 5)  { suffix = " enemy workers"; }
     if (suffix == "") { return ""; }
     return "<c val=\"AAAAAA\">" + CycleMod_StatNum(v) + suffix + "</c>";
 }
@@ -562,15 +606,52 @@ string CycleMod_Behavior(int idx) {
     // 19 is a key only: the healing runs off the unit-died event
     // (CycleMod_TryMartyrdom).
     if (idx == 19) { return c_cycleMartyrBehavior; }
+    // 20 is a key only: Quickstep is a catalog change (CycleMod_CatalogModForPlayer).
+    // 21 is a key only: the speed buff is added at spawn (CycleMod_TryReinforcements).
+    // 22 is a key only: the repair runs from the scan (CycleMod_TryFieldRepair).
+    // 23 is a key only: the coating is added off combat events (CycleMod_TryPhotonCoating).
+    if (idx == 20) { return "TardigradeMod_Quickstep"; }
+    if (idx == 21) { return c_cycleReinforceBehavior; }
+    if (idx == 22) { return c_cycleFieldRepairBehavior; }
+    if (idx == 23) { return c_cyclePhotonBehavior; }
+    return "";
+}
+
+// A modifier's family, for the bucket-draft mode (not wired up yet).
+int CycleMod_Bucket(int idx) {
+    if (idx == 3 || idx == 5 || idx == 11 || idx == 15 || idx == 17) { return c_cycleBucketCommand; }
+    if (idx == 2 || idx == 18 || idx == 20 || idx == 21) { return c_cycleBucketManeuver; }
+    if (idx == 4 || idx == 9 || idx == 13 || idx == 14 || idx == 19 || idx == 22 || idx == 23) {
+        return c_cycleBucketEndurance;
+    }
+    if (idx == 1 || idx == 6 || idx == 7 || idx == 8 || idx == 10) { return c_cycleBucketFirepower; }
+    return c_cycleBucketNone;
+}
+
+// Picks per side: 4 in the bucket draft (one per bucket), 3 in the free draft.
+// Everything that means "how many mods does a side hold" asks this, not the
+// constant - the in-game panel, the stats tooltip, the picks panel, YOLO rolls.
+const int c_cycleBucketCount = 4;
+int CycleMod_PicksEach() {
+    if (GameMode_IsBuckets()) { return c_cycleBucketCount; }
+    return c_cyclePicksEach;
+}
+
+int CycleMod_PickTotal() {
+    return CycleMod_PicksEach() * 2;
+}
+
+string CycleMod_BucketName(int bucket) {
+    if (bucket == c_cycleBucketCommand)   { return "Command"; }
+    if (bucket == c_cycleBucketManeuver)  { return "Maneuver"; }
+    if (bucket == c_cycleBucketEndurance) { return "Endurance"; }
+    if (bucket == c_cycleBucketFirepower) { return "Firepower"; }
     return "";
 }
 
 string CycleMod_HelperBehavior(int idx) {
-    if (idx == 1) { return "TardigradeMod_WarEconomyGather"; }
-    if (idx == 2) { return "TardigradeMod_WarEconomyLock"; }
     if (idx == 3) { return "TardigradeMod_Entrenched"; }
     if (idx == 4) { return "TardigradeMod_OverwatchReady"; }
-    if (idx == 5) { return "TardigradeMod_AdrenalBoost"; }
     if (idx == 6) { return "TardigradeMod_VeteranStack"; }
     return "";
 }
@@ -595,6 +676,10 @@ string CycleMod_Name(int idx) {
     if (idx == 17) { return "Factory Lines"; }
     if (idx == 18) { return "Adrenaline"; }
     if (idx == 19) { return "Martyrdom"; }
+    if (idx == 20) { return "Quickstep"; }
+    if (idx == 21) { return "Reinforcements"; }
+    if (idx == 22) { return "Field Repair"; }
+    if (idx == 23) { return "Photon Coating"; }
     return "";
 }
 
@@ -612,13 +697,16 @@ string CycleMod_Name(int idx) {
 //   Overwatch idle          14   game -> 10   real
 //   Overwatch window         1.4 game ->  1   real
 //   Adrenaline rush          4.2 game ->  3   real
+//   Reinforcements buff     42   game -> 30   real
+//   Field Repair delay       7   game ->  5   real
+//   Photon Coating          11.2  game ->  8   real (re-arm 28 game -> 20 real)
 // CycleMod_ActivationClockText does the same conversion for the activation time.
 string CycleMod_Desc(int idx) {
     if (idx == 1)  { return "units hit ground and air; half damage to the new one"; }
     if (idx == 2)  { return "+40% move speed, lost on damage dealt or taken, back 10s later"; }
     if (idx == 3)  { return "your workers no longer cost supply"; }
     if (idx == 4)  { return "attacks heal 30% of damage dealt, max 8% of HP per second"; }
-    if (idx == 5)  { return "the battlefield and hidden units are revealed"; }
+    if (idx == 5)  { return "map and hidden units revealed; you see the enemy worker count"; }
     if (idx == 6)  { return "units holding 7.5s get +2 armor and +1 range; not buildings"; }
     if (idx == 7)  { return "double energy regeneration, units and structures"; }
     if (idx == 8)  { return "units idle 10s: +50% damage for 1s of attacking; not buildings"; }
@@ -633,6 +721,10 @@ string CycleMod_Desc(int idx) {
     if (idx == 17) { return "builds, morphs, research and larva 15% faster; not workers"; }
     if (idx == 18) { return "taking damage gives +50% move speed for 3s"; }
     if (idx == 19) { return "a unit that dies heals nearby allies for 35% of its max HP"; }
+    if (idx == 20) { return "instant acceleration and double turn rate"; }
+    if (idx == 21) { return "new units: +50% move speed for 30s"; }
+    if (idx == 22) { return "after 5s without taking damage, regain 3% max life per second"; }
+    if (idx == 23) { return "first 8s of a fight: -20% damage taken; re-arms after 20s calm"; }
     return "";
 }
 
@@ -707,9 +799,129 @@ bool CycleMod_SideHasModIdx(bool isP1, int modIdx) {
     return CycleMod_P2HasModIdx(modIdx);
 }
 
-bool CycleMod_SideIsYolo(bool isP1) {
-    if (isP1) { return g_cycle_p1Yolo; }
-    return g_cycle_p2Yolo;
+bool CycleMod_SideIsYolo(bool isP1, int stage) {
+    if (isP1) { return g_cycle_p1Yolo[stage]; }
+    return g_cycle_p2Yolo[stage];
+}
+
+bool CycleMod_SideActed(bool isP1, int stage) {
+    if (isP1) { return g_cycle_p1Acted[stage]; }
+    return g_cycle_p2Acted[stage];
+}
+
+void CycleMod_SideMarkActed(bool isP1, int stage) {
+    if (isP1) { g_cycle_p1Acted[stage] = true; }
+    else      { g_cycle_p2Acted[stage] = true; }
+}
+
+// Does this side have a human on it? With two deciders, an AI side never goes
+// YOLO (and so never gets the button). A lone human deciding both sides is
+// handled in CycleMod_YoloAvailable.
+bool CycleMod_SideHasHuman(bool isP1) {
+    playergroup team;
+    int         i;
+    int         p;
+
+    if (isP1 == g_draft_p1_is_team1) { team = g_draft_team1; }
+    else                             { team = g_draft_team2; }
+    i = 1;
+    while (i <= PlayerGroupCount(team)) {
+        p = PlayerGroupPlayer(team, i);
+        if (PlayerStatus(p) == c_playerStatusActive && PlayerType(p) == c_playerTypeUser) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+string CycleMod_StageName(int stage) {
+    if (stage == c_stageRace) { return "race draft"; }
+    if (stage == c_stageMod)  { return "modifier draft"; }
+    return "roster draft";
+}
+
+// The stages a side went YOLO in, for the summary: "race, modifiers, units" or "".
+string CycleMod_YoloStagesText(bool isP1) {
+    string s;
+    s = "";
+    if (CycleMod_SideIsYolo(isP1, c_stageRace)) { s = "race"; }
+    if (CycleMod_SideIsYolo(isP1, c_stageMod)) {
+        if (s != "") { s = s + ", "; }
+        s = s + "modifiers";
+    }
+    if (CycleMod_SideIsYolo(isP1, c_stageRoster)) {
+        if (s != "") { s = s + ", "; }
+        s = s + "units";
+    }
+    return s;
+}
+
+// Can this side still press YOLO in this stage?
+bool CycleMod_YoloAvailable(bool isP1, int stage) {
+    if (GameMode_IsTesting()) { return false; }
+    if (CycleMod_SideIsYolo(isP1, stage) || CycleMod_SideActed(isP1, stage)) { return false; }
+    // One human deciding for both sides (solo test vs a computer slot) makes the
+    // computer side's choices too, so it may YOLO for that side as well.
+    if (g_draft_p1 == g_draft_p2) { return true; }
+    return CycleMod_SideHasHuman(isP1);
+}
+
+// Update a stage's YOLO button: shown only to the decider of a side that can
+// still use it, hidden from everyone else (spectators included). upIsP1 is
+// whose turn it is, which matters only when one human decides for both sides:
+// they get the button for whichever side is up.
+void CycleMod_YoloButtonUpdate(int btn, int stage, bool upIsP1) {
+    if (btn == c_invalidDialogControlId) { return; }
+    DialogControlSetVisible(btn, Tardigrade_Viewers(), false);
+    if (g_draft_p1 == g_draft_p2) {
+        if (CycleMod_YoloAvailable(upIsP1, stage)) {
+            DraftStyle_ApplyCard(btn, PlayerGroupSingle(g_draft_p1), c_draftStateOpen,
+                DraftStyle_Card(c_draftStateOpen, "", "YOLO",
+                    "random from here on, for the " + CycleMod_StageName(stage)), true);
+        }
+        return;
+    }
+    if (CycleMod_YoloAvailable(true, stage)) {
+        DraftStyle_ApplyCard(btn, PlayerGroupSingle(g_draft_p1), c_draftStateOpen,
+            DraftStyle_Card(c_draftStateOpen, "", "YOLO",
+                "random from here on, for the " + CycleMod_StageName(stage)), true);
+    }
+    if (CycleMod_YoloAvailable(false, stage)) {
+        DraftStyle_ApplyCard(btn, PlayerGroupSingle(g_draft_p2), c_draftStateOpen,
+            DraftStyle_Card(c_draftStateOpen, "", "YOLO",
+                "random from here on, for the " + CycleMod_StageName(stage)), true);
+    }
+}
+
+// A YOLO button was pressed by `player`. Returns the side that went YOLO (1 = P1,
+// 2 = P2) after setting its flag and announcing it to everyone, or 0 if the press
+// did nothing. A lone human deciding both sides acts for whichever side is up.
+int CycleMod_YoloPress(int player, int stage, bool upIsP1) {
+    bool isP1;
+    int  decider;
+
+    if (g_draft_p1 == g_draft_p2) {
+        if (player != g_draft_p1) { return 0; }
+        isP1 = upIsP1;
+    } else if (player == g_draft_p1) {
+        isP1 = true;
+    } else if (player == g_draft_p2) {
+        isP1 = false;
+    } else {
+        return 0;
+    }
+    if (!CycleMod_YoloAvailable(isP1, stage)) { return 0; }
+
+    if (isP1) { g_cycle_p1Yolo[stage] = true;  decider = g_draft_p1; }
+    else      { g_cycle_p2Yolo[stage] = true;  decider = g_draft_p2; }
+    // A lone human deciding both sides: name the side, not the human twice.
+    if (g_draft_p1 == g_draft_p2) {
+        if (isP1) { decider = 1; } else { decider = 2; }
+    }
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"FFD54A\">YOLO:</c> Player " + IntToString(decider) + " went YOLO for the "
+        + CycleMod_StageName(stage) + "."));
+    if (isP1) { return 1; }
+    return 2;
 }
 
 bool CycleMod_SideIsProtect(bool isP1) {
@@ -779,7 +991,7 @@ bool CycleMod_UnitHasBehavior(unit u, string beh) {
 // DroneBurrowed is a SEPARATE unit type, not a state on Drone - UnitGetType
 // returns "DroneBurrowed" for a burrowed Drone, and it carries its own
 // CostResource of 50. Leaving it off this list let a burrowed Drone through
-// every worker exclusion at once: Refund paid 12.5 for one an enemy dug out,
+// every worker exclusion at once: Refund paid out for one an enemy dug out,
 // and because it never moves it also sat permanently Entrenched. It is the
 // only alt-form worker in the melee data - SCV, Probe and MULE have no second
 // type, and DroneBurrowed is the sole unit whose LeaderAlias is a worker.
@@ -830,7 +1042,8 @@ bool CycleMod_ModsLive() {
 bool CycleMod_ModSkipsStructures(string beh) {
     return beh == "TardigradeMod_Entrenchment" || beh == "TardigradeMod_Overwatch"
         || beh == "TardigradeMod_VeteranForces" || beh == "TardigradeMod_Refund"
-        || beh == "TardigradeMod_OpenSkies";
+        || beh == "TardigradeMod_OpenSkies" || beh == "TardigradeMod_FieldRepair"
+        || beh == "TardigradeMod_PhotonCoating";
 }
 
 bool CycleMod_UnitModActive(unit u, string beh) {
@@ -881,7 +1094,7 @@ string CycleMod_ModNamesJoined(bool isP1) {
     int    i;
     int    idx;
     s = "";
-    if (CycleMod_SideIsYolo(isP1)) { s = "YOLO -> "; }
+    if (CycleMod_SideIsYolo(isP1, c_stageMod)) { s = "YOLO -> "; }
     i = 1;
     while (i <= c_cycleModCount) {
         if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
@@ -917,12 +1130,87 @@ string CycleMod_ModNamesJoined(bool isP1) {
 bool CycleMod_DraftPickerIsP1();
 
 // Is this modifier a card on the draft board? Everything but YOLO: YOLO is not
-// a modifier but a choice about HOW a side drafts, so it is made on its own
-// screen before the race draft (CycleMod_YoloChoice) - it can't be banned, and
-// taking it can't come after a hand-made pick. Its button exists (the arrays
-// are indexed by modifier) but is never shown.
+// a modifier but a choice about HOW a side drafts (it is now the per-stage YOLO
+// button on each draft dialog) - it can't be banned or picked. Its button exists
+// (the arrays are indexed by modifier) but is never shown.
 bool CycleMod_OnBoard(int idx) {
+    // The bucket board has no card for a modifier outside every bucket (No Bans,
+    // YOLO).
+    if (GameMode_IsBuckets()) { return CycleMod_Bucket(idx) != c_cycleBucketNone; }
     return idx != c_cycleModYolo;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Bucket draft legality. 4 bans (P1 P2 P1 P2), each in a bucket nobody has banned
+// from yet - so every bucket ends with exactly one ban - then 8 picks (snake
+// P1 P2 P2 P1 P1 P2 P2 P1), each from a bucket the picker doesn't hold yet and
+// not a banned card or one the opponent took.
+// ASSUMPTION that keeps a legal choice on every turn: each bucket has at least 4
+// cards (Maneuver, the smallest, has exactly 4). A bucket ends with 1 ban and at
+// most 1 card per side, so a side that still lacks a bucket always has at least
+// 4 - 1 - 1 = 2 cards left in it to pick from; and a bucket with no ban yet
+// always has an untaken card to ban.
+//--------------------------------------------------------------------------------------------------
+bool CycleMod_BucketBanned(int bucket) {
+    int i;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (CycleMod_Bucket(i) == bucket && g_cycle_modState[i] == c_cycleSlotBanned) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+bool CycleMod_SideHasBucket(bool isP1, int bucket) {
+    int i;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (CycleMod_Bucket(i) == bucket && CycleMod_SideHasModIdx(isP1, i)) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// The side's modifier in a bucket, or 0.
+int CycleMod_SideBucketMod(bool isP1, int bucket) {
+    int i;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (CycleMod_Bucket(i) == bucket && CycleMod_SideHasModIdx(isP1, i)) { return i; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Could this side pick card idx right now?
+bool CycleMod_BucketPickable(int idx, bool isP1) {
+    int bucket;
+    bucket = CycleMod_Bucket(idx);
+    if (bucket == c_cycleBucketNone) { return false; }
+    if (g_cycle_taken[idx]) { return false; }
+    return !CycleMod_SideHasBucket(isP1, bucket);
+}
+
+// Is card idx a legal ban or pick for the step that is up?
+bool CycleMod_BucketLegal(int idx) {
+    int bucket;
+    bucket = CycleMod_Bucket(idx);
+    if (bucket == c_cycleBucketNone || g_cycle_taken[idx]) { return false; }
+    if (g_cycle_draftPhase == 0) { return !CycleMod_BucketBanned(bucket); }
+    return CycleMod_BucketPickable(idx, CycleMod_DraftPickerIsP1());
+}
+
+// An unclaimed bucket-board card the step that is up can't use: drawn locked.
+bool CycleMod_BucketIllegal(int idx) {
+    if (!GameMode_IsBuckets()) { return false; }
+    if (g_cycle_modState[idx] != c_cycleSlotOpen || !CycleMod_OnBoard(idx)) { return false; }
+    return !CycleMod_BucketLegal(idx);
+}
+
+// A card that is on the board but can't be used this game: No Bans does nothing
+// without a unit draft (Full roster), so it is drawn N/A and never offered.
+bool CycleMod_ModUnavailable(int idx) {
+    return idx == c_cycleModNoBans && GameMode_IsFullRoster();
 }
 
 // Where a card sits: its index with YOLO's gap closed, so the board is
@@ -962,6 +1250,7 @@ int CycleMod_CardState(int idx, bool isBan, bool viewerIsP1) {
         if (mine) { return c_draftStateMine; }
         return c_draftStateTheirs;
     }
+    if (CycleMod_BucketIllegal(idx)) { return c_draftStateTaken; }
     if (isBan) { return c_draftStateBanTarget; }
     return c_draftStateOpen;
 }
@@ -970,6 +1259,8 @@ int CycleMod_CardState(int idx, bool isBan, bool viewerIsP1) {
 // instead of YOURS/THEIRS. They view the board as P1, so P1's picks come back
 // as c_draftStateMine and P2's as c_draftStateTheirs - the tags just name them.
 string CycleMod_CardTag(int idx, bool spectator) {
+    if (CycleMod_ModUnavailable(idx)) { return "N/A"; }
+    if (CycleMod_BucketIllegal(idx)) { return "LOCKED"; }
     if (!spectator) { return ""; }
     if (g_cycle_modState[idx] == c_cycleSlotP1) { return "P1"; }
     if (g_cycle_modState[idx] == c_cycleSlotP2) { return "P2"; }
@@ -1196,15 +1487,32 @@ string CycleMod_PicksBlock(bool isP1, string heading, string clr) {
     int    i;
     int    idx;
     int    race;
+    int    bucket;
 
     if (isP1) { race = g_draft_p1Race; } else { race = g_draft_p2Race; }
     s = "<c val=\"" + clr + "\">" + heading + "</c>  <c val=\"777777\">" + RaceName(race) + "</c>";
-    if (CycleMod_SideIsYolo(isP1)) {
+    if (CycleMod_SideIsYolo(isP1, c_stageMod)) {
         s = s + "  <c val=\"FFD700\">YOLO</c> " + DraftStyle_Small("<c val=\"B8A060\">rolled at random</c>");
     }
     if (CycleMod_SideIsProtect(isP1)) { s = s + "  <c val=\"FFD700\">PROTECT</c>"; }
+
+    // Bucket draft: one line per bucket, labelled with it.
+    if (GameMode_IsBuckets()) {
+        bucket = 1;
+        while (bucket <= c_cycleBucketCount) {
+            idx = CycleMod_SideBucketMod(isP1, bucket);
+            if (idx > 0) {
+                s = s + "\n<c val=\"9FB4C7\">" + CycleMod_BucketName(bucket) + ":</c> <c val=\"FFFFFF\">"
+                    + CycleMod_Name(idx) + "</c>  " + DraftStyle_Small("<c val=\"8A9AA6\">" + CycleMod_Desc(idx) + "</c>");
+            } else {
+                s = s + "\n<c val=\"555555\">" + CycleMod_BucketName(bucket) + ":  —</c>";
+            }
+            bucket = bucket + 1;
+        }
+        return s;
+    }
     i = 1;
-    while (i <= c_cyclePicksEach) {
+    while (i <= CycleMod_PicksEach()) {
         if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
         if (idx > 0) {
             s = s + "\n\n<c val=\"FFFFFF\">" + IntToString(i) + ".  " + CycleMod_Name(idx) + "</c>\n"
@@ -1258,7 +1566,7 @@ void CycleMod_UpdateDraftUI() {
     pickGroup = PlayerGroupSingle(picker);
     isBan = (g_cycle_draftPhase == 0);
     if (isBan) { total = c_cycleBanTotal; }
-    else       { total = c_cyclePickTotal; }
+    else       { total = CycleMod_PickTotal(); }
 
     // The phase word is the coloured heading, not a small word buried mid-line -
     // matching BAN PHASE in the roster draft, which reads unambiguously.
@@ -1273,7 +1581,15 @@ void CycleMod_UpdateDraftUI() {
     DialogControlSetPropertyAsText(g_cycle_lblTitle, c_triggerControlPropertyText,
         Tardigrade_Viewers(), StringToText(titleText));
 
-    if (isBan) {
+    if (GameMode_IsBuckets()) {
+        if (isBan) {
+            DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+                pickGroup, StringToText("<c val=\"FF6060\">YOUR TURN  —  BAN a modifier from a bucket nobody has banned from yet</c>"));
+        } else {
+            DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
+                pickGroup, StringToText("<c val=\"00FF88\">YOUR TURN  —  Pick a modifier from a bucket you don't have yet</c>"));
+        }
+    } else if (isBan) {
         DialogControlSetPropertyAsText(g_cycle_lblSub, c_triggerControlPropertyText,
             pickGroup, StringToText("<c val=\"FF6060\">YOUR TURN  —  BAN a modifier (removes it for both players)</c>"));
     } else {
@@ -1330,7 +1646,8 @@ void CycleMod_UpdateDraftUI() {
     // A YOLO side's bans are made for it, at random, on the spot. (Its pick
     // turns never come up here - CycleMod_AdvancePick rolls them, and they show
     // in the picks panel rather than on the board.)
-    if (isBan && CycleMod_SideIsYolo(pickerIsP1)) {
+    CycleMod_YoloButtonUpdate(g_cycle_btnYolo, c_stageMod, pickerIsP1);
+    if (isBan && CycleMod_SideIsYolo(pickerIsP1, c_stageMod)) {
         DraftTimer_Disarm();
         CycleMod_DraftChooseRandom();
         return;
@@ -1348,6 +1665,11 @@ void CycleMod_FinishDraftPerPlayer() {
     DraftTimer_Disarm();
     g_cycle_lblPicksTop    = c_invalidDialogControlId;
     g_cycle_lblPicksBottom = c_invalidDialogControlId;
+    g_cycle_btnYolo        = c_invalidDialogControlId;
+    if (g_cycle_stageYoloTrig != null) {
+        TriggerDestroy(g_cycle_stageYoloTrig);
+        g_cycle_stageYoloTrig = null;
+    }
     if (g_cycle_draftTrig != null) {
         TriggerDestroy(g_cycle_draftTrig);
         g_cycle_draftTrig = null;
@@ -1374,16 +1696,91 @@ void CycleMod_AdvancePick() {
     bool isP1;
 
     g_cycle_stepIndex = g_cycle_stepIndex + 1;
-    while (g_cycle_stepIndex <= c_cyclePickTotal) {
+    while (g_cycle_stepIndex <= CycleMod_PickTotal()) {
         isP1 = g_cycle_pickIsP1[g_cycle_stepIndex];
-        if (!CycleMod_SideIsYolo(isP1)) { break; }
+        if (!CycleMod_SideIsYolo(isP1, c_stageMod)) { break; }
         CycleMod_YoloRollOne(isP1);
         g_cycle_stepIndex = g_cycle_stepIndex + 1;
     }
-    if (g_cycle_stepIndex > c_cyclePickTotal) {
+    if (g_cycle_stepIndex > CycleMod_PickTotal()) {
         CycleMod_FinishDraftPerPlayer();
     } else {
         CycleMod_UpdateDraftUI();
+    }
+}
+
+// Bucket draft: one random LEGAL pick for a side (a bucket it doesn't hold, not a
+// banned card or one the opponent took), claimed on the board like a hand-made
+// pick - unlike the free draft's YOLO, the one-per-bucket shape must hold. 0 if
+// the side is full or nothing is legal.
+int CycleMod_BucketRollOne(bool isP1) {
+    int open;
+    int n;
+    int i;
+
+    if (isP1 && g_cycle_p1Count >= CycleMod_PicksEach()) { return 0; }
+    if (!isP1 && g_cycle_p2Count >= CycleMod_PicksEach()) { return 0; }
+    open = 0;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (CycleMod_BucketPickable(i, isP1)) { open = open + 1; }
+        i = i + 1;
+    }
+    if (open == 0) { return 0; }
+    n = RandomInt(1, open);
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (CycleMod_BucketPickable(i, isP1)) {
+            n = n - 1;
+            if (n == 0) { break; }
+        }
+        i = i + 1;
+    }
+    g_cycle_taken[i] = true;
+    if (isP1) { g_cycle_modState[i] = c_cycleSlotP1; }
+    else      { g_cycle_modState[i] = c_cycleSlotP2; }
+    CycleMod_SetSideMod(isP1, i, true);
+    return i;
+}
+
+// Both sides YOLO on the bucket draft: no board, everything rolled legally at
+// once - one random ban in each bucket, then the snake's eight picks in order.
+void CycleMod_BucketRollAll() {
+    int bucket;
+    int open;
+    int n;
+    int i;
+    int step;
+
+    bucket = 1;
+    while (bucket <= c_cycleBucketCount) {
+        open = 0;
+        i = 1;
+        while (i <= c_cycleModCount) {
+            if (CycleMod_Bucket(i) == bucket && !g_cycle_taken[i]) { open = open + 1; }
+            i = i + 1;
+        }
+        // A bucket already banned in (a YOLO side's ban, made before the
+        // other side pressed) keeps that one ban and gets no second.
+        if (open > 0 && !CycleMod_BucketBanned(bucket)) {
+            n = RandomInt(1, open);
+            i = 1;
+            while (i <= c_cycleModCount) {
+                if (CycleMod_Bucket(i) == bucket && !g_cycle_taken[i]) {
+                    n = n - 1;
+                    if (n == 0) { break; }
+                }
+                i = i + 1;
+            }
+            g_cycle_taken[i] = true;
+            g_cycle_modState[i] = c_cycleSlotBanned;
+        }
+        bucket = bucket + 1;
+    }
+    step = 1;
+    while (step <= CycleMod_PickTotal()) {
+        CycleMod_BucketRollOne(g_cycle_pickIsP1[step]);
+        step = step + 1;
     }
 }
 
@@ -1396,12 +1793,14 @@ int CycleMod_YoloRollOne(bool isP1) {
     int idx;
     int tries;
 
+    if (GameMode_IsBuckets()) { return CycleMod_BucketRollOne(isP1); }
     tries = 0;
     while (tries < 1000) {
-        if (isP1 && g_cycle_p1Count >= c_cyclePicksEach) { return 0; }
-        if (!isP1 && g_cycle_p2Count >= c_cyclePicksEach) { return 0; }
+        if (isP1 && g_cycle_p1Count >= CycleMod_PicksEach()) { return 0; }
+        if (!isP1 && g_cycle_p2Count >= CycleMod_PicksEach()) { return 0; }
         idx = RandomInt(1, c_cycleModCount);
-        if (idx != c_cycleModYolo && !CycleMod_SideHasModIdx(isP1, idx)) {
+        if (idx != c_cycleModYolo && !CycleMod_ModUnavailable(idx)
+            && !CycleMod_SideHasModIdx(isP1, idx)) {
             CycleMod_SetSideMod(isP1, idx, true);
             return idx;
         }
@@ -1410,17 +1809,12 @@ int CycleMod_YoloRollOne(bool isP1) {
     return 0;
 }
 
-// A side went YOLO (CycleMod_YoloResolve, before the race draft). Its race
-// ban or pick is made at random (RaceDraft_UpdateUI). Against a normal
-// drafter its modifiers are rolled one per pick turn (CycleMod_AdvancePick)
-// and its bans made at random (CycleMod_UpdateDraftUI), so they come out at
-// the normal draft's pace; when both sides went YOLO there is no board to
-// pace them by, so all three are rolled at once (CycleMod_YoloRollAll). Its
-// units are dealt by the roster draft (RosterDraft_Start).
-void CycleMod_TakeYolo(bool isP1) {
-    if (isP1) { g_cycle_p1Yolo = true; } else { g_cycle_p2Yolo = true; }
-}
-
+// A side went YOLO for the modifier stage (the YOLO button, CycleMod_OnModYoloClicked).
+// Against a normal drafter its modifiers are rolled one per pick turn
+// (CycleMod_AdvancePick) and its bans made at random (CycleMod_UpdateDraftUI),
+// so they come out at the normal draft's pace; when both sides went YOLO there
+// is no board to pace them by, so all three are rolled at once
+// (CycleMod_YoloRollAll).
 // Both sides went YOLO: no modifier board, so a side's three are rolled here.
 void CycleMod_YoloRollAll(bool isP1) {
     while (CycleMod_YoloRollOne(isP1) != 0) { }
@@ -1432,7 +1826,10 @@ void CycleMod_YoloRollAll(bool isP1) {
 void CycleMod_DraftChoose(int idx) {
     if (idx <= 0 || idx > c_cycleModCount || g_cycle_taken[idx]) { return; }
     if (!CycleMod_OnBoard(idx)) { return; }
+    if (GameMode_IsBuckets() && !CycleMod_BucketLegal(idx)) { return; }
 
+    // The side's own first choice ends its chance to go YOLO.
+    CycleMod_SideMarkActed(CycleMod_DraftPickerIsP1(), c_stageMod);
     g_cycle_taken[idx] = true;
     if (g_cycle_draftPhase == 0) {
         g_cycle_modState[idx] = c_cycleSlotBanned;
@@ -1462,7 +1859,9 @@ void CycleMod_DraftChoose(int idx) {
 // Whether modifier idx can still be banned or picked this step.
 bool CycleMod_DraftIsLive(int idx) {
     if (idx <= 0 || idx > c_cycleModCount || g_cycle_taken[idx]) { return false; }
-    return CycleMod_OnBoard(idx);
+    if (!CycleMod_OnBoard(idx)) { return false; }
+    if (GameMode_IsBuckets()) { return CycleMod_BucketLegal(idx); }
+    return true;
 }
 
 bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
@@ -1500,7 +1899,8 @@ bool CycleMod_OnDraftClicked(bool testConds, bool runActions) {
     return true;
 }
 
-// Ban or pick a random modifier still on the board for whoever is up.
+// Ban or pick a random LEGAL modifier for whoever is up (in the bucket draft that
+// means the one-per-bucket rules too).
 void CycleMod_DraftChooseRandom() {
     int open;
     int n;
@@ -1509,7 +1909,7 @@ void CycleMod_DraftChooseRandom() {
     open = 0;
     i = 1;
     while (i <= c_cycleModCount) {
-        if (!g_cycle_taken[i] && i != c_cycleModYolo) { open = open + 1; }
+        if (CycleMod_DraftIsLive(i)) { open = open + 1; }
         i = i + 1;
     }
     if (open == 0) { return; }
@@ -1517,7 +1917,7 @@ void CycleMod_DraftChooseRandom() {
     n = RandomInt(1, open);
     i = 1;
     while (i <= c_cycleModCount) {
-        if (!g_cycle_taken[i] && i != c_cycleModYolo) {
+        if (CycleMod_DraftIsLive(i)) {
             n = n - 1;
             if (n == 0) { break; }
         }
@@ -1537,21 +1937,190 @@ bool CycleMod_DraftAutoAct(bool testConds, bool runActions) {
 }
 
 //--------------------------------------------------------------------------------------------------
+// The YOLO button on the modifier board. A side that presses it before its
+// first ban has its bans made at random and its three picks rolled
+// (CycleMod_YoloRollOne), as the old YOLO screen did for this stage.
+//--------------------------------------------------------------------------------------------------
+bool CycleMod_OnModYoloClicked(bool testConds, bool runActions) {
+    bool upIsP1;
+    bool isP1;
+    int  side;
+
+    upIsP1 = CycleMod_DraftPickerIsP1();
+    side = CycleMod_YoloPress(EventPlayer(), c_stageMod, upIsP1);
+    if (side == 0) { return true; }
+    DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+    isP1 = (side == 1);
+
+    // Both sides YOLO: no board left to pace anything, roll both sides' modifiers.
+    if (CycleMod_SideIsYolo(true, c_stageMod) && CycleMod_SideIsYolo(false, c_stageMod)) {
+        DraftTimer_Disarm();
+        if (GameMode_IsBuckets()) {
+            CycleMod_BucketRollAll();
+        } else {
+            CycleMod_YoloRollAll(true);
+            CycleMod_YoloRollAll(false);
+        }
+        CycleMod_FinishDraftPerPlayer();
+        return true;
+    }
+
+    // Its own turn: the random action happens now. In the ban phase that is the
+    // random ban (UpdateDraftUI takes it); in the pick phase, a roll.
+    if (isP1 == upIsP1) {
+        DraftTimer_Disarm();
+        if (g_cycle_draftPhase == 0) {
+            CycleMod_UpdateDraftUI();
+        } else {
+            CycleMod_YoloRollOne(isP1);
+            CycleMod_AdvancePick();
+        }
+        return true;
+    }
+
+    // Not its turn: the flag does the rest when its turns come up. Refresh the
+    // button and the picks panel (which marks the side YOLO) without touching
+    // the clock of the side that is up.
+    CycleMod_YoloButtonUpdate(g_cycle_btnYolo, c_stageMod, upIsP1);
+    CycleMod_UpdatePicksPanel();
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// The bucket board: four columns, one per bucket in CycleMod_Bucket order
+// (Command 5, Maneuver 4, Endurance 7, Firepower 5 cards; No Bans and YOLO are
+// not shown). Dialog 1200 x 780: cards 280 x 56 on the same 60px pitch as the
+// free board, columns 290 apart (centres -435 / -145 / +145 / +435), headers at
+// y=72, cards from y=100 (the 7-card column ends at 516), the legend at 522, and
+// below it a strip with the two sides' picks (labelled by bucket) and the YOLO
+// button. Everything else - card states, select/Confirm, waiter and audience
+// views, the timer - is the free board's code (CycleMod_UpdateDraftUI).
+//--------------------------------------------------------------------------------------------------
+// Position of a card within its bucket's column (0 = top).
+int CycleMod_BucketRank(int idx) {
+    int j;
+    int rank;
+    rank = 0;
+    j = 1;
+    while (j < idx) {
+        if (CycleMod_Bucket(j) == CycleMod_Bucket(idx)) { rank = rank + 1; }
+        j = j + 1;
+    }
+    return rank;
+}
+
+void CycleMod_PlaceBucketButton(int idx) {
+    int bucket;
+    bucket = CycleMod_Bucket(idx);
+    DialogControlSetSize(g_cycle_btnMod[idx], Tardigrade_Viewers(), 280, 56);
+    if (bucket != c_cycleBucketNone) {
+        DialogControlSetPosition(g_cycle_btnMod[idx], Tardigrade_Viewers(), c_anchorTop,
+            -435 + (bucket - 1) * 290, 100 + CycleMod_BucketRank(idx) * 60);
+    }
+    DialogControlSetVisible(g_cycle_btnMod[idx], Tardigrade_Viewers(), CycleMod_OnBoard(idx));
+}
+
+void CycleMod_OpenBucketBoard() {
+    int i;
+    int bucket;
+    int lbl;
+
+    g_cycle_dialog = DialogCreate(1200, 780, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_cycle_dialog);
+    DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
+    g_cycle_boardShift = 0;
+
+    g_cycle_lblTitle = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblTitle, Tardigrade_Viewers(), 1100, 26);
+    DialogControlSetPosition(g_cycle_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 18);
+
+    g_cycle_lblSub = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblSub, Tardigrade_Viewers(), 1100, 20);
+    DialogControlSetPosition(g_cycle_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 48);
+
+    // Column headers.
+    bucket = 1;
+    while (bucket <= c_cycleBucketCount) {
+        lbl = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+        DialogControlSetSize(lbl, Tardigrade_Viewers(), 280, 20);
+        DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, -435 + (bucket - 1) * 290, 74);
+        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
+            StringToText(DraftStyle_Small("<c val=\"7FD0FF\">" + CycleMod_BucketName(bucket) + "</c>")));
+        bucket = bucket + 1;
+    }
+
+    // Cards: every modifier gets a control (the arrays are indexed by modifier);
+    // the ones outside every bucket are hidden.
+    i = 1;
+    while (i <= c_cycleModCount) {
+        g_cycle_btnMod[i] = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_cycle_btnMod[i], Tardigrade_Viewers());
+        DraftStyle_SetTip(g_cycle_btnMod[i], Tardigrade_Viewers(),
+            CycleMod_Name(i) + "<n/>" + CycleMod_Desc(i));
+        CycleMod_PlaceBucketButton(i);
+        i = i + 1;
+    }
+
+    g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 1000, 18);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 522);
+    DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
+        Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend
+            + "   <c val=\"9FB4C7\">[=] LOCKED: its bucket is banned / already yours</c>")));
+
+    // Picks strip: yours on the left, the opponent's on the right.
+    g_cycle_lblPicksTop = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    g_cycle_lblPicksBottom = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
+    DialogControlSetPropertyAsString(g_cycle_lblPicksTop, c_triggerControlPropertyStyle,
+        Tardigrade_Viewers(), c_cyclePicksPanelStyle);
+    DialogControlSetPropertyAsString(g_cycle_lblPicksBottom, c_triggerControlPropertyStyle,
+        Tardigrade_Viewers(), c_cyclePicksPanelStyle);
+    DialogControlSetSize(g_cycle_lblPicksTop, Tardigrade_Viewers(), 560, 160);
+    DialogControlSetPosition(g_cycle_lblPicksTop, Tardigrade_Viewers(), c_anchorTop, -290, 550);
+    DialogControlSetSize(g_cycle_lblPicksBottom, Tardigrade_Viewers(), 560, 160);
+    DialogControlSetPosition(g_cycle_lblPicksBottom, Tardigrade_Viewers(), c_anchorTop, 290, 550);
+
+    g_cycle_draftTrig = TriggerCreate("CycleMod_OnDraftClicked");
+    i = 1;
+    while (i <= c_cycleModCount) {
+        TriggerAddEventDialogControl(g_cycle_draftTrig, c_playerAny,
+            g_cycle_btnMod[i], c_triggerControlEventTypeClick);
+        i = i + 1;
+    }
+
+    g_cycle_btnYolo = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_cycle_btnYolo, Tardigrade_Viewers());
+    DialogControlSetSize(g_cycle_btnYolo, Tardigrade_Viewers(), 290, 44);
+    DialogControlSetPosition(g_cycle_btnYolo, Tardigrade_Viewers(), c_anchorTop, 0, 722);
+    DialogControlSetVisible(g_cycle_btnYolo, Tardigrade_Viewers(), false);
+    g_cycle_stageYoloTrig = TriggerCreate("CycleMod_OnModYoloClicked");
+    TriggerAddEventDialogControl(g_cycle_stageYoloTrig, c_playerAny, g_cycle_btnYolo,
+        c_triggerControlEventTypeClick);
+
+    CycleMod_UpdateDraftUI();
+}
+
+//--------------------------------------------------------------------------------------------------
 // The modifier board: bans, then picks.
 //--------------------------------------------------------------------------------------------------
 void CycleMod_OpenDraftBoard() {
     int i;
     int lblSection;
 
-    // Dialog: 940 x 660. Left, both sides' race and picks - the same column
+    if (GameMode_IsBuckets()) {
+        CycleMod_OpenBucketBoard();
+        return;
+    }
+
+    // Dialog: 940 x 800. Left, both sides' race and picks - the same column
     // the unit draft keeps its modifiers in, so the two screens read alike.
-    // Right, the board: two columns of nine buttons (YOLO is not on the
+    // Right, the board: two columns of eleven buttons (YOLO is not on the
     // board), then the legend. Buttons start at y=80 on a 60px pitch:
-    // 80 + 9*60 = 620, the legend sits at 626, plus a margin. With
+    // 80 + 11*60 = 740, the legend sits at 746, plus a margin. With
     // c_anchorTop an x offset places a control's centre relative to the
     // dialog's (470): the panel is left 20, width 300 -> -300; the board's
     // columns move from -150/+150 to 0/+300 (g_cycle_boardShift).
-    g_cycle_dialog = DialogCreate(940, 660, c_anchorCenter, 0, 0, true);
+    g_cycle_dialog = DialogCreate(940, 800, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
     g_cycle_boardShift = 150;
@@ -1577,10 +2146,10 @@ void CycleMod_OpenDraftBoard() {
         Tardigrade_Viewers(), c_cyclePicksPanelStyle);
     DialogControlSetPropertyAsString(g_cycle_lblPicksBottom, c_triggerControlPropertyStyle,
         Tardigrade_Viewers(), c_cyclePicksPanelStyle);
-    DialogControlSetSize(g_cycle_lblPicksTop, Tardigrade_Viewers(), 300, 262);
+    DialogControlSetSize(g_cycle_lblPicksTop, Tardigrade_Viewers(), 300, 322);
     DialogControlSetPosition(g_cycle_lblPicksTop, Tardigrade_Viewers(), c_anchorTop, -300, 88);
-    DialogControlSetSize(g_cycle_lblPicksBottom, Tardigrade_Viewers(), 300, 270);
-    DialogControlSetPosition(g_cycle_lblPicksBottom, Tardigrade_Viewers(), c_anchorTop, -300, 360);
+    DialogControlSetSize(g_cycle_lblPicksBottom, Tardigrade_Viewers(), 300, 322);
+    DialogControlSetPosition(g_cycle_lblPicksBottom, Tardigrade_Viewers(), c_anchorTop, -300, 420);
 
     i = 1;
     while (i <= c_cycleModCount) {
@@ -1596,7 +2165,7 @@ void CycleMod_OpenDraftBoard() {
     // has to say what the markers on them mean.
     g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
-    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, g_cycle_boardShift, 626);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, g_cycle_boardShift, 746);
     DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
         Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
 
@@ -1608,318 +2177,25 @@ void CycleMod_OpenDraftBoard() {
         i = i + 1;
     }
 
+    // YOLO button, under the picks panel (hidden until CycleMod_YoloButtonUpdate
+    // shows it to a side that can still use it).
+    g_cycle_btnYolo = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_cycle_btnYolo, Tardigrade_Viewers());
+    DialogControlSetSize(g_cycle_btnYolo, Tardigrade_Viewers(), 290, 44);
+    DialogControlSetPosition(g_cycle_btnYolo, Tardigrade_Viewers(), c_anchorTop, -300, 750);
+    DialogControlSetVisible(g_cycle_btnYolo, Tardigrade_Viewers(), false);
+    g_cycle_stageYoloTrig = TriggerCreate("CycleMod_OnModYoloClicked");
+    TriggerAddEventDialogControl(g_cycle_stageYoloTrig, c_playerAny, g_cycle_btnYolo,
+        c_triggerControlEventTypeClick);
+
     CycleMod_UpdateDraftUI();
 }
 
 //==================================================================================================
-// DRAFTING STYLE (the "YOLO?" screen) - the choice before the race draft
-//
-// Each side decides, before the race draft, how it drafts:
-//   Draft normally - the usual race, modifier and unit drafts.
-//   Go YOLO        - the side's whole draft is chance - race, modifiers and
-//                    units (CycleMod_TakeYolo).
-//   Protect & Ban  - race and modifiers as normal; the unit draft is replaced
-//                    by the points stage (ProtectDraft.galaxy): the side puts
-//                    points on its units, the opponent bans up to a budget of
-//                    points, and the side keeps whatever is left.
-// This is its own screen rather than a card because none of it can be banned,
-// and YOLO can't come after a hand-made pick. The choice is simultaneous and
-// hidden - each player locks in without seeing the other's, and both are
-// revealed together - so neither side gets to react. When one human decides
-// for both sides (PvAI), P1 is decided first, then P2. Tournament mode puts
-// the screen on the clock; an undecided side drafts normally. Public entry:
-// CycleMod_YoloChoice.
+// The drafting-style screen (YOLO? / Protect and Ban, before the race draft) is
+// gone: YOLO is now a per-stage button on each draft dialog (CycleMod_YoloPress),
+// and Protect and Ban has no way in (see IDEAS.md).
 //==================================================================================================
-const int c_cycleStyleNormal  = 0;
-const int c_cycleStyleYolo    = 1;
-const int c_cycleStyleProtect = 2;
-const int c_cycleStyleCount   = 3;
-
-int     g_cycle_yoloDlg    = c_invalidDialogId;
-int     g_cycle_yoloLblSub = c_invalidDialogControlId;
-int[3]  g_cycle_yoloBtn;            // [c_cycleStyle*] one card per style
-trigger g_cycle_yoloTrig   = null;
-trigger g_cycle_yoloAuto   = null;
-trigger g_cycle_yoloConfirm = null; // Tournament: a player clicked Confirm
-trigger g_cycle_yoloCallback = null;
-bool    g_cycle_yoloDoneP1 = false;
-bool    g_cycle_yoloDoneP2 = false;
-int     g_cycle_yoloWantP1 = 0;     // c_cycleStyle*
-int     g_cycle_yoloWantP2 = 0;
-
-// Forward: the Protect & Ban numbers live with the stage (ProtectDraft.galaxy,
-// included later).
-string ProtectDraft_CardRule();
-string ProtectDraft_ShortRule();
-
-string CycleMod_YoloName(int style) {
-    if (style == c_cycleStyleYolo)    { return "Go YOLO"; }
-    if (style == c_cycleStyleProtect) { return "Protect and Ban"; }
-    return "Draft normally";
-}
-
-string CycleMod_YoloDetail(int style) {
-    if (style == c_cycleStyleYolo)    { return "random race, 3 random modifiers, 7 random units"; }
-    if (style == c_cycleStyleProtect) { return ProtectDraft_CardRule(); }
-    return "ban and pick your race, modifiers and units";
-}
-
-string CycleMod_YoloCard(int style, int state, string tag) {
-    return DraftStyle_Card(state, tag, CycleMod_YoloName(style), CycleMod_YoloDetail(style));
-}
-
-// One viewer's copy of the screen. decided / want: what the side this viewer
-// speaks for has locked in; the chosen option is marked, all are switched off.
-void CycleMod_YoloShow(playergroup viewer, bool canClick, bool decided, int want, string sub) {
-    int    style;
-    int    st;
-    string tag;
-
-    style = 0;
-    while (style < c_cycleStyleCount) {
-        st  = c_draftStateOpen;
-        tag = "";
-        if (decided && want == style) { st = c_draftStateMine; tag = "LOCKED IN"; }
-        DraftStyle_ApplyCard(g_cycle_yoloBtn[style], viewer, st,
-            CycleMod_YoloCard(style, st, tag), canClick && !decided);
-        style = style + 1;
-    }
-    DialogControlSetPropertyAsText(g_cycle_yoloLblSub, c_triggerControlPropertyText,
-        viewer, StringToText(sub));
-}
-
-void CycleMod_YoloRefresh() {
-    if (g_cycle_p1 == g_cycle_p2) {
-        if (!g_cycle_yoloDoneP1) {
-            CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, 0,
-                "<c val=\"00FF88\">Decide for </c><c val=\"7FD0FF\">P1</c><c val=\"00FF88\"> (you ban first)</c>");
-        } else {
-            CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, 0,
-                "<c val=\"00FF88\">Now decide for </c><c val=\"FF9F7F\">P2</c>");
-        }
-        return;
-    }
-
-    if (!g_cycle_yoloDoneP1) {
-        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), true, false, 0,
-            "<c val=\"00FF88\">YOUR CHOICE  —  hidden from your opponent until you both lock in</c>");
-    } else {
-        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p1), false, true, g_cycle_yoloWantP1,
-            "<c val=\"888888\">Locked in  —  waiting for your opponent...</c>");
-    }
-    if (!g_cycle_yoloDoneP2) {
-        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p2), true, false, 0,
-            "<c val=\"00FF88\">YOUR CHOICE  —  hidden from your opponent until you both lock in</c>");
-    } else {
-        CycleMod_YoloShow(PlayerGroupSingle(g_cycle_p2), false, true, g_cycle_yoloWantP2,
-            "<c val=\"888888\">Locked in  —  waiting for your opponent...</c>");
-    }
-    if (Tardigrade_HasAudience()) {
-        CycleMod_YoloShow(Tardigrade_Audience(), false, false, 0,
-            "<c val=\"888888\">Spectating  —  the players are deciding...</c>");
-    }
-}
-
-// Both sides have decided: reveal, flag the YOLO sides, move on to the race
-// draft. Nothing is rolled yet - each draft rolls a YOLO side's share itself.
-void CycleMod_YoloResolve() {
-    DraftTimer_Disarm();
-    if (g_cycle_yoloTrig != null) { TriggerDestroy(g_cycle_yoloTrig); g_cycle_yoloTrig = null; }
-    if (g_cycle_yoloDlg != c_invalidDialogId) {
-        DialogDestroy(g_cycle_yoloDlg);
-        g_cycle_yoloDlg = c_invalidDialogId;
-    }
-
-    if (g_cycle_yoloWantP1 == c_cycleStyleYolo)    { CycleMod_TakeYolo(true); }
-    if (g_cycle_yoloWantP2 == c_cycleStyleYolo)    { CycleMod_TakeYolo(false); }
-    if (g_cycle_yoloWantP1 == c_cycleStyleProtect) { g_cycle_p1Protect = true; }
-    if (g_cycle_yoloWantP2 == c_cycleStyleProtect) { g_cycle_p2Protect = true; }
-
-    if (g_cycle_yoloCallback != null) {
-        TriggerExecute(g_cycle_yoloCallback, false, false);
-    }
-}
-
-void CycleMod_YoloDecide(bool isP1, int want) {
-    if (isP1) { g_cycle_yoloDoneP1 = true; g_cycle_yoloWantP1 = want; }
-    else      { g_cycle_yoloDoneP2 = true; g_cycle_yoloWantP2 = want; }
-
-    if (g_cycle_yoloDoneP1 && g_cycle_yoloDoneP2) {
-        CycleMod_YoloResolve();
-        return;
-    }
-    // Tournament: that side's selection is spent; the other player's (if any)
-    // is drawn back over the refreshed board.
-    if (isP1) { DraftSelect_Drop(g_cycle_p1); } else { DraftSelect_Drop(g_cycle_p2); }
-    CycleMod_YoloRefresh();
-    DraftSelect_Reapply();
-    // One human deciding both sides in turn: the second decision is a step of
-    // its own on the clock. Between two humans it is one simultaneous step, so
-    // the first lock-in must not restart the other player's clock.
-    if (g_cycle_p1 == g_cycle_p2) {
-        DraftTimer_ArmPick(g_cycle_yoloAuto, g_cycle_yoloConfirm, "then Draft normally");
-    }
-}
-
-// Which side player is deciding for right now: 1 = P1, 2 = P2, 0 = none
-// (not a decider, or already locked in).
-int CycleMod_YoloSideOf(int player) {
-    if (g_cycle_p1 == g_cycle_p2) {
-        if (player != g_cycle_p1) { return 0; }
-        if (!g_cycle_yoloDoneP1)  { return 1; }
-        if (!g_cycle_yoloDoneP2)  { return 2; }
-        return 0;
-    }
-    if (player == g_cycle_p1 && !g_cycle_yoloDoneP1) { return 1; }
-    if (player == g_cycle_p2 && !g_cycle_yoloDoneP2) { return 2; }
-    return 0;
-}
-
-bool CycleMod_OnYoloClicked(bool testConds, bool runActions) {
-    int  player;
-    int  control;
-    int  want;
-    int  style;
-    int  side;
-
-    player  = EventPlayer();
-    control = EventDialogControl();
-    want  = -1;
-    style = 0;
-    while (style < c_cycleStyleCount) {
-        if (control == g_cycle_yoloBtn[style]) { want = style; }
-        style = style + 1;
-    }
-    if (want < 0) { return true; }
-
-    side = CycleMod_YoloSideOf(player);
-    if (side == 0) { return true; }
-
-    // Tournament: the click selects; Confirm or the clock takes it.
-    if (DraftSelect_Active()) {
-        DraftSelect_Pick(player, want, control, c_draftStateOpen,
-            CycleMod_YoloName(want), CycleMod_YoloDetail(want));
-        return true;
-    }
-
-    DraftStyle_ClickCue(PlayerGroupSingle(player));
-    CycleMod_YoloDecide(side == 1, want);
-    return true;
-}
-
-// Tournament: a player clicked Confirm - lock in their selection.
-bool CycleMod_YoloConfirmAct(bool testConds, bool runActions) {
-    int player;
-    int side;
-    int want;
-
-    player = DraftSelect_Confirmer();
-    side = CycleMod_YoloSideOf(player);
-    want = DraftSelect_Of(player);
-    if (side == 0 || want < 0) { return true; }
-    CycleMod_YoloDecide(side == 1, want);
-    return true;
-}
-
-// Tournament: the clock ran out - whoever hasn't decided takes their
-// selection, or drafts normally if they have none.
-bool CycleMod_YoloAutoAct(bool testConds, bool runActions) {
-    int want1;
-    int want2;
-
-    want1 = DraftSelect_Of(g_cycle_p1);
-    want2 = DraftSelect_Of(g_cycle_p2);
-    if (want1 < 0) { want1 = c_cycleStyleNormal; }
-    if (want2 < 0) { want2 = c_cycleStyleNormal; }
-
-    if (g_cycle_p1 == g_cycle_p2) {
-        // One player's selection, for whichever side they are on now.
-        if (!g_cycle_yoloDoneP1) { CycleMod_YoloDecide(true, want1); }
-        else                     { CycleMod_YoloDecide(false, want1); }
-        return true;
-    }
-    if (!g_cycle_yoloDoneP1) { g_cycle_yoloDoneP1 = true; g_cycle_yoloWantP1 = want1; }
-    if (!g_cycle_yoloDoneP2) { g_cycle_yoloDoneP2 = true; g_cycle_yoloWantP2 = want2; }
-    CycleMod_YoloResolve();
-    return true;
-}
-
-void CycleMod_YoloChoiceStart() {
-    int lbl;
-    int style;
-
-    g_cycle_yoloDoneP1 = false;
-    g_cycle_yoloDoneP2 = false;
-    g_cycle_yoloWantP1 = c_cycleStyleNormal;
-    g_cycle_yoloWantP2 = c_cycleStyleNormal;
-    g_cycle_yoloAuto   = TriggerCreate("CycleMod_YoloAutoAct");
-    g_cycle_yoloConfirm = TriggerCreate("CycleMod_YoloConfirmAct");
-
-    // Three 290-wide cards on a 300px pitch: -300 / 0 / +300 from the centre.
-    g_cycle_yoloDlg = DialogCreate(940, 300, c_anchorCenter, 0, 0, true);
-    Tardigrade_ObservableDialog(g_cycle_yoloDlg);
-    DialogSetVisible(g_cycle_yoloDlg, Tardigrade_Viewers(), true);
-
-    lbl = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
-    DialogControlSetSize(lbl, Tardigrade_Viewers(), 900, 26);
-    DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 18);
-    DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
-        StringToText("<c val=\"FFD54A\">DRAFTING STYLE</c>   <c val=\"AAAAAA\">— before the draft</c>"));
-
-    lbl = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
-    DialogControlSetSize(lbl, Tardigrade_Viewers(), 880, 84);
-    DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 50);
-    DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
-        StringToText(DraftStyle_Small("<c val=\"CCCCCC\">Go YOLO and your whole draft is chance:"
-            + " your race ban or pick made at random,"
-            + " 3 modifiers rolled from the full pool (bans and your opponent's picks don't matter),"
-            + " your modifier bans made at random, and 7 units at random from your pool - nothing guaranteed."
-            + " You can reroll the units on the summary screen, one unit fewer each time.</c>"
-            + "\n<c val=\"CCCCCC\">Protect and Ban drafts your race and modifiers normally, then replaces your unit draft: "
-            + ProtectDraft_ShortRule() + ". Units left at 0 points are banned for free.</c>"
-            + "\n<c val=\"AAAAAA\">Each player chooses for themselves. No going back.</c>")));
-
-    g_cycle_yoloLblSub = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_cycle_yoloLblSub, Tardigrade_Viewers(), 880, 20);
-    DialogControlSetPosition(g_cycle_yoloLblSub, Tardigrade_Viewers(), c_anchorTop, 0, 146);
-
-    g_cycle_yoloTrig = TriggerCreate("CycleMod_OnYoloClicked");
-    style = 0;
-    while (style < c_cycleStyleCount) {
-        g_cycle_yoloBtn[style] = DialogControlCreate(g_cycle_yoloDlg, c_triggerControlTypeButton);
-        DraftStyle_InitButton(g_cycle_yoloBtn[style], Tardigrade_Viewers());
-        DraftStyle_SetTip(g_cycle_yoloBtn[style], Tardigrade_Viewers(),
-            CycleMod_YoloName(style) + "<n/>" + CycleMod_YoloDetail(style));
-        DialogControlSetSize(g_cycle_yoloBtn[style], Tardigrade_Viewers(), 290, 56);
-        DialogControlSetPosition(g_cycle_yoloBtn[style], Tardigrade_Viewers(),
-            c_anchorTop, (style - 1) * 300, 190);
-        TriggerAddEventDialogControl(g_cycle_yoloTrig, c_playerAny, g_cycle_yoloBtn[style],
-            c_triggerControlEventTypeClick);
-        style = style + 1;
-    }
-
-    // Everyone deciding gets the cue (a human on both sides, once).
-    DraftStyle_TurnCuePlayer(g_cycle_p1);
-    if (g_cycle_p2 != g_cycle_p1) { DraftStyle_TurnCuePlayer(g_cycle_p2); }
-    CycleMod_YoloRefresh();
-    DraftTimer_ArmPick(g_cycle_yoloAuto, g_cycle_yoloConfirm, "then Draft normally");
-}
-
-//--------------------------------------------------------------------------------------------------
-// Public: the YOLO? screen, run before the race draft. Sets g_cycle_p1Yolo /
-// g_cycle_p2Yolo, then runs callback.
-//   p1 = the race banner (bans first), p2 = the race picker.
-//--------------------------------------------------------------------------------------------------
-void CycleMod_YoloChoice(trigger callback, int p1, int p2) {
-    g_cycle_yoloCallback = callback;
-    g_cycle_p1     = p1;
-    g_cycle_p2     = p2;
-    g_cycle_p1Yolo    = false;
-    g_cycle_p2Yolo    = false;
-    g_cycle_p1Protect = false;
-    g_cycle_p2Protect = false;
-    CycleMod_YoloChoiceStart();
-}
 
 void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     int i;
@@ -1931,8 +2207,6 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     g_cycle_p2Count    = 0;
     g_cycle_draftPhase = 0;
     g_cycle_stepIndex  = 1;
-    // g_cycle_p1Yolo / p2Yolo are kept: the YOLO? screen set them before the
-    // race draft (CycleMod_YoloChoice).
     g_cycle_autoTrig   = TriggerCreate("CycleMod_DraftAutoAct");
 
     i = 1;
@@ -1942,6 +2216,13 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
         g_cycle_p1Mods[i]   = 0;
         g_cycle_p2Mods[i]   = 0;
         i = i + 1;
+    }
+    // No Bans only acts on the unit draft, which Full roster skips: it stays on
+    // the board but is claimed by nobody (drawn N/A), so it can't be banned or
+    // picked and every random roll that respects the board leaves it alone.
+    if (CycleMod_ModUnavailable(c_cycleModNoBans)) {
+        g_cycle_taken[c_cycleModNoBans]    = true;
+        g_cycle_modState[c_cycleModNoBans] = c_cycleSlotTaken;
     }
 
     // Ban order: P1, P2, P1, P2  (2 each).
@@ -1957,15 +2238,12 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
     g_cycle_pickOrder[4] = p1; g_cycle_pickIsP1[4] = true;
     g_cycle_pickOrder[5] = p1; g_cycle_pickIsP1[5] = true;
     g_cycle_pickOrder[6] = p2; g_cycle_pickIsP1[6] = false;
-
-    // Both sides went YOLO: nothing is left to ban or pick by hand, so skip
-    // the board.
-    if (g_cycle_p1Yolo && g_cycle_p2Yolo) {
-        CycleMod_YoloRollAll(true);
-        CycleMod_YoloRollAll(false);
-        CycleMod_FinishDraftPerPlayer();
-        return;
+    // Bucket draft: 8 picks, P1 P2 P2 P1 P1 P2 P2 P1.
+    if (GameMode_IsBuckets()) {
+        g_cycle_pickOrder[7] = p2; g_cycle_pickIsP1[7] = false;
+        g_cycle_pickOrder[8] = p1; g_cycle_pickIsP1[8] = true;
     }
+
     CycleMod_OpenDraftBoard();
 }
 
@@ -1977,6 +2255,9 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     int i;
 
     if (!c_cyclePhaseMode) {
+        // With GameMode_IsBuckets() this is the bucket draft: the same state
+        // machine on a different board (CycleMod_OpenBucketBoard, legality in
+        // CycleMod_BucketLegal, 4 picks a side).
         CycleMod_StartDraftPerPlayer(callback, p1, p2);
         return;
     }
@@ -1993,9 +2274,9 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
         i = i + 1;
     }
 
-    // Dialog: 640 x 660, two columns of nine buttons, then the legend.
+    // Dialog: 640 x 800, two columns of eleven buttons, then the legend.
     g_cycle_boardShift = 0;
-    g_cycle_dialog = DialogCreate(640, 660, c_anchorCenter, 0, 0, true);
+    g_cycle_dialog = DialogCreate(640, 800, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_cycle_dialog);
     DialogSetVisible(g_cycle_dialog, Tardigrade_Viewers(), true);
 
@@ -2020,7 +2301,7 @@ void CycleMod_StartDraft(trigger callback, int p1, int p2) {
     // Legend, under the grid (see CycleMod_StartDraftPerPlayer).
     g_cycle_lblLegend = DialogControlCreate(g_cycle_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_lblLegend, Tardigrade_Viewers(), 600, 18);
-    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 626);
+    DialogControlSetPosition(g_cycle_lblLegend, Tardigrade_Viewers(), c_anchorTop, 0, 746);
     DialogControlSetPropertyAsText(g_cycle_lblLegend, c_triggerControlPropertyText,
         Tardigrade_Viewers(), StringToText(DraftStyle_Small(c_draftLegend)));
 
@@ -2203,21 +2484,6 @@ bool CycleMod_CanShareDamage(unit candidate) {
     if (!CycleMod_IsCombatUnit(candidate)) { return false; }
     if (UnitTestState(candidate, c_unitStateHallucination)) { return false; }
     return !CycleMod_IsShareExemptType(UnitGetType(candidate));
-}
-
-bool CycleMod_IsEconomicEgg(unit candidate) {
-    order currentOrder;
-    if (UnitGetType(candidate) != "Egg") { return false; }
-    if (FixedToInt(UnitGetCustomValue(candidate, c_cycleStateEconomicEgg)) != 0) { return true; }
-    currentOrder = UnitOrder(candidate, 0);
-    if (currentOrder == null) { return false; }
-    return OrderGetAbilityCommand(currentOrder) == AbilityCommand("LarvaTrain", 1)
-        || OrderGetAbilityCommand(currentOrder) == AbilityCommand("LarvaTrain", 3);
-}
-
-bool CycleMod_OnEconomicEggStarted(bool testConds, bool runActions) {
-    UnitSetCustomValue(EventUnit(), c_cycleStateEconomicEgg, 1.0);
-    return true;
 }
 
 void CycleMod_AddHelperBehavior(unit target, int helperIndex) {
@@ -3538,6 +3804,102 @@ void CycleMod_FactoryLinesForPlayer(int player, bool on) {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Quickstep (modifier 20): instant acceleration and double turn rate on every
+// unit the side owns, workers excepted. All four fields live on CUnit, so like
+// Arcane Surge it is a per-player catalog edit off one cached sweep of the Unit
+// catalog, and every write remembers the shipped value (CycleMod_CatalogBase) so
+// switching it off and on again cannot compound the turn rate.
+//
+//   Acceleration, Deceleration: set to c_cycleQuickInstant - the value Blizzard
+//     itself uses for units that start and stop on the spot (1000). A unit that
+//     already has 1000 or more, or none (0), is left alone.
+//   TurningRate, StationaryTurningRate: multiplied by c_cycleQuickTurnMult. A
+//     0 (a unit that never turns, a structure) stays 0.
+// LateralAcceleration is left alone: it caps how hard a unit may curve at speed,
+// not how fast it speeds up, and the shipped values are already large.
+// **Unverified:** that the engine re-reads these CUnit fields for units that are
+// already on the map when the catalog value changes (it does for the fields the
+// other catalog modifiers touch on weapons and costs; movement is the unknown).
+//--------------------------------------------------------------------------------------------------
+const int    c_cycleQuickLimit  = 1024;   // bound on cached unit types (literal array size below)
+const fixed  c_cycleQuickInstant  = 1000.0;
+const fixed  c_cycleQuickTurnMult = 2.0;
+string[1024] g_cycle_quickEntry;
+int          g_cycle_quickCount  = 0;
+bool         g_cycle_quickCached = false;
+
+bool CycleMod_IsWorkerType(string unitType) {
+    return unitType == "SCV" || unitType == "Probe" || unitType == "Drone"
+        || unitType == "DroneBurrowed" || unitType == "MULE";
+}
+
+// One sweep for the types that move or turn at all, off player 1's unmodified
+// values (this runs before any write, like the Arcane Surge cache).
+void CycleMod_EnsureQuickstepCache() {
+    int    catalogCount;
+    int    i;
+    string unitType;
+
+    if (g_cycle_quickCached) { return; }
+    g_cycle_quickCached = true;
+    catalogCount = CatalogEntryCount(c_gameCatalogUnit);
+    i = 1;
+    while (i <= catalogCount && g_cycle_quickCount < c_cycleQuickLimit) {
+        unitType = CatalogEntryGet(c_gameCatalogUnit, i);
+        if (!CycleMod_IsWorkerType(unitType)
+            && (StringToFixed(CatalogFieldValueGet(c_gameCatalogUnit, unitType, "Acceleration", 1)) > 0.0
+                || StringToFixed(CatalogFieldValueGet(c_gameCatalogUnit, unitType, "TurningRate", 1)) > 0.0
+                || StringToFixed(CatalogFieldValueGet(c_gameCatalogUnit, unitType, "StationaryTurningRate", 1)) > 0.0)) {
+            g_cycle_quickEntry[g_cycle_quickCount] = unitType;
+            g_cycle_quickCount = g_cycle_quickCount + 1;
+        }
+        i = i + 1;
+    }
+    Debug_Log("Quickstep: " + IntToString(g_cycle_quickCount) + " unit types cached");
+}
+
+// One field of one unit type for one player. instant = the acceleration kind
+// (set to c_cycleQuickInstant), otherwise the turn-rate kind (multiply). Returns
+// 1 if a value was written, 0 if the field was skipped.
+int CycleMod_QuickstepField(string unitType, string field, int player, bool on, bool instant) {
+    string base;
+
+    base = CycleMod_CatalogBase(c_gameCatalogUnit, unitType, field, player);
+    if (StringToFixed(base) <= 0.0) { return 0; }
+    if (!on) {
+        CatalogFieldValueSet(c_gameCatalogUnit, unitType, field, player, base);
+        return 1;
+    }
+    if (instant) {
+        if (StringToFixed(base) >= c_cycleQuickInstant) { return 0; }
+        CatalogFieldValueSet(c_gameCatalogUnit, unitType, field, player,
+            FixedToString(c_cycleQuickInstant, 4));
+    } else {
+        CatalogFieldValueSet(c_gameCatalogUnit, unitType, field, player,
+            FixedToString(StringToFixed(base) * c_cycleQuickTurnMult, 4));
+    }
+    return 1;
+}
+
+void CycleMod_QuickstepForPlayer(int player, bool on) {
+    int i;
+    int written;
+
+    CycleMod_EnsureQuickstepCache();
+    written = 0;
+    i = 0;
+    while (i < g_cycle_quickCount) {
+        written = written + CycleMod_QuickstepField(g_cycle_quickEntry[i], "Acceleration", player, on, true);
+        written = written + CycleMod_QuickstepField(g_cycle_quickEntry[i], "Deceleration", player, on, true);
+        written = written + CycleMod_QuickstepField(g_cycle_quickEntry[i], "TurningRate", player, on, false);
+        written = written + CycleMod_QuickstepField(g_cycle_quickEntry[i], "StationaryTurningRate", player, on, false);
+        i = i + 1;
+    }
+    Debug_Log("Quickstep " + libNtve_gf_ConvertBooleanToString(on) + " for player "
+        + IntToString(player) + ": " + IntToString(written) + " fields written");
+}
+
+//--------------------------------------------------------------------------------------------------
 // Auto Refineries: the drafting side's finished gas buildings mine themselves at
 // the three-worker rate, and that side's workers are kept out of them.
 //
@@ -3879,6 +4241,8 @@ void CycleMod_CatalogModForPlayer(int player, int idx, bool on) {
         CycleMod_MineralsOnlyForPlayer(player, on);
     } else if (idx == c_cycleModFactoryLines) {
         CycleMod_FactoryLinesForPlayer(player, on);
+    } else if (idx == c_cycleModQuickstep) {
+        CycleMod_QuickstepForPlayer(player, on);
     }
 }
 
@@ -4624,6 +4988,70 @@ void CycleMod_TryAdrenaline(unit u) {
     }
 }
 
+// Reinforcements (modifier 21): a unit that has just come into being gets the
+// speed buff. "Just created" is "not yet seen by the scan" - c_cycleStateRegistered
+// is still 0 - which both keeps a producer that the creation event may name
+// (a Carrier launching an Interceptor) from being buffed and lets the scan's
+// first sighting catch anything the creation event missed. UnitModActive reads
+// the owning SIDE's picks, so it works on a unit that has no markers yet. Same
+// eligibility as Shared Damage: no structures, hallucinations, summons, larva,
+// eggs or cocoons.
+void CycleMod_TryReinforcements(unit u) {
+    if (u == null || !UnitIsAlive(u)) { return; }
+    if (FixedToInt(UnitGetCustomValue(u, c_cycleStateRegistered)) != 0) { return; }
+    if (UnitBehaviorCount(u, c_cycleReinforceBuff) > 0) { return; }
+    if (!CycleMod_CanShareDamage(u)) { return; }
+    if (!CycleMod_UnitModActive(u, c_cycleReinforceBehavior)) { return; }
+    UnitBehaviorAdd(u, c_cycleReinforceBuff, u, 1);
+    CycleMod_StatAdd(UnitGetOwner(u), c_cycleModReinforce, 1.0);
+}
+
+// Field Repair (modifier 22), from the scan: a unit that has taken no damage for
+// c_cycleFieldRepairDelay game seconds regains c_cycleFieldRepairRate of its max
+// life per REAL second, paid in 0.5-game-second ticks. Life only - Protoss shields
+// already regenerate on their own, so CycleMod_Mend's spill into shields is not
+// used. c_cycleStateLastDamaged is stamped by CycleMod_OnUnitDamaged.
+void CycleMod_TryFieldRepair(unit u, fixed now) {
+    fixed life;
+    fixed maxLife;
+    fixed heal;
+
+    if (!UnitIsAlive(u)) { return; }
+    if (now - UnitGetCustomValue(u, c_cycleStateLastDamaged) < c_cycleFieldRepairDelay) { return; }
+    life    = UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent);
+    maxLife = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent);
+    if (life <= 0.0 || life >= maxLife) { return; }
+    if (!CycleMod_CanShareDamage(u)) { return; }
+    // 3% of max per real second = per 1.4 game seconds; a tick is half a game second.
+    heal = maxLife * c_cycleFieldRepairRate / 1.4 * 0.5;
+    if (life + heal > maxLife) { heal = maxLife - life; }
+    UnitSetPropertyFixed(u, c_unitPropLife, life + heal);
+    CycleMod_StatAdd(UnitGetOwner(u), c_cycleModFieldRepair, heal);
+}
+
+// Photon Coating (modifier 23): a combat event on a unit - it dealt or took
+// hostile damage, or started an attack - puts the coating up if the unit has been
+// out of combat for c_cyclePhotonRearm game seconds (or has never fought), then
+// stamps the combat time either way, so a long fight never re-arms itself.
+// needEnemy is for the started-attack event, which also fires on rocks and
+// critters: with no enemy near it neither arms nor stamps.
+void CycleMod_TryPhotonCoating(unit u, bool needEnemy) {
+    fixed now;
+    fixed last;
+
+    if (u == null || !UnitIsAlive(u)) { return; }
+    if (!CycleMod_CanShareDamage(u)) { return; }
+    if (!CycleMod_UnitModActive(u, c_cyclePhotonBehavior)) { return; }
+    now  = GameGetMissionTime();
+    last = UnitGetCustomValue(u, c_cycleStatePhotonLastCombat);
+    if (last <= 0.0 || now - last >= c_cyclePhotonRearm) {
+        if (needEnemy && !CycleMod_EnemyNear(u, c_cycleArmFloatRange)) { return; }
+        UnitBehaviorAdd(u, c_cyclePhotonBuff, u, 1);
+        CycleMod_FloatTextSized(UnitGetPosition(u), "Coated", "7FD0FF", Tardigrade_Viewers(), 16);
+    }
+    UnitSetCustomValue(u, c_cycleStatePhotonLastCombat, now);
+}
+
 // Healing the mods hand out goes to life first, then spills whatever is left
 // over into shields - otherwise it is dead weight on a full-health Protoss unit
 // that has taken shield damage. Shared by Predator Protocol and Martyrdom.
@@ -4876,6 +5304,9 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
 
     target = EventUnit();
     source = EventUnitDamageSourceUnit();
+    // Field Repair's clock: any damage taken, from anything, restarts it. Before
+    // the null-source bail so environmental damage counts too.
+    UnitSetCustomValue(target, c_cycleStateLastDamaged, GameGetMissionTime());
     if (source == null) { return true; }
 
     // Overwatch's own bonus damage re-enters this handler. Bail before anything
@@ -5002,6 +5433,19 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     // Adrenaline follows Battle Blink: a hostile hit only, or a side could
     // speed its own army up by splashing it.
     if (CycleMod_IsHostileTarget(source, target)) {
+        // Photon Coating: what a coated target just did not take. The coating
+        // cuts damage by c_cyclePhotonReduction, so the amount that landed is
+        // (1 - that) of the hit; read before TryPhotonCoating, because a hit that
+        // arms the coating landed in full.
+        if (UnitBehaviorCount(target, c_cyclePhotonBuff) > 0) {
+            CycleMod_StatAdd(UnitGetOwner(target), c_cycleModPhotonCoat,
+                CycleMod_HitVitalsDealt() * c_cyclePhotonReduction / (1.0 - c_cyclePhotonReduction));
+        }
+        // Both ends of a hostile hit are in combat; a spawner (Carrier) is in
+        // combat when its children are.
+        CycleMod_TryPhotonCoating(target, false);
+        CycleMod_TryPhotonCoating(source, false);
+        if (overwatchOwner != source) { CycleMod_TryPhotonCoating(overwatchOwner, false); }
         CycleMod_TryBattleBlink(target, source);
         CycleMod_TryAdrenaline(target);
         CycleMod_EntrenchFloat(target, false);
@@ -5048,6 +5492,8 @@ bool CycleMod_OnUnitStartedAttack(bool testConds, bool runActions) {
     // attack is a payoff moment too. Needs an enemy near: this event also
     // fires on rocks and other neutral targets.
     CycleMod_EntrenchFloat(EventUnit(), true);
+    // Photon Coating: the coating can be up before the first hit lands.
+    CycleMod_TryPhotonCoating(EventUnit(), true);
     return true;
 }
 
@@ -5181,9 +5627,8 @@ bool CycleMod_OnUnitDied(bool testConds, bool runActions) {
     killer = EventUnitDamageSourceUnit();
 
     // Refund takes the raw source, before the last-attacker fallback: a stale
-    // attacker would turn a morph into a paying "death". Structures included -
-    // a Refund side gets 17.5% back on a razed Barracks as well as on a
-    // dead Marine.
+    // attacker would turn a morph into a paying "death". Structures pay
+    // nothing (CycleMod_ModSkipsStructures).
     CycleMod_PayRefund(dead, killer);
     // Martyrdom filters non-deaths the same way, so it takes the raw source too.
     CycleMod_TryMartyrdom(dead, killer);
@@ -5239,9 +5684,10 @@ void CycleMod_RegisterUnit(unit u) {
     UnitSetCustomValue(u, c_cycleStateLastX, PointGetX(pos));
     UnitSetCustomValue(u, c_cycleStateLastY, PointGetY(pos));
     UnitSetCustomValue(u, c_cycleStateStillTime, GameGetMissionTime());
-    UnitSetCustomValue(u, c_cycleStateAdrenalReady, 0.0);
     UnitSetCustomValue(u, c_cycleStateBlinkSpent, 0.0);
     UnitSetCustomValue(u, c_cycleStateLastAttack, GameGetMissionTime());
+    UnitSetCustomValue(u, c_cycleStateLastDamaged, GameGetMissionTime());
+    UnitSetCustomValue(u, c_cycleStatePhotonLastCombat, 0.0);
 }
 
 // Link a spawned unit to whoever spawned it, for Veteran Forces.
@@ -5265,6 +5711,11 @@ bool CycleMod_OnUnitSpawned(bool testConds, bool runActions) {
     first  = EventUnit();
     second = EventUnitCreatedUnit();
     if (first == null || second == null || first == second) { return true; }
+
+    // Reinforcements goes before the child-type bail below: it is for ordinary
+    // production, which that bail ignores. The created unit only (see
+    // CycleMod_TryReinforcements for how a producer is kept out).
+    CycleMod_TryReinforcements(second);
 
     if (CycleMod_IsSpawnedChildType(UnitGetType(second))) {
         child  = second;
@@ -5358,6 +5809,10 @@ void CycleMod_UpdateConditionalBehaviors(unit u) {
             libNtve_gf_SetBehaviorCount(u, "TardigradeMod_OverwatchReady", u, 0);
             Debug_Log("Overwatch: " + UnitGetType(u) + " charge cancelled by Caustic Spray");
         }
+    }
+
+    if (CycleMod_UnitModActive(u, c_cycleFieldRepairBehavior)) {
+        CycleMod_TryFieldRepair(u, now);
     }
 
     if (CycleMod_UnitModActive(u, "TardigradeMod_Overwatch")
@@ -5513,7 +5968,9 @@ void CycleMod_ApplyPickedBehavior(unit u, int modIdx) {
         || beh == "TardigradeMod_Refund" || beh == "TardigradeMod_AutoRefinery"
         || beh == "TardigradeMod_NoBans" || beh == "TardigradeMod_MineralsOnly"
         || beh == "TardigradeMod_Yolo" || beh == "TardigradeMod_FactoryLines"
-        || beh == c_cycleAdrenalineBehavior || beh == c_cycleMartyrBehavior) {
+        || beh == c_cycleAdrenalineBehavior || beh == c_cycleMartyrBehavior
+        || beh == "TardigradeMod_Quickstep" || beh == c_cycleReinforceBehavior
+        || beh == c_cycleFieldRepairBehavior || beh == c_cyclePhotonBehavior) {
         return;
     }
     if (beh == c_cycleMarchBehavior) {
@@ -5603,6 +6060,7 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
                 // while it is still next to whatever spawned it.
                 if (FixedToInt(UnitGetCustomValue(u, c_cycleStateRegistered)) == 0) {
                     CycleMod_FallbackVeteranLink(u);
+                    if (!c_cyclePhaseMode) { CycleMod_TryReinforcements(u); }
                 }
                 CycleMod_RegisterUnit(u);
                 if (c_cyclePhaseMode) {
@@ -5740,20 +6198,25 @@ playergroup CycleMod_PanelViewers(int key) {
 // Collapsed shows the toggle button only; expanded shows both mod lists. Width
 // is constant across both states so every control's anchor offset (relative to
 // the dialog's centre) stays put instead of shifting when the height changes.
+// 232 for three rows a side, 40 more for four (the bucket draft).
+int CycleMod_PanelHeight() {
+    return 232 + (CycleMod_PicksEach() - c_cyclePicksEach) * 40;
+}
+
 void CycleMod_SetPanelExpanded(int player, bool expanded) {
     playergroup viewer;
     int         i;
 
     viewer = CycleMod_PanelViewers(player);
 
-    if (expanded) { DialogSetSize(g_cycle_panelDlg[player], 470, 232); }
+    if (expanded) { DialogSetSize(g_cycle_panelDlg[player], 470, CycleMod_PanelHeight()); }
     else          { DialogSetSize(g_cycle_panelDlg[player], 470, 34); }
 
     DialogControlSetVisible(g_cycle_panelTitle[player], viewer, expanded);
     DialogControlSetVisible(g_cycle_panelHdrMine[player], viewer, expanded);
     DialogControlSetVisible(g_cycle_panelHdrOpp[player], viewer, expanded);
     i = 1;
-    while (i <= c_cyclePicksEach) {
+    while (i <= CycleMod_PicksEach()) {
         DialogControlSetVisible(g_cycle_panelRowMine[player][i], viewer, expanded);
         DialogControlSetVisible(g_cycle_panelRowOpp[player][i], viewer, expanded);
         i = i + 1;
@@ -5821,7 +6284,7 @@ string CycleMod_StatTipBlock(int key, bool mine, int team) {
 
     out = "";
     i = 1;
-    while (i <= c_cyclePicksEach) {
+    while (i <= CycleMod_PicksEach()) {
         if (mine) { mod = g_cycle_panelModMine[key][i]; }
         else      { mod = g_cycle_panelModOpp[key][i]; }
         if (mod > 0) {
@@ -5834,6 +6297,55 @@ string CycleMod_StatTipBlock(int key, bool mine, int team) {
     }
     if (out == "") { out = "<n/><c val=\"AAAAAA\">nothing yet</c>"; }
     return out;
+}
+
+// Eyes Everywhere's stat line is not a running total but a live reading: how
+// many workers the OTHER team has right now. Burrowed drones, workers inside a
+// refinery or a transport and the like are counted (the group is not filtered
+// on Hidden), and MULEs are not - they are not a worker count in any sense a
+// player would mean. The reading is written straight into the stat slot, so it
+// shows through the same tooltip as every other modifier's number.
+int CycleMod_CountTeamWorkers(playergroup team) {
+    unitgroup ug;
+    unit      u;
+    int       players;
+    int       p;
+    int       count;
+    int       i;
+    int       total;
+
+    total = 0;
+    players = PlayerGroupCount(team);
+    p = 1;
+    while (p <= players) {
+        ug = UnitGroup(null, PlayerGroupPlayer(team, p), RegionEntireMap(),
+            UnitFilter(0, 0, (1 << c_targetFilterMissile), (1 << (c_targetFilterDead - 32))), 0);
+        count = UnitGroupCount(ug, c_unitCountAll);
+        i = 1;
+        while (i <= count) {
+            u = UnitGroupUnit(ug, i);
+            if (UnitIsAlive(u) && CycleMod_IsWorker(u) && UnitGetType(u) != "MULE") {
+                total = total + 1;
+            }
+            i = i + 1;
+        }
+        p = p + 1;
+    }
+    return total;
+}
+
+void CycleMod_UpdateEyesStat() {
+    if (!CycleMod_ModsLive()) { return; }
+    if (CycleMod_SideHasModIdx(g_draft_p1_is_team1, 5)) {
+        g_cycle_stat[1][5] = IntToFixed(CycleMod_CountTeamWorkers(g_draft_team2));
+    } else {
+        g_cycle_stat[1][5] = 0.0;
+    }
+    if (CycleMod_SideHasModIdx(!g_draft_p1_is_team1, 5)) {
+        g_cycle_stat[2][5] = IntToFixed(CycleMod_CountTeamWorkers(g_draft_team1));
+    } else {
+        g_cycle_stat[2][5] = 0.0;
+    }
 }
 
 // Run from the scan loop, throttled to about once a game second: refresh the
@@ -5851,6 +6363,7 @@ void CycleMod_PanelStatsTick() {
     if (!g_cycle_panelBuilt) { return; }
     if (GameGetMissionTime() < g_cycle_panelStatsAt + 1.0) { return; }
     g_cycle_panelStatsAt = GameGetMissionTime();
+    CycleMod_UpdateEyesStat();
 
     key = 0;
     while (key < 16) {
@@ -5880,7 +6393,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     viewer = CycleMod_PanelViewers(player);
     role   = CycleMod_PanelRole(player);   // key 0 is on no team -> spectator view
 
-    g_cycle_panelDlg[player] = DialogCreate(470, 232, c_anchorTop, 0, 22, false);
+    g_cycle_panelDlg[player] = DialogCreate(470, CycleMod_PanelHeight(), c_anchorTop, 0, 22, false);
     Tardigrade_ObservableDialog(g_cycle_panelDlg[player]);
     DialogSetVisible(g_cycle_panelDlg[player], viewer, true);
     DialogSetImageVisible(g_cycle_panelDlg[player], true);
@@ -5908,7 +6421,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     }
 
     i = 1;
-    while (i <= c_cyclePicksEach) {
+    while (i <= CycleMod_PicksEach()) {
         if (role == 2) { mineMod = CycleMod_Team2Mod(i); }
         else           { mineMod = CycleMod_Team1Mod(i); }
         g_cycle_panelRowMine[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
@@ -5922,7 +6435,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
 
     g_cycle_panelHdrOpp[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_panelHdrOpp[player], viewer, 450, 16);
-    DialogControlSetPosition(g_cycle_panelHdrOpp[player], viewer, c_anchorTop, 8, 144);
+    DialogControlSetPosition(g_cycle_panelHdrOpp[player], viewer, c_anchorTop, 8, 84 + CycleMod_PicksEach() * 20);
     if (role == 0) {
         DialogControlSetPropertyAsText(g_cycle_panelHdrOpp[player], c_triggerControlPropertyText,
             viewer, StringToText("<c val=\"FF9F7F\">PLAYER 2</c>"));
@@ -5932,12 +6445,12 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     }
 
     i = 1;
-    while (i <= c_cyclePicksEach) {
+    while (i <= CycleMod_PicksEach()) {
         if (role == 2) { oppMod = CycleMod_Team1Mod(i); }
         else           { oppMod = CycleMod_Team2Mod(i); }
         g_cycle_panelRowOpp[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
         DialogControlSetSize(g_cycle_panelRowOpp[player][i], viewer, 450, 18);
-        DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, 8, 162 + (i - 1) * 20);
+        DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, 8, 102 + CycleMod_PicksEach() * 20 + (i - 1) * 20);
         DialogControlSetPropertyAsText(g_cycle_panelRowOpp[player][i], c_triggerControlPropertyText,
             viewer, StringToText(CycleMod_ModLine(oppMod)));
         g_cycle_panelModOpp[player][i] = oppMod;
@@ -5993,7 +6506,6 @@ void CycleMod_StartCycle() {
     int     osIdx;
     trigger tScan;
     trigger tPhase;
-    trigger tEconomicEgg;
     trigger tGasOrder;
     trigger tSpawned;
 
@@ -6055,12 +6567,6 @@ void CycleMod_StartCycle() {
     TriggerAddEventUnitOrder(tGasOrder, null, AbilityCommand("SCVHarvest", 0));
     TriggerAddEventUnitOrder(tGasOrder, null, AbilityCommand("ProbeHarvest", 0));
     TriggerAddEventUnitOrder(tGasOrder, null, AbilityCommand("DroneHarvest", 0));
-
-    tEconomicEgg = TriggerCreate("CycleMod_OnEconomicEggStarted");
-    TriggerAddEventUnitAbility(tEconomicEgg, null,
-        AbilityCommand("LarvaTrain", 1), c_unitAbilStageExecute, false);
-    TriggerAddEventUnitAbility(tEconomicEgg, null,
-        AbilityCommand("LarvaTrain", 3), c_unitAbilStageExecute, false);
 
     tScan = TriggerCreate("CycleMod_ScanTrigger");
     TriggerExecute(tScan, false, false);

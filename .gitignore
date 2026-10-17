@@ -15,3 +15,6 @@ Thumbs.db
 *.SC2Mod.backup
 *.SC2Map.backup
 Backup/
+
+# Stray tool logs
+debug.log

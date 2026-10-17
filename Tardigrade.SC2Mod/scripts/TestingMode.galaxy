@@ -32,7 +32,7 @@ bool[16]     g_test_built;
 bool[16]     g_test_expanded;
 int[16]      g_test_dialog;
 int[16]      g_test_toggle;
-int[16][20]  g_test_btn;              // [player][1..c_cycleModCount]
+int[16][24]  g_test_btn;              // [player][1..c_cycleModCount]
 trigger      g_test_panelTrig = null;
 
 //--------------------------------------------------------------------------------------------------

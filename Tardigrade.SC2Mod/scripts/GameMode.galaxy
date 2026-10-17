@@ -1,9 +1,9 @@
 //--------------------------------------------------------------------------------------------------
 // Game Modes
 //
-// Chosen once, before the race draft, by the first human decider (see
-// RaceDraft_Setup). Everything else in the mod reads g_game_mode through the
-// GameMode_Is* helpers below.
+// Chosen once, on the setup screen (see GameMode_Select), by the first human
+// decider (see RaceDraft_Setup). Everything else in the mod reads g_game_mode,
+// the roster and the modifier choice through the GameMode_Is* helpers below.
 //
 //   Casual     - the draft as it always was: no time limits, normal game.
 //   Tournament - every draft step (race ban/pick, modifier ban/pick, unit
@@ -31,8 +31,24 @@ const int c_tournamentStepSeconds = 15;
 
 int g_game_mode = c_gameModeCasual;
 
+// The other two setup choices. Defaults: Alternating draft (not full roster) and
+// Free draft (not buckets). They only mean something outside Testing, which has
+// no draft - the helpers say so.
+bool g_game_fullRoster = false;
+bool g_game_buckets    = false;
+
 bool GameMode_IsTournament() { return g_game_mode == c_gameModeTournament; }
 bool GameMode_IsTesting()    { return g_game_mode == c_gameModeTesting; }
+// Full roster: no unit draft, every unit allowed (see RosterEnforce_ApplyFullRoster).
+bool GameMode_IsFullRoster() { return g_game_fullRoster && g_game_mode != c_gameModeTesting; }
+// Buckets: the bucket draft - one ban in each bucket, then four picks a side, one
+// per bucket (CycleMod_Bucket; see CycleMod_OpenBucketBoard).
+bool GameMode_IsBuckets()    { return g_game_buckets && g_game_mode != c_gameModeTesting; }
+
+// The three stages a side can go YOLO in, each separately (CycleMod_SideIsYolo).
+const int c_stageRace   = 0;
+const int c_stageMod    = 1;
+const int c_stageRoster = 2;
 
 string GameMode_Name(int mode) {
     if (mode == c_gameModeTournament) { return "Tournament"; }
@@ -49,46 +65,168 @@ string GameMode_Desc(int mode) {
 }
 
 //==================================================================================================
-// MODE SELECT
+// SETUP SCREEN
+//
+// One dialog, shown to the decider (g_draft_modeChooser), with three rows and a
+// Start button:
+//   Mode       Casual / Tournament / Testing
+//   Roster     Full roster (every unit allowed, no unit draft) / Alternating draft
+//   Modifiers  Buckets (one modifier per bucket) / Free draft (ban 2, pick 3)
+// Defaults: Casual, Alternating draft, Free draft. A click selects an option
+// (the chosen card is drawn as SELECTED), Start commits. Everyone else sees the
+// same dialog disabled and updating live. Testing has no draft, so the Roster
+// and Modifiers rows are greyed out while it is selected.
+//
+// The choices live in g_game_mode / g_game_fullRoster / g_game_buckets and are
+// read through the helpers above. They are written straight from the clicks (the
+// dialog IS the pending state); only the callback waits for Start.
 //==================================================================================================
 int     g_gmode_dialog   = c_invalidDialogId;
 int     g_gmode_label    = c_invalidDialogControlId;
-int[3]  g_gmode_btn;                 // [0..2] indexed by c_gameMode*
+int[3]  g_gmode_btn;                 // [0..2] mode cards, indexed by c_gameMode*
+int[2]  g_gmode_rosterBtn;           // [0] Full roster, [1] Alternating draft
+int[2]  g_gmode_modBtn;              // [0] Buckets, [1] Free draft
+int     g_gmode_start    = c_invalidDialogControlId;
 int     g_gmode_chooser  = 0;
 trigger g_gmode_trigger  = null;
 trigger g_gmode_callback = null;
 
+string GameMode_RosterName(bool full) {
+    if (full) { return "Full roster"; }
+    return "Alternating draft";
+}
+
+string GameMode_RosterDesc(bool full) {
+    if (full) { return "every unit allowed - no unit draft"; }
+    return "pick and ban 6 units each";
+}
+
+string GameMode_ModsName(bool buckets) {
+    if (buckets) { return "Buckets"; }
+    return "Free draft";
+}
+
+string GameMode_ModsDesc(bool buckets) {
+    if (buckets) { return "4 buckets: one ban in each, then one pick from each"; }
+    return "ban 2, pick 3 from the whole pool";
+}
+
+// One option card for both audiences. chosen = the selected option of its row;
+// greyed = the row is switched off (Testing). Only the decider can click, and
+// only on a live row.
+void GameMode_SetupDrawCard(int control, bool chosen, bool greyed, string name, string desc) {
+    playergroup mine;
+    playergroup others;
+    int         state;
+    string      tag;
+
+    mine   = PlayerGroupSingle(g_gmode_chooser);
+    others = PlayerGroupCopy(PlayerGroupAll());
+    PlayerGroupRemove(others, g_gmode_chooser);
+
+    tag = "CHOSEN";
+    if (greyed) {
+        state = c_draftStateTaken;
+        tag = "N/A";
+    } else if (chosen) {
+        state = c_draftStateSelected;
+    } else {
+        state = c_draftStateOpen;
+        tag = "";
+    }
+    DraftStyle_ApplyCard(control, mine, state, DraftStyle_Card(state, tag, name, desc), true);
+    DraftStyle_ApplyCard(control, others, state, DraftStyle_Card(state, tag, name, desc), false);
+}
+
+void GameMode_SetupRefresh() {
+    bool greyed;
+    int  i;
+
+    greyed = (g_game_mode == c_gameModeTesting);
+    i = 0;
+    while (i <= 2) {
+        GameMode_SetupDrawCard(g_gmode_btn[i], g_game_mode == i, false,
+            GameMode_Name(i), GameMode_Desc(i));
+        i = i + 1;
+    }
+    GameMode_SetupDrawCard(g_gmode_rosterBtn[0], g_game_fullRoster, greyed,
+        GameMode_RosterName(true), GameMode_RosterDesc(true));
+    GameMode_SetupDrawCard(g_gmode_rosterBtn[1], !g_game_fullRoster, greyed,
+        GameMode_RosterName(false), GameMode_RosterDesc(false));
+    GameMode_SetupDrawCard(g_gmode_modBtn[0], g_game_buckets, greyed,
+        GameMode_ModsName(true), GameMode_ModsDesc(true));
+    GameMode_SetupDrawCard(g_gmode_modBtn[1], !g_game_buckets, greyed,
+        GameMode_ModsName(false), GameMode_ModsDesc(false));
+}
+
 bool GameMode_OnClicked(bool testConds, bool runActions) {
     int control;
-    int mode;
     int i;
 
     if (EventPlayer() != g_gmode_chooser) { return true; }
     control = EventDialogControl();
-    mode = -1;
+
+    if (control == g_gmode_start) {
+        DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+        if (g_gmode_trigger != null) { TriggerDestroy(g_gmode_trigger); g_gmode_trigger = null; }
+        DialogDestroy(g_gmode_dialog);
+        g_gmode_dialog = c_invalidDialogId;
+        if (g_gmode_callback != null) {
+            TriggerExecute(g_gmode_callback, false, false);
+        }
+        return true;
+    }
+
     i = 0;
     while (i <= 2) {
-        if (control == g_gmode_btn[i]) { mode = i; }
+        if (control == g_gmode_btn[i]) {
+            DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+            g_game_mode = i;
+            GameMode_SetupRefresh();
+            return true;
+        }
         i = i + 1;
     }
-    if (mode < 0) { return true; }
-    DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
 
-    g_game_mode = mode;
-    if (g_gmode_trigger != null) { TriggerDestroy(g_gmode_trigger); g_gmode_trigger = null; }
-    DialogDestroy(g_gmode_dialog);
-    g_gmode_dialog = c_invalidDialogId;
-
-    if (g_gmode_callback != null) {
-        TriggerExecute(g_gmode_callback, false, false);
+    // The Roster and Modifiers rows do nothing while Testing is selected.
+    if (g_game_mode == c_gameModeTesting) { return true; }
+    if (control == g_gmode_rosterBtn[0] || control == g_gmode_rosterBtn[1]) {
+        DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+        g_game_fullRoster = (control == g_gmode_rosterBtn[0]);
+    } else if (control == g_gmode_modBtn[0] || control == g_gmode_modBtn[1]) {
+        DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+        g_game_buckets = (control == g_gmode_modBtn[0]);
+    } else {
+        return true;
     }
+    GameMode_SetupRefresh();
     return true;
 }
 
-// Show the mode picker. Only `chooser` can click; everyone else sees the same
-// three cards disabled (a spectator only ever sees a dialog through the player
-// they are watching - Tardigrade_ObservableDialog - so nobody gets a blank
-// screen). `callback` runs once a mode is chosen.
+// A row's heading label, same text for everyone.
+void GameMode_SetupRowLabel(string heading, int y) {
+    int lbl;
+    lbl = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(lbl, PlayerGroupAll(), 540, 18);
+    DialogControlSetPosition(lbl, PlayerGroupAll(), c_anchorTop, 0, y);
+    DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, PlayerGroupAll(),
+        StringToText(DraftStyle_Small("<c val=\"7FD0FF\">" + heading + "</c>")));
+}
+
+// One option button at (x, y) of the given width.
+int GameMode_SetupButton(int x, int y, int width) {
+    int btn;
+    btn = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(btn, PlayerGroupAll());
+    DialogControlSetSize(btn, PlayerGroupAll(), width, 60);
+    DialogControlSetPosition(btn, PlayerGroupAll(), c_anchorTop, x, y);
+    return btn;
+}
+
+// Show the setup screen. Only `chooser` can click; everyone else sees the same
+// dialog disabled (a spectator only ever sees a dialog through the player they
+// are watching - Tardigrade_ObservableDialog - so nobody gets a blank screen).
+// `callback` runs once the chooser presses Start. No Tournament clock here.
 void GameMode_Select(int chooser, trigger callback) {
     playergroup all;
     playergroup mine;
@@ -102,33 +240,45 @@ void GameMode_Select(int chooser, trigger callback) {
     others = PlayerGroupCopy(PlayerGroupAll());
     PlayerGroupRemove(others, chooser);
 
-    g_gmode_dialog = DialogCreate(460, 330, c_anchorCenter, 0, 0, true);
+    g_gmode_dialog = DialogCreate(600, 520, c_anchorCenter, 0, 0, true);
     DialogSetObservedType(g_gmode_dialog, c_triggerObservedTypeObservedOrSelectedPlayerId);
-    DialogSetTitle(g_gmode_dialog, StringToText("Tardigrade  -  Game Mode"));
+    DialogSetTitle(g_gmode_dialog, StringToText("Tardigrade  -  Setup"));
     DialogSetVisible(g_gmode_dialog, all, true);
 
     g_gmode_label = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_gmode_label, all, 400, 40);
-    DialogControlSetPosition(g_gmode_label, all, c_anchorTop, 0, 60);
+    DialogControlSetSize(g_gmode_label, all, 540, 24);
+    DialogControlSetPosition(g_gmode_label, all, c_anchorTop, 0, 50);
     DialogControlSetPropertyAsText(g_gmode_label, c_triggerControlPropertyText, mine,
-        StringToText("<c val=\"00FF88\">Choose the game mode</c>"));
+        StringToText("<c val=\"00FF88\">Choose the setup, then press Start</c>"));
     DialogControlSetPropertyAsText(g_gmode_label, c_triggerControlPropertyText, others,
         StringToText("<c val=\"888888\">Player " + IntToString(chooser)
-            + " is choosing the game mode...</c>"));
+            + " is setting up...</c>"));
 
+    GameMode_SetupRowLabel("MODE", 86);
     i = 0;
     while (i <= 2) {
-        g_gmode_btn[i] = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeButton);
-        DraftStyle_InitButton(g_gmode_btn[i], all);
-        DialogControlSetSize(g_gmode_btn[i], all, 380, 54);
-        DialogControlSetPosition(g_gmode_btn[i], all, c_anchorTop, 0, 110 + i * 64);
-        DraftStyle_ApplyCard(g_gmode_btn[i], mine, c_draftStateOpen,
-            DraftStyle_Card(c_draftStateOpen, "", GameMode_Name(i), GameMode_Desc(i)), true);
-        DraftStyle_ApplyCard(g_gmode_btn[i], others, c_draftStateOpen,
-            DraftStyle_Card(c_draftStateOpen, "", GameMode_Name(i), GameMode_Desc(i)), false);
-        DraftStyle_SetTip(g_gmode_btn[i], all, GameMode_Name(i) + "<n/>" + GameMode_Desc(i));
+        g_gmode_btn[i] = GameMode_SetupButton(-190 + i * 190, 106, 180);
         i = i + 1;
     }
+
+    GameMode_SetupRowLabel("ROSTER", 184);
+    g_gmode_rosterBtn[0] = GameMode_SetupButton(-145, 204, 280);
+    g_gmode_rosterBtn[1] = GameMode_SetupButton( 145, 204, 280);
+
+    GameMode_SetupRowLabel("MODIFIERS", 282);
+    g_gmode_modBtn[0] = GameMode_SetupButton(-145, 302, 280);
+    g_gmode_modBtn[1] = GameMode_SetupButton( 145, 302, 280);
+
+    g_gmode_start = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_gmode_start, all);
+    DialogControlSetSize(g_gmode_start, all, 300, 56);
+    DialogControlSetPosition(g_gmode_start, all, c_anchorTop, 0, 410);
+    DraftStyle_ApplyCard(g_gmode_start, mine, c_draftStateOpen,
+        DraftStyle_Card(c_draftStateOpen, "", "Start", "begin the draft"), true);
+    DraftStyle_ApplyCard(g_gmode_start, others, c_draftStateOpen,
+        DraftStyle_Card(c_draftStateOpen, "", "Start", "waiting for the host..."), false);
+
+    GameMode_SetupRefresh();
 
     g_gmode_trigger = TriggerCreate("GameMode_OnClicked");
     i = 0;
@@ -137,6 +287,16 @@ void GameMode_Select(int chooser, trigger callback) {
             c_triggerControlEventTypeClick);
         i = i + 1;
     }
+    i = 0;
+    while (i <= 1) {
+        TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_rosterBtn[i],
+            c_triggerControlEventTypeClick);
+        TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_modBtn[i],
+            c_triggerControlEventTypeClick);
+        i = i + 1;
+    }
+    TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_start,
+        c_triggerControlEventTypeClick);
     DraftStyle_TurnCuePlayer(chooser);
 }
 

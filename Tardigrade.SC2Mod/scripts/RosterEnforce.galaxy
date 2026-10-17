@@ -181,6 +181,31 @@ void RosterEnforce_HideFallbacks(int player) {
     TechTreeAbilityAllow(player, AbilityCommand("LarvaTrain", 15), false);     // Train16 Baneling
 }
 
+// Full roster: every unit is allowed, so nothing is disallowed at all. Only the
+// morph and larva fallbacks are tidied - each shares its parent's card cell, and
+// with the parent always available the fallback has to go (the same
+// RosterEnforce_HideFallbacks Testing mode uses) - and the Queen is uncapped,
+// since she is always "drafted". Hellion <-> Hellbat and the Archon merge are
+// never blocked here (RosterEnforce_GateTransforms is simply not run).
+void RosterEnforce_ApplyFullToTeam(playergroup team) {
+    int i;
+    int p;
+
+    i = 1;
+    while (i <= PlayerGroupCount(team)) {
+        p = PlayerGroupPlayer(team, i);
+        RosterEnforce_HideFallbacks(p);
+        RosterEnforce_UncapQueen(p);
+        i = i + 1;
+    }
+}
+
+void RosterEnforce_ApplyFullRoster() {
+    RosterEnforce_ApplyFullToTeam(g_draft_team1);
+    RosterEnforce_ApplyFullToTeam(g_draft_team2);
+    Debug_Log("Full roster: no unit restrictions.");
+}
+
 // Disable every non-allowed master unit for a single player.
 void RosterEnforce_ApplyToPlayer(int player, int race, int whichRoster) {
     int    n;
