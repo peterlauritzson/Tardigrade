@@ -22,6 +22,14 @@
 include "TriggerLibs/NativeLib"
 include "scripts/Debug"
 
+// Unit groups mode (UnitGroups.galaxy, included after this file). In that mode each
+// side's Maneuver / Endurance / Firepower modifier reaches one group of its units
+// only; these three are the whole interface this file needs. Outside the mode
+// UnitGroups_Active() is false and UnitGroups_Covers() is true, so every call is a no-op.
+bool   UnitGroups_Active();
+bool   UnitGroups_Covers(bool isP1, int modIdx, string unitType);
+string UnitGroups_ModLabel(bool isP1, int modIdx);
+
 // Number of modifiers in the pool and how many are drafted (= number of phases).
 // The draft dialog lays the pool out in two columns of c_cycleModRows buttons.
 // Every array indexed by modifier is sized with the literal 24 - Galaxy array
@@ -836,6 +844,8 @@ bool CycleMod_SideHasHuman(bool isP1) {
 string CycleMod_StageName(int stage) {
     if (stage == c_stageRace) { return "race draft"; }
     if (stage == c_stageMod)  { return "modifier draft"; }
+    // Unit groups has no unit draft; its groups stage borrows the roster stage.
+    if (GameMode_IsUnitGroups()) { return "unit groups"; }
     return "roster draft";
 }
 
@@ -850,7 +860,8 @@ string CycleMod_YoloStagesText(bool isP1) {
     }
     if (CycleMod_SideIsYolo(isP1, c_stageRoster)) {
         if (s != "") { s = s + ", "; }
-        s = s + "units";
+        if (GameMode_IsUnitGroups()) { s = s + "groups"; }
+        else                         { s = s + "units"; }
     }
     return s;
 }
@@ -964,7 +975,10 @@ void CycleMod_SetSideMod(bool isP1, int modIdx, bool on) {
     }
 }
 
-// True if the unit's owning side has the given modifier behavior active.
+// True if the unit's owning side has the given modifier behavior active AND, in
+// Unit groups mode, the modifier's group covers this unit's type. The type is only
+// read after a modifier match (this runs for every unit on every scan), and
+// UnitGroups_Covers is true outside the mode.
 bool CycleMod_UnitHasBehavior(unit u, string beh) {
     int owner;
     int i;
@@ -972,13 +986,17 @@ bool CycleMod_UnitHasBehavior(unit u, string beh) {
     if (CycleMod_OwnerIsP1(owner)) {
         i = 1;
         while (i <= g_cycle_p1Count) {
-            if (CycleMod_Behavior(g_cycle_p1Mods[i]) == beh) { return true; }
+            if (CycleMod_Behavior(g_cycle_p1Mods[i]) == beh) {
+                return UnitGroups_Covers(true, g_cycle_p1Mods[i], UnitGetType(u));
+            }
             i = i + 1;
         }
     } else if (CycleMod_OwnerIsP2(owner)) {
         i = 1;
         while (i <= g_cycle_p2Count) {
-            if (CycleMod_Behavior(g_cycle_p2Mods[i]) == beh) { return true; }
+            if (CycleMod_Behavior(g_cycle_p2Mods[i]) == beh) {
+                return UnitGroups_Covers(false, g_cycle_p2Mods[i], UnitGetType(u));
+            }
             i = i + 1;
         }
     }
@@ -1017,7 +1035,8 @@ bool CycleMod_ModReachesWorkers(string beh) {
 
 // The single gate nearly every modifier goes through - buffs from the scan,
 // ability buttons, the conditional buffs, Predator's source, Veteran's killer
-// - so the worker exclusion lives here once. Open Skies is the exception: it
+// - so the worker exclusion lives here once, and so does Unit groups scoping
+// (via CycleMod_UnitHasBehavior). Open Skies is the exception: it
 // edits weapons in the catalog rather than asking about a unit, so worker
 // weapons are held back in CycleMod_OpenSkiesSkipsWeapon instead.
 // Past the activation delay? Testing mode has none - a modifier switched on
@@ -1081,9 +1100,15 @@ int CycleMod_Team2Mod(int i) {
     return CycleMod_P1Mod(i);
 }
 
-string CycleMod_ModLine(int modIdx) {
+// One row of the in-game panel. isP1 is the side the row belongs to, for the
+// Unit groups label: "Forced March  (Fast)  - ..." ("" outside that mode).
+string CycleMod_ModLine(int modIdx, bool isP1) {
+    string label;
+
     if (modIdx <= 0) { return "<c val=\"555555\">  -</c>"; }
-    return "<c val=\"FFFFFF\">  " + CycleMod_Name(modIdx) + "</c>  <c val=\"9FB4C7\">- "
+    label = UnitGroups_ModLabel(isP1, modIdx);
+    if (label != "") { label = "  <c val=\"AAAAAA\">(" + label + ")</c>"; }
+    return "<c val=\"FFFFFF\">  " + CycleMod_Name(modIdx) + "</c>" + label + "  <c val=\"9FB4C7\">- "
         + CycleMod_Desc(modIdx) + "</c>";
 }
 
@@ -2932,6 +2957,8 @@ bool CycleMod_OnOpenSkiesSplash(bool testConds, bool runActions) {
     if (caster == null || !UnitIsAlive(caster)) { return true; }
     // Open Skies leaves structures alone (the Planetary Fortress, here).
     if (UnitTypeTestAttribute(UnitGetType(caster), c_unitAttributeStructure)) { return true; }
+    // Unit groups mode: the caster's type must be in Open Skies' group for its side.
+    if (!UnitGroups_Covers(CycleMod_OwnerIsP1(player), 1, UnitGetType(caster))) { return true; }
     attacker = caster;
 
     outer = CycleMod_OSRingRadius(idx, 1);
@@ -3041,16 +3068,58 @@ void CycleMod_SetOpenSkies(bool enabled) {
     g_cycle_openSkiesEnabled = enabled;
 }
 
+// Unit groups mode: a weapon is edited only if some unit type that carries it is
+// covered by this side's Open Skies group. The marks are data-table flags, one per
+// weapon id and player, written by CycleMod_BuildOpenSkiesMarks.
+string CycleMod_OpenSkiesMarkKey(int player, string weapon) {
+    return "TgOSM" + IntToString(player) + "_" + weapon;
+}
+
+// One sweep of the unit catalog. The cheap group test runs first, so only the
+// types in the group (a few dozen) have their weapon slots read.
+void CycleMod_BuildOpenSkiesMarks(int player, bool isP1) {
+    int    catalogCount;
+    int    i;
+    int    slot;
+    string unitType;
+    string weapon;
+
+    catalogCount = CatalogEntryCount(c_gameCatalogUnit);
+    i = 1;
+    while (i <= catalogCount) {
+        unitType = CatalogEntryGet(c_gameCatalogUnit, i);
+        i = i + 1;
+        if (!UnitGroups_Covers(isP1, 1, unitType)) { continue; }
+        slot = 0;
+        while (slot < c_cycleUnitWeaponProbe) {
+            weapon = CycleMod_UnitWeaponSlot(unitType, slot);
+            if (weapon != "") {
+                DataTableSetInt(true, CycleMod_OpenSkiesMarkKey(player, weapon), 1);
+            }
+            slot = slot + 1;
+        }
+    }
+}
+
 // Draft mode: apply Open Skies to a single player's weapons only.
 void CycleMod_OpenSkiesForPlayer(int player) {
     int i;
     string weapon;
     string filters;
+    bool grouped;
 
     CycleMod_EnsureWeaponCache();
+    grouped = UnitGroups_Active();
+    if (grouped) { CycleMod_BuildOpenSkiesMarks(player, CycleMod_OwnerIsP1(player)); }
     i = 0;
     while (i < g_cycle_weaponCount) {
         weapon  = g_cycle_weaponEntry[i];
+        if (grouped) {
+            if (!DataTableValueExists(true, CycleMod_OpenSkiesMarkKey(player, weapon))) {
+                i = i + 1;
+                continue;
+            }
+        }
         filters = CycleMod_OpenSkiesFilters(g_cycle_weaponFilter[i]);
         CatalogFieldValueSet(c_gameCatalogWeapon, weapon, "TargetFilters", player, filters);
         i = i + 1;
@@ -3201,9 +3270,29 @@ void CycleMod_ScaleEffectField(string effect, string field, int player) {
 }
 
 void CycleMod_ApplyOverwatchDamageForPlayer(int player) {
-    int i;
+    int  i;
+    bool isP1;
+    bool baneOk;
+    bool mineOk;
+
+    // Unit groups mode: the baked numbers are catalog-wide for the player, so each
+    // half is baked only when Overwatch's group covers that unit (the Baneling's
+    // six effects; the Widow Mine's direct hit). The trigger path needs no change:
+    // an uncovered unit is never armed, so it never gets the trigger bonus either.
+    baneOk = true;
+    mineOk = true;
+    if (UnitGroups_Active()) {
+        isP1 = CycleMod_OwnerIsP1(player);
+        baneOk = UnitGroups_Covers(isP1, 8, "Baneling");
+        mineOk = UnitGroups_Covers(isP1, 8, "WidowMine");
+    }
     i = 0;
     while (i < c_cycleBaneEffectCount) {
+        if (i == 6) {
+            if (!mineOk) { i = i + 1; continue; }
+        } else {
+            if (!baneOk) { i = i + 1; continue; }
+        }
         CycleMod_ScaleEffectField(CycleMod_BaneEffect(i), "Amount", player);
         CycleMod_ScaleEffectField(CycleMod_BaneEffect(i), "AttributeBonus[Light]", player);
         i = i + 1;
@@ -3284,11 +3373,23 @@ string CycleMod_ArcaneRate(int cacheIndex) {
 
 // Draft mode: double one player's energy regen only.
 void CycleMod_ArcaneSurgeForPlayer(int player) {
-    int i;
+    int  i;
+    bool grouped;
+    bool isP1;
 
     CycleMod_EnsureEnergyCache();
+    // Unit groups mode: only the types in Arcane Surge's group for this side
+    // (structures are in no group, so their regen is not doubled there).
+    grouped = UnitGroups_Active();
+    isP1 = CycleMod_OwnerIsP1(player);
     i = 0;
     while (i < g_cycle_energyCount) {
+        if (grouped) {
+            if (!UnitGroups_Covers(isP1, 7, g_cycle_energyEntry[i])) {
+                i = i + 1;
+                continue;
+            }
+        }
         CatalogFieldValueSet(c_gameCatalogUnit, g_cycle_energyEntry[i],
             "EnergyRegenRate", player, CycleMod_ArcaneRate(i));
         i = i + 1;
@@ -3882,13 +3983,26 @@ int CycleMod_QuickstepField(string unitType, string field, int player, bool on, 
 }
 
 void CycleMod_QuickstepForPlayer(int player, bool on) {
-    int i;
-    int written;
+    int  i;
+    int  written;
+    bool grouped;
+    bool isP1;
 
     CycleMod_EnsureQuickstepCache();
+    // Unit groups mode: switching on only reaches the types in Quickstep's group
+    // for this player's side (the cache itself stays unfiltered - the filter is
+    // per side). Switching off restores every cached type, which is harmless.
+    grouped = on && UnitGroups_Active();
+    isP1 = CycleMod_OwnerIsP1(player);
     written = 0;
     i = 0;
     while (i < g_cycle_quickCount) {
+        if (grouped) {
+            if (!UnitGroups_Covers(isP1, c_cycleModQuickstep, g_cycle_quickEntry[i])) {
+                i = i + 1;
+                continue;
+            }
+        }
         written = written + CycleMod_QuickstepField(g_cycle_quickEntry[i], "Acceleration", player, on, true);
         written = written + CycleMod_QuickstepField(g_cycle_quickEntry[i], "Deceleration", player, on, true);
         written = written + CycleMod_QuickstepField(g_cycle_quickEntry[i], "TurningRate", player, on, false);
@@ -6389,9 +6503,13 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     int         i;
     int         mineMod;
     int         oppMod;
+    bool        mineIsP1;
 
     viewer = CycleMod_PanelViewers(player);
     role   = CycleMod_PanelRole(player);   // key 0 is on no team -> spectator view
+    // Which draft side the "mine" block (team 2 for role 2, else team 1) belongs to.
+    if (role == 2) { mineIsP1 = !g_draft_p1_is_team1; }
+    else           { mineIsP1 = g_draft_p1_is_team1; }
 
     g_cycle_panelDlg[player] = DialogCreate(470, CycleMod_PanelHeight(), c_anchorTop, 0, 22, false);
     Tardigrade_ObservableDialog(g_cycle_panelDlg[player]);
@@ -6428,7 +6546,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         DialogControlSetSize(g_cycle_panelRowMine[player][i], viewer, 450, 18);
         DialogControlSetPosition(g_cycle_panelRowMine[player][i], viewer, c_anchorTop, 8, 76 + (i - 1) * 20);
         DialogControlSetPropertyAsText(g_cycle_panelRowMine[player][i], c_triggerControlPropertyText,
-            viewer, StringToText(CycleMod_ModLine(mineMod)));
+            viewer, StringToText(CycleMod_ModLine(mineMod, mineIsP1)));
         g_cycle_panelModMine[player][i] = mineMod;
         i = i + 1;
     }
@@ -6452,7 +6570,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         DialogControlSetSize(g_cycle_panelRowOpp[player][i], viewer, 450, 18);
         DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, 8, 102 + CycleMod_PicksEach() * 20 + (i - 1) * 20);
         DialogControlSetPropertyAsText(g_cycle_panelRowOpp[player][i], c_triggerControlPropertyText,
-            viewer, StringToText(CycleMod_ModLine(oppMod)));
+            viewer, StringToText(CycleMod_ModLine(oppMod, !mineIsP1)));
         g_cycle_panelModOpp[player][i] = oppMod;
         i = i + 1;
     }

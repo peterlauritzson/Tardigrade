@@ -5,11 +5,15 @@
 //
 //   0. Setup         - one screen, picked by team 1's human (GameMode.galaxy):
 //                      Mode (Casual / Tournament / Testing), Roster (Full
-//                      roster / Alternating draft) and Modifiers (Buckets / Free
-//                      draft), then Start. Testing skips everything below and
-//                      starts a sandbox (TestingMode.galaxy). Full roster skips
-//                      step 3 and allows every unit. Buckets runs the
-//                      bucket draft (one ban per bucket, four picks a side).
+//                      roster / Unit groups / Alternating draft) and Modifiers
+//                      (Buckets / Free draft), then Start. Testing skips
+//                      everything below and starts a sandbox (TestingMode.galaxy).
+//                      Full roster skips step 3 and allows every unit. Buckets
+//                      runs the bucket draft (one ban per bucket, four picks a
+//                      side). Unit groups is Full roster + Buckets (forced) + a
+//                      groups stage after step 2 (UnitGroups.galaxy): each side
+//                      splits its units into three groups and gives each of its
+//                      three non-Command modifiers to one group.
 //   1. Race Draft    - P1 bans a race, P2 picks, P1 gets the remainder.
 //                      Each team is set to a single race.
 //   2. Modifier Draft - each player bans 2 of 22 global modifiers, then picks
@@ -21,7 +25,8 @@
 //
 // Every draft stage has a YOLO button for each human side, until that side makes
 // its own first choice in the stage: from then on its turns in THAT stage are
-// random (CycleMod_YoloPress). Protect and Ban is dormant: ProtectDraft.galaxy is
+// random (CycleMod_YoloPress); in Unit groups the groups stage borrows the unit
+// stage's YOLO flag. Protect and Ban is dormant: ProtectDraft.galaxy is
 // intact but nothing reaches it.
 //
 // In Tournament mode every draft step above has a time limit, and a click only
@@ -42,6 +47,7 @@ include "scripts/CycleMod"
 include "scripts/RosterDraft"
 include "scripts/ProtectDraft"
 include "scripts/RosterEnforce"
+include "scripts/UnitGroups"
 include "scripts/TestingMode"
 
 //--------------------------------------------------------------------------------------------------
@@ -84,6 +90,7 @@ string Tardigrade_SummaryColumn(bool isP1) {
     int    idx;
     int    i;
     int    rerolls;
+    string groupLabel;
 
     if (isP1) { col = "7FD0FF"; tag = "P1"; race = g_roster_p1Race; count = g_cycle_p1Count; rerolls = g_sum_rerollsP1; }
     else      { col = "FF9F7F"; tag = "P2"; race = g_roster_p2Race; count = g_cycle_p2Count; rerolls = g_sum_rerollsP2; }
@@ -101,12 +108,28 @@ string Tardigrade_SummaryColumn(bool isP1) {
     i = 1;
     while (i <= count) {
         if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
-        s = s + "\n" + CycleMod_Name(idx)
-            + "\n" + DraftStyle_Small("<c val=\"AAAAAA\">" + CycleMod_Desc(idx) + "</c>");
+        s = s + "\n" + CycleMod_Name(idx);
+        // Unit groups: a group pick names its group and lists that group's units;
+        // the Command pick says it is global.
+        if (GameMode_IsUnitGroups()) {
+            groupLabel = UnitGroups_ModLabel(isP1, idx);
+            if (groupLabel != "") {
+                s = s + "  <c val=\"FFD54A\">" + groupLabel + "</c>"
+                    + "\n" + DraftStyle_Small("<c val=\"999999\">" + UnitGroups_ModUnits(isP1, idx) + "</c>");
+            } else if (CycleMod_Bucket(idx) == c_cycleBucketCommand) {
+                s = s + "  <c val=\"FFD54A\">all units</c>";
+            }
+        }
+        s = s + "\n" + DraftStyle_Small("<c val=\"AAAAAA\">" + CycleMod_Desc(idx) + "</c>");
         i = i + 1;
     }
     if (count == 0) { s = s + "\n<c val=\"7A7A7A\">none</c>"; }
 
+    if (GameMode_IsUnitGroups()) {
+        s = s + "\n\n<c val=\"FFD54A\">UNITS</c>  <c val=\"7A7A7A\">(all)</c>\nAll units  <c val=\"AAAAAA\">(split: "
+            + UnitGroups_SidePresetName(isP1) + ")</c>";
+        return s;
+    }
     if (GameMode_IsFullRoster()) {
         s = s + "\n\n<c val=\"FFD54A\">UNITS</c>  <c val=\"7A7A7A\">(all)</c>\nFull roster";
         return s;
@@ -151,6 +174,9 @@ void Tardigrade_SummaryRerollButton(int btn, bool isP1) {
     int         count;
 
     DialogControlSetVisible(btn, Tardigrade_Viewers(), false);
+    // No roster to reroll with Full roster / Unit groups (a YOLO side's roster-stage
+    // flag can be set by the groups stage).
+    if (GameMode_IsFullRoster()) { return; }
     if (!CycleMod_SideIsYolo(isP1, c_stageRoster)) { return; }
     if (isP1) { viewer = PlayerGroupSingle(g_draft_p1); } else { viewer = PlayerGroupSingle(g_draft_p2); }
 
@@ -236,19 +262,25 @@ bool Tardigrade_SummaryOnClicked(bool testConds, bool runActions) {
 }
 
 // Dialog layout (780 x 710): title, clock, ready status; the two columns
-// (x -185 / +185, 350 wide); a REROLL under a YOLO side's column; READY at
-// the bottom.
+// (x -185 / +185, 350 wide, 480 tall); a REROLL under a YOLO side's column at
+// y 590; READY at y 648. With Unit groups every group pick also lists its units,
+// so everything below the columns' top (their height, the REROLL and READY rows
+// and the dialog) is pushed down by `extra` = 90 (780 x 800, columns 350 x 570).
 void Tardigrade_SummaryCountdown() {
     int lbl;
     int secs;
     int lastCue;
+    int extra;
 
     g_sum_readyP1   = false;
     g_sum_readyP2   = false;
     g_sum_rerollsP1 = 0;
     g_sum_rerollsP2 = 0;
 
-    g_sum_dialog = DialogCreate(780, 710, c_anchorCenter, 0, 0, true);
+    extra = 0;
+    if (GameMode_IsUnitGroups()) { extra = 90; }
+
+    g_sum_dialog = DialogCreate(780, 710 + extra, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_sum_dialog);
     DialogSetVisible(g_sum_dialog, Tardigrade_Viewers(), true);
 
@@ -267,27 +299,27 @@ void Tardigrade_SummaryCountdown() {
     DialogControlSetPosition(g_sum_lblStatus, Tardigrade_Viewers(), c_anchorTop, 0, 76);
 
     g_sum_lblP1 = DialogControlCreate(g_sum_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_sum_lblP1, Tardigrade_Viewers(), 350, 480);
+    DialogControlSetSize(g_sum_lblP1, Tardigrade_Viewers(), 350, 480 + extra);
     DialogControlSetPosition(g_sum_lblP1, Tardigrade_Viewers(), c_anchorTop, -185, 100);
 
     g_sum_lblP2 = DialogControlCreate(g_sum_dialog, c_triggerControlTypeLabel);
-    DialogControlSetSize(g_sum_lblP2, Tardigrade_Viewers(), 350, 480);
+    DialogControlSetSize(g_sum_lblP2, Tardigrade_Viewers(), 350, 480 + extra);
     DialogControlSetPosition(g_sum_lblP2, Tardigrade_Viewers(), c_anchorTop, 185, 100);
 
     g_sum_btnRerollP1 = DialogControlCreate(g_sum_dialog, c_triggerControlTypeButton);
     DraftStyle_InitButton(g_sum_btnRerollP1, Tardigrade_Viewers());
     DialogControlSetSize(g_sum_btnRerollP1, Tardigrade_Viewers(), 300, 48);
-    DialogControlSetPosition(g_sum_btnRerollP1, Tardigrade_Viewers(), c_anchorTop, -185, 590);
+    DialogControlSetPosition(g_sum_btnRerollP1, Tardigrade_Viewers(), c_anchorTop, -185, 590 + extra);
 
     g_sum_btnRerollP2 = DialogControlCreate(g_sum_dialog, c_triggerControlTypeButton);
     DraftStyle_InitButton(g_sum_btnRerollP2, Tardigrade_Viewers());
     DialogControlSetSize(g_sum_btnRerollP2, Tardigrade_Viewers(), 300, 48);
-    DialogControlSetPosition(g_sum_btnRerollP2, Tardigrade_Viewers(), c_anchorTop, 185, 590);
+    DialogControlSetPosition(g_sum_btnRerollP2, Tardigrade_Viewers(), c_anchorTop, 185, 590 + extra);
 
     g_sum_btnReady = DialogControlCreate(g_sum_dialog, c_triggerControlTypeButton);
     DraftStyle_InitButton(g_sum_btnReady, Tardigrade_Viewers());
     DialogControlSetSize(g_sum_btnReady, Tardigrade_Viewers(), 320, 48);
-    DialogControlSetPosition(g_sum_btnReady, Tardigrade_Viewers(), c_anchorTop, 0, 648);
+    DialogControlSetPosition(g_sum_btnReady, Tardigrade_Viewers(), c_anchorTop, 0, 648 + extra);
 
     g_sum_trigger = TriggerCreate("Tardigrade_SummaryOnClicked");
     TriggerAddEventDialogControl(g_sum_trigger, c_playerAny, g_sum_btnReady, c_triggerControlEventTypeClick);
@@ -387,6 +419,8 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
     int poolCount;
     int pick;
     int pickCount;
+    int bucketSide;
+    int bucket;
 
     forcedRace = Debug_GetForcedRace();
 
@@ -441,18 +475,38 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
     // auto-run never presses it.
     usedMask  = 1 << (c_cycleModYolo - 1);
     if (CycleMod_ModUnavailable(c_cycleModNoBans)) { usedMask = usedMask | (1 << (c_cycleModNoBans - 1)); }
-    pickCount = 1;
-    while (pickCount <= CycleMod_PickTotal()) {
-        pick = RandomInt(1, c_cycleModCount);
-        if ((usedMask & (1 << (pick - 1))) == 0) {
-            usedMask = usedMask | (1 << (pick - 1));
-            if (pickCount <= CycleMod_PicksEach()) {
-                CycleMod_SetSideMod(true, pick, true);
-                g_cycle_chosen[pickCount] = pick;   // keep legacy phase array populated too
-            } else {
-                CycleMod_SetSideMod(false, pick, true);
+    if (GameMode_IsBuckets()) {
+        // Bucket draft: one random modifier per bucket per side, distinct across
+        // sides. No Bans and YOLO are in no bucket, so they can never come up.
+        bucketSide = 1;
+        while (bucketSide <= 2) {
+            bucket = c_cycleBucketCommand;
+            while (bucket <= c_cycleBucketFirepower) {
+                pick = RandomInt(1, c_cycleModCount);
+                while (CycleMod_Bucket(pick) != bucket || (usedMask & (1 << (pick - 1))) != 0) {
+                    pick = RandomInt(1, c_cycleModCount);
+                }
+                usedMask = usedMask | (1 << (pick - 1));
+                CycleMod_SetSideMod(bucketSide == 1, pick, true);
+                if (bucketSide == 1) { g_cycle_chosen[bucket] = pick; }   // legacy phase array
+                bucket = bucket + 1;
             }
-            pickCount = pickCount + 1;
+            bucketSide = bucketSide + 1;
+        }
+    } else {
+        pickCount = 1;
+        while (pickCount <= CycleMod_PickTotal()) {
+            pick = RandomInt(1, c_cycleModCount);
+            if ((usedMask & (1 << (pick - 1))) == 0) {
+                usedMask = usedMask | (1 << (pick - 1));
+                if (pickCount <= CycleMod_PicksEach()) {
+                    CycleMod_SetSideMod(true, pick, true);
+                    g_cycle_chosen[pickCount] = pick;   // keep legacy phase array populated too
+                } else {
+                    CycleMod_SetSideMod(false, pick, true);
+                }
+                pickCount = pickCount + 1;
+            }
         }
     }
 
@@ -516,6 +570,10 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
     Debug_Log("AUTO DRAFT: Ban=" + RaceName(banRace) + " P1=" + RaceName(g_draft_p1Race)
         + " P2=" + RaceName(g_draft_p2Race));
 
+    // Unit groups: a random split and assignment for both sides, committed now
+    // (the roster globals above are already set).
+    if (GameMode_IsUnitGroups()) { UnitGroups_RandomizeAll(); }
+
     Tardigrade_StartGame();
     return true;
 }
@@ -529,10 +587,30 @@ bool Tardigrade_OnRosterFinished(bool testConds, bool runActions) {
 }
 
 //--------------------------------------------------------------------------------------------------
+// Callback: unit groups stage committed -> start the game.
+//--------------------------------------------------------------------------------------------------
+bool Tardigrade_OnGroupsFinished(bool testConds, bool runActions) {
+    Tardigrade_StartGame();
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
 // Callback: cycle draft complete -> start the unit draft.
 //--------------------------------------------------------------------------------------------------
 bool Tardigrade_OnCycleFinished(bool testConds, bool runActions) {
     trigger rosterCallback;
+
+    // Unit groups: like Full roster (no unit draft, roster globals filled in
+    // here), then the groups stage; its callback starts the game. Checked before
+    // IsFullRoster, which is true in this mode too.
+    if (GameMode_IsUnitGroups()) {
+        g_roster_p1     = g_draft_p1;
+        g_roster_p2     = g_draft_p2;
+        g_roster_p1Race = g_draft_p1Race;
+        g_roster_p2Race = g_draft_p2Race;
+        UnitGroups_Start(TriggerCreate("Tardigrade_OnGroupsFinished"));
+        return true;
+    }
 
     // Full roster: no unit draft at all. The roster globals the summary and the
     // game start read are filled in here instead of by RosterDraft_Start (the

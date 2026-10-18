@@ -21,10 +21,12 @@ draft and Free draft.
 | Setup row | Options |
 |---|---|
 | **Mode** | Casual / Tournament / Testing (below) |
-| **Roster** | **Full roster:** every unit is allowed and there is no unit draft (the in-game roster panel is not shown, and No Bans is unavailable). **Alternating draft:** the unit draft below |
+| **Roster** | **Full roster:** every unit is allowed and there is no unit draft (the in-game roster panel is not shown, and No Bans is unavailable). **Unit groups:** every unit is allowed, and your modifiers each power one group of your units (see Unit groups below). **Alternating draft:** the unit draft below |
 | **Modifiers** | **Free draft:** the modifier draft below. **Buckets:** the bucket draft - one ban in each of four buckets, then four picks, one from each (see the Modifier Draft) |
 
 The Roster and Modifiers rows are greyed out in Testing, which has no draft.
+Choosing Unit groups forces the Buckets draft: Buckets shows as chosen and Free
+draft is unavailable.
 
 
 | Mode | What changes |
@@ -155,6 +157,24 @@ An older set of ten flat stat modifiers (`TardigradeMod_FleetFooted`,
 `Ironhide`, `Juggernaut`, …) is still defined in `BehaviorData.xml` as a legacy
 pool, but nothing links to it.
 
+### Unit groups
+
+With the **Unit groups** roster option there is no unit draft: every unit is
+allowed, the modifier draft is the Buckets draft, and after it comes one more
+step. You pick one of four **splits** of your race's units into three groups -
+**Tech** (where a unit is built), **Role** (how it fights), **Speed** (its base
+move speed) or **Cost** (what it costs) - and then give each of your three
+non-Command modifiers (your Maneuver, Endurance and Firepower picks) to one of
+the three groups. Your Command modifier still applies to everything. Both
+players choose at the same time and see each other's choice only on the summary
+screen. A group modifier only ever affects units in its group; workers,
+structures and units outside every group (Observer, Overseer, Overlord,
+Changeling, cocoons and eggs, MULE) get none. Units that change form or spawn
+others count as their base unit's group (a sieged Tank, Interceptors, Locusts).
+The in-game modifier panel shows each modifier's group in brackets. In
+Tournament the step has a 30-second clock, after which your current choice is
+locked in; YOLO picks a random split and assignment and locks in at once.
+
 ### 3. Unit Draft
 
 Instead of the full tech tree, each side fields a custom roster of **6 unit
@@ -251,6 +271,7 @@ randomize races, rosters and modifiers.
 | `RosterDraft.galaxy` | Unit draft UI (opening picks → bans → final picks) + in-game roster HUD. |
 | `ProtectDraft.galaxy` | Protect and Ban: the points + bans screen that replaces a side's unit draft. Dormant: nothing reaches it any more (see IDEAS.md). |
 | `RosterEnforce.galaxy` | Disables every non-drafted combat unit; grants coupled units. |
+| `UnitGroups.galaxy` | Unit groups: the split + modifier assignment screen, and the "does this modifier reach this unit" lookup. |
 | `CycleMod.galaxy` | Modifier draft + per-player in-game modifiers (legacy rotating-phase system kept behind `c_cyclePhaseMode`). |
 | `Debug.galaxy` | Solo-test detection, auto-run, logging. |
 

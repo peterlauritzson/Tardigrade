@@ -1,0 +1,1052 @@
+//--------------------------------------------------------------------------------------------------
+// Unit Groups  (the roster option on the setup screen, between Full roster and Alternating draft)
+//
+// Every unit is allowed (Full roster: no unit draft), the modifier draft is the
+// bucket draft, and each side's three non-Command modifiers (its Maneuver,
+// Endurance and Firepower picks) each apply to ONE GROUP of that side's units
+// only. The Command pick stays global.
+//
+// This stage runs after the bucket draft and before the summary:
+//   1. the side picks one of four SPLITS (presets) of its race's pool units into
+//      three groups (Tech / Role / Speed / Cost);
+//   2. it gives its three non-Command modifiers to the three groups, one each;
+//   3. it locks in.
+// Both sides choose at the same time (two human deciders) and cannot see each
+// other's choice; it is revealed on the summary screen. One human deciding both
+// sides (g_draft_p1 == g_draft_p2, e.g. against the computer) does P1's side, then
+// P2's, in sequence - the same rule ProtectDraft uses.
+//
+// The rule a player can hold in their head: a group modifier only ever touches
+// units in its group. Workers, structures and units outside every group (Observer,
+// Overseer, Overlord, Changeling, cocoons/eggs, MULE) get no group modifier.
+//
+// Storage once committed (UnitGroups_Commit):
+//   g_ug_modGroup[side][modIdx]  the group (1..3) a side's modifier applies to
+//   data table "TG_ug<side>_<unitType>" -> group (1..3), registered for every pool
+//   unit of the chosen split AND its alternate forms / spawned units
+//   (UnitGroups_Alts); a missing key reads 0 = in no group.
+// CycleMod.galaxy forward-declares and calls UnitGroups_Active / _Covers /
+// _ModLabel; they are the only things in here the in-game code touches.
+//
+// Tournament: one clock per step (DraftTimer_ArmFor, c_unitGroupsSeconds); at zero
+// every unlocked side of that step is locked in as it stands. YOLO reuses stage
+// c_stageRoster (a Full-roster game has no roster stage of its own): pressing it
+// rolls a random split and a random assignment and locks in at once.
+//
+// Requires: DraftStyle, GameMode (DraftTimer), RaceDraft globals, CycleMod,
+// RosterDraft (RosterUnitDisplayName, g_roster_p1Race / p2Race).
+//--------------------------------------------------------------------------------------------------
+
+const int   c_unitGroupsSeconds = 30;   // Tournament: the clock for the step
+const fixed c_unitGroupsGrace   = 2.0;  // real seconds Lock in stays grey at a step's start
+
+const int c_ugPresets = 4;
+const int c_ugGroups  = 3;
+const int c_ugSlots   = 3;              // non-Command modifiers a side can assign
+
+// State. "side" is 1 for P1, 2 for P2 throughout (arrays are sized 3, [0] unused).
+trigger  g_ug_callback = null;
+bool     g_ug_done     = false;         // committed: UnitGroups_Active()
+int[3]   g_ug_preset;                   // 1..4
+bool[3]  g_ug_locked;
+int[3]   g_ug_modCount;                 // non-Command mods this side holds (normally 3)
+int[3][4] g_ug_slotMod;                 // [side][slot 1..3] modifier index, in bucket order
+int[3][4] g_ug_slotGroup;               // [side][slot] the group it is assigned to
+int[3][24] g_ug_modGroup;               // [side][modIdx] committed group; 0 = not group-scoped
+int[4]   g_ug_perm;                     // scratch for the random assignment
+
+// Steps: two human deciders choose at once (one step); one human deciding both
+// sides does P1 then P2 (two steps).
+bool     g_ug_simul     = false;
+int      g_ug_stepCount = 0;
+int      g_ug_step      = 0;            // 1-based; past stepCount = done
+trigger  g_ug_autoTrig  = null;
+bool     g_ug_graceLocked = false;      // Lock in greyed out: the step just started
+int      g_ug_graceToken  = 0;          // which step's grace timer is live
+
+// UI
+int      g_ug_dialog    = c_invalidDialogId;
+int      g_ug_lblTitle  = c_invalidDialogControlId;
+int      g_ug_lblSub    = c_invalidDialogControlId;
+int      g_ug_lblInfo   = c_invalidDialogControlId;
+int      g_ug_lblCmd    = c_invalidDialogControlId;
+int[5]   g_ug_btnPreset;                // [1..4]
+int[4]   g_ug_lblCol;                   // [1..3] group columns
+int[4][4] g_ug_btnMod;                  // [group column 1..3][slot 1..3]
+int      g_ug_btnLock   = c_invalidDialogControlId;
+int      g_ug_btnYolo   = c_invalidDialogControlId;
+trigger  g_ug_trigger   = null;
+
+//--------------------------------------------------------------------------------------------------
+// Preset data
+//--------------------------------------------------------------------------------------------------
+string UnitGroups_PresetName(int preset) {
+    if (preset == 1) { return "Tech"; }
+    if (preset == 2) { return "Role"; }
+    if (preset == 3) { return "Speed"; }
+    return "Cost";
+}
+
+string UnitGroups_PresetDesc(int preset) {
+    if (preset == 1) { return "Split by where the unit is built."; }
+    if (preset == 2) { return "Split by how the unit fights."; }
+    if (preset == 3) { return "Split by base move speed, no upgrades."; }
+    return "Split by price (minerals + gas).";
+}
+
+string UnitGroups_GroupName(int preset, int race, int grp) {
+    if (preset == 1) {
+        if (race == c_tardigrade_raceTerran) {
+            if (grp == 1) { return "Barracks"; }
+            if (grp == 2) { return "Factory"; }
+            return "Starport";
+        }
+        if (race == c_tardigrade_raceProtoss) {
+            if (grp == 1) { return "Gateway"; }
+            if (grp == 2) { return "Robotics"; }
+            return "Stargate";
+        }
+        if (grp == 1) { return "Hatchery"; }
+        if (grp == 2) { return "Lair"; }
+        return "Hive";
+    }
+    if (preset == 2) {
+        if (race == c_tardigrade_raceTerran) {
+            if (grp == 1) { return "Bio"; }
+            if (grp == 2) { return "Mech"; }
+            return "Energy";
+        }
+        if (grp == 1) { return "Frontline"; }
+        if (grp == 2) { return "Ranged"; }
+        return "Energy";
+    }
+    if (preset == 3) {
+        if (grp == 1) { return "Fast"; }
+        if (grp == 2) { return "Steady"; }
+        return "Slow";
+    }
+    if (grp == 1) { return "Cheap"; }
+    if (grp == 2) { return "Mid"; }
+    return "Expensive";
+}
+
+string UnitGroups_PresetGroupsText(int preset, int race) {
+    return UnitGroups_GroupName(preset, race, 1) + " / " + UnitGroups_GroupName(preset, race, 2)
+        + " / " + UnitGroups_GroupName(preset, race, 3);
+}
+
+string UnitGroups_GroupColor(int grp) {
+    if (grp == 1) { return "7FD0FF"; }
+    if (grp == 2) { return "FFD54A"; }
+    return "FF9F7F";
+}
+
+// The pool units of one group, space-separated (TardigradeRosterConfig ids).
+string UnitGroups_UnitsTech(int race, int grp) {
+    if (race == c_tardigrade_raceTerran) {
+        if (grp == 1) { return "Marine Marauder Reaper Ghost"; }
+        if (grp == 2) { return "Hellion HellionTank WidowMine Cyclone SiegeTank Thor"; }
+        return "VikingFighter Medivac Liberator Raven Banshee Battlecruiser";
+    }
+    if (race == c_tardigrade_raceProtoss) {
+        if (grp == 1) { return "Zealot Stalker Sentry Adept HighTemplar DarkTemplar Archon"; }
+        if (grp == 2) { return "Immortal Colossus Disruptor WarpPrism"; }
+        return "Phoenix VoidRay Oracle Carrier Tempest Mothership";
+    }
+    if (grp == 1) { return "Zergling Baneling Queen Roach Ravager"; }
+    if (grp == 2) { return "Hydralisk LurkerMP Infestor SwarmHostMP Mutalisk Corruptor"; }
+    return "Ultralisk BroodLord Viper";
+}
+
+string UnitGroups_UnitsRole(int race, int grp) {
+    if (race == c_tardigrade_raceTerran) {
+        if (grp == 1) { return "Marine Marauder Reaper HellionTank"; }
+        if (grp == 2) { return "Hellion WidowMine Cyclone SiegeTank Thor VikingFighter Liberator Battlecruiser"; }
+        return "Ghost Medivac Raven Banshee";
+    }
+    if (race == c_tardigrade_raceProtoss) {
+        if (grp == 1) { return "Zealot Adept DarkTemplar Archon Immortal"; }
+        if (grp == 2) { return "Stalker Colossus Disruptor WarpPrism VoidRay Carrier Tempest Mothership"; }
+        return "Sentry HighTemplar Phoenix Oracle";
+    }
+    if (grp == 1) { return "Zergling Baneling Roach Ultralisk"; }
+    if (grp == 2) { return "Ravager Hydralisk LurkerMP SwarmHostMP Mutalisk Corruptor BroodLord"; }
+    return "Queen Infestor Viper";
+}
+
+string UnitGroups_UnitsSpeed(int race, int grp) {
+    if (race == c_tardigrade_raceTerran) {
+        if (grp == 1) { return "Hellion Reaper Cyclone Liberator"; }
+        if (grp == 2) { return "Raven Ghost WidowMine VikingFighter Banshee Medivac"; }
+        return "Marine Marauder HellionTank SiegeTank Thor Battlecruiser";
+    }
+    if (race == c_tardigrade_raceProtoss) {
+        if (grp == 1) { return "Phoenix Oracle Stalker WarpPrism"; }
+        if (grp == 2) { return "DarkTemplar Archon VoidRay Sentry Adept"; }
+        return "Zealot Immortal Colossus Disruptor Tempest HighTemplar Mothership Carrier";
+    }
+    if (grp == 1) { return "Mutalisk Corruptor Zergling LurkerMP SwarmHostMP Ultralisk Viper"; }
+    if (grp == 2) { return "Ravager Baneling Roach Hydralisk Infestor"; }
+    return "BroodLord Queen";
+}
+
+string UnitGroups_UnitsCost(int race, int grp) {
+    if (race == c_tardigrade_raceTerran) {
+        if (grp == 1) { return "Marine Reaper Hellion HellionTank WidowMine Marauder"; }
+        if (grp == 2) { return "Medivac VikingFighter Cyclone Raven Banshee"; }
+        return "Ghost SiegeTank Liberator Thor Battlecruiser";
+    }
+    if (race == c_tardigrade_raceProtoss) {
+        if (grp == 1) { return "Zealot Adept Sentry Stalker HighTemplar"; }
+        if (grp == 2) { return "DarkTemplar WarpPrism Phoenix Disruptor Oracle Immortal"; }
+        return "Archon VoidRay Tempest Colossus Carrier Mothership";
+    }
+    if (grp == 1) { return "Zergling Baneling Roach Hydralisk"; }
+    if (grp == 2) { return "Queen SwarmHostMP Ravager Mutalisk Infestor Corruptor"; }
+    return "LurkerMP Viper Ultralisk BroodLord";
+}
+
+string UnitGroups_Units(int preset, int race, int grp) {
+    if (preset == 1) { return UnitGroups_UnitsTech(race, grp); }
+    if (preset == 2) { return UnitGroups_UnitsRole(race, grp); }
+    if (preset == 3) { return UnitGroups_UnitsSpeed(race, grp); }
+    return UnitGroups_UnitsCost(race, grp);
+}
+
+// Alternate forms and spawned units that count as a base type's group. Cocoons
+// and eggs (BanelingCocoon, RavagerCocoon, LurkerMPEgg, BroodLordCocoon) are in
+// no group on purpose.
+string UnitGroups_Alts(string baseType) {
+    if (baseType == "SiegeTank")   { return "SiegeTankSieged"; }
+    if (baseType == "VikingFighter") { return "VikingAssault"; }
+    if (baseType == "Liberator")   { return "LiberatorAG"; }
+    if (baseType == "Thor")        { return "ThorAP"; }
+    if (baseType == "WidowMine")   { return "WidowMineBurrowed"; }
+    if (baseType == "WarpPrism")   { return "WarpPrismPhasing"; }
+    if (baseType == "Raven")       { return "AutoTurret"; }
+    if (baseType == "Carrier")     { return "Interceptor"; }
+    if (baseType == "Disruptor")   { return "DisruptorPhased"; }
+    if (baseType == "Adept")       { return "AdeptPhaseShift"; }
+    if (baseType == "Zergling")    { return "ZerglingBurrowed"; }
+    if (baseType == "Baneling")    { return "BanelingBurrowed"; }
+    if (baseType == "Roach")       { return "RoachBurrowed"; }
+    if (baseType == "Ravager")     { return "RavagerBurrowed"; }
+    if (baseType == "Hydralisk")   { return "HydraliskBurrowed"; }
+    if (baseType == "LurkerMP")    { return "LurkerMPBurrowed"; }
+    if (baseType == "Infestor")    { return "InfestorBurrowed InfestorTerran"; }
+    if (baseType == "SwarmHostMP") { return "SwarmHostBurrowedMP LocustMP LocustMPFlying"; }
+    if (baseType == "Ultralisk")   { return "UltraliskBurrowed"; }
+    if (baseType == "Queen")       { return "QueenBurrowed"; }
+    if (baseType == "BroodLord")   { return "Broodling BroodlingEscort"; }
+    return "";
+}
+
+// The n-th space-separated word of a list (1-based), or "" past the end.
+string UnitGroups_Token(string wordList, int n) {
+    int    len;
+    int    i;
+    int    start;
+    int    count;
+    string ch;
+
+    len   = StringLength(wordList);
+    start = 1;
+    count = 0;
+    i     = 1;
+    while (i <= len + 1) {
+        if (i > len) { ch = " "; } else { ch = StringSub(wordList, i, i); }
+        if (ch == " ") {
+            if (i > start) {
+                count = count + 1;
+                if (count == n) { return StringSub(wordList, start, i - 1); }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// Display names of a unit list, joined with sep.
+string UnitGroups_UnitNames(string unitList, string sep) {
+    string s;
+    string token;
+    int    n;
+
+    s = "";
+    n = 1;
+    token = UnitGroups_Token(unitList, n);
+    while (token != "") {
+        if (n > 1) { s = s + sep; }
+        s = s + RosterUnitDisplayName(token);
+        n = n + 1;
+        token = UnitGroups_Token(unitList, n);
+    }
+    return s;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Small state helpers
+//--------------------------------------------------------------------------------------------------
+int UnitGroups_SideIdx(bool isP1) {
+    if (isP1) { return 1; }
+    return 2;
+}
+
+int UnitGroups_RaceOf(int side) {
+    if (side == 1) { return g_roster_p1Race; }
+    return g_roster_p2Race;
+}
+
+int UnitGroups_DeciderOf(int side) {
+    if (side == 1) { return g_draft_p1; }
+    return g_draft_p2;
+}
+
+string UnitGroups_Key(int side, string unitType) {
+    return "TG_ug" + IntToString(side) + "_" + unitType;
+}
+
+// The slot (1..3) whose modifier is assigned to this group, or 0 if none is.
+int UnitGroups_SlotInGroup(int side, int grp) {
+    int s;
+    s = 1;
+    while (s <= g_ug_modCount[side]) {
+        if (g_ug_slotGroup[side][s] == grp) { return s; }
+        s = s + 1;
+    }
+    return 0;
+}
+
+// The side's non-Command modifiers in bucket order (Maneuver, Endurance,
+// Firepower), each starting in the group of its own number.
+void UnitGroups_BuildSlots(int side) {
+    int  b;
+    int  i;
+    int  m;
+    int  n;
+    int  count;
+    bool isP1;
+
+    isP1 = (side == 1);
+    if (isP1) { count = g_cycle_p1Count; } else { count = g_cycle_p2Count; }
+    g_ug_modCount[side] = 0;
+    b = c_cycleBucketManeuver;
+    while (b <= c_cycleBucketFirepower) {
+        i = 1;
+        while (i <= count) {
+            if (isP1) { m = CycleMod_P1Mod(i); } else { m = CycleMod_P2Mod(i); }
+            if (CycleMod_Bucket(m) == b && g_ug_modCount[side] < c_ugSlots) {
+                g_ug_modCount[side] = g_ug_modCount[side] + 1;
+                n = g_ug_modCount[side];
+                g_ug_slotMod[side][n]   = m;
+                g_ug_slotGroup[side][n] = n;
+            }
+            i = i + 1;
+        }
+        b = b + 1;
+    }
+}
+
+// A random split and a random assignment of the modifiers to groups.
+void UnitGroups_RandomizeSide(int side) {
+    int i;
+    int j;
+    int t;
+
+    g_ug_preset[side] = RandomInt(1, c_ugPresets);
+    g_ug_perm[1] = 1;
+    g_ug_perm[2] = 2;
+    g_ug_perm[3] = 3;
+    i = 3;
+    while (i > 1) {
+        j = RandomInt(1, i);
+        t = g_ug_perm[i];
+        g_ug_perm[i] = g_ug_perm[j];
+        g_ug_perm[j] = t;
+        i = i - 1;
+    }
+    i = 1;
+    while (i <= g_ug_modCount[side]) {
+        g_ug_slotGroup[side][i] = g_ug_perm[i];
+        i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Interface for CycleMod.galaxy (it forward-declares these; keep the signatures in step)
+//--------------------------------------------------------------------------------------------------
+
+// True once the stage has committed both sides.
+bool UnitGroups_Active() {
+    return g_ug_done;
+}
+
+// Does side isP1's modifier modIdx reach a unit of type unitType? Called from hot
+// paths: a bool, one array read and one data-table read.
+bool UnitGroups_Covers(bool isP1, int modIdx, string unitType) {
+    int side;
+    int grp;
+    int bucket;
+
+    if (!g_ug_done) { return true; }
+    bucket = CycleMod_Bucket(modIdx);
+    if (bucket == c_cycleBucketCommand || bucket == c_cycleBucketNone) { return true; }
+    side = 2;
+    if (isP1) { side = 1; }
+    grp = g_ug_modGroup[side][modIdx];
+    if (grp == 0) { return false; }
+    return DataTableGetInt(true, UnitGroups_Key(side, unitType)) == grp;
+}
+
+// Short group name for a side's modifier ("Fast"), "" when not active or Command/None.
+string UnitGroups_ModLabel(bool isP1, int modIdx) {
+    int side;
+    int grp;
+    int bucket;
+
+    if (!g_ug_done) { return ""; }
+    bucket = CycleMod_Bucket(modIdx);
+    if (bucket == c_cycleBucketCommand || bucket == c_cycleBucketNone) { return ""; }
+    side = UnitGroups_SideIdx(isP1);
+    grp = g_ug_modGroup[side][modIdx];
+    if (grp == 0) { return ""; }
+    return UnitGroups_GroupName(g_ug_preset[side], UnitGroups_RaceOf(side), grp);
+}
+
+// Summary screen: the display names of the units a side's modifier reaches, ""
+// when it is not group-scoped.
+string UnitGroups_ModUnits(bool isP1, int modIdx) {
+    int side;
+    int grp;
+
+    if (UnitGroups_ModLabel(isP1, modIdx) == "") { return ""; }
+    side = UnitGroups_SideIdx(isP1);
+    grp = g_ug_modGroup[side][modIdx];
+    return UnitGroups_UnitNames(UnitGroups_Units(g_ug_preset[side], UnitGroups_RaceOf(side), grp), ", ");
+}
+
+// Summary screen: the name of the split a side chose.
+string UnitGroups_SidePresetName(bool isP1) {
+    return UnitGroups_PresetName(g_ug_preset[UnitGroups_SideIdx(isP1)]);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Steps
+//--------------------------------------------------------------------------------------------------
+bool UnitGroups_StepHasSide(bool isP1) {
+    if (g_ug_simul) { return true; }
+    return isP1 == (g_ug_step == 1);
+}
+
+// Whose turn it is when one human decides both sides (the YOLO button follows it).
+bool UnitGroups_UpIsP1() {
+    return g_ug_step == 1;
+}
+
+bool UnitGroups_StepDone() {
+    if (UnitGroups_StepHasSide(true)) {
+        if (!g_ug_locked[1]) { return false; }
+    }
+    if (UnitGroups_StepHasSide(false)) {
+        if (!g_ug_locked[2]) { return false; }
+    }
+    return true;
+}
+
+// The side this player is acting for right now, or 0.
+int UnitGroups_SideOfPlayer(int player) {
+    if (g_draft_p1 == g_draft_p2) {
+        if (player != g_draft_p1) { return 0; }
+        if (g_ug_step == 1) { return 1; }
+        return 2;
+    }
+    if (player == g_draft_p1) { return 1; }
+    if (player == g_draft_p2) { return 2; }
+    return 0;
+}
+
+// Lock a side in. Locking ends its chance to go YOLO.
+void UnitGroups_LockSide(int side) {
+    g_ug_locked[side] = true;
+    CycleMod_SideMarkActed(side == 1, c_stageRoster);
+}
+
+//--------------------------------------------------------------------------------------------------
+// UI
+//--------------------------------------------------------------------------------------------------
+string UnitGroups_StateText(bool locked) {
+    if (locked) { return "<c val=\"4ADB92\">locked in</c>"; }
+    return "<c val=\"FFD54A\">choosing</c>";
+}
+
+// Hide the whole board for a viewer (spectators see only the status lines).
+void UnitGroups_HideBoard(playergroup viewer) {
+    int i;
+    int c;
+    int s;
+
+    i = 1;
+    while (i <= c_ugPresets) {
+        DialogControlSetVisible(g_ug_btnPreset[i], viewer, false);
+        i = i + 1;
+    }
+    c = 1;
+    while (c <= c_ugGroups) {
+        DialogControlSetVisible(g_ug_lblCol[c], viewer, false);
+        s = 1;
+        while (s <= c_ugSlots) {
+            DialogControlSetVisible(g_ug_btnMod[c][s], viewer, false);
+            s = s + 1;
+        }
+        c = c + 1;
+    }
+    DialogControlSetVisible(g_ug_lblCmd, viewer, false);
+    DialogControlSetVisible(g_ug_btnLock, viewer, false);
+}
+
+// One decider's whole board. oneHuman = a single human decides both sides, so
+// "your opponent" would mean nothing.
+void UnitGroups_RenderSide(playergroup viewer, bool isP1, bool oneHuman) {
+    int    side;
+    int    other;
+    int    race;
+    int    preset;
+    int    i;
+    int    c;
+    int    s;
+    int    modIdx;
+    int    cmdMod;
+    int    cmdCount;
+    int    state;
+    bool   locked;
+    bool   canClick;
+    string sub;
+    string info;
+    string sideName;
+    string tag;
+    string modName;
+    string colText;
+    string cmdText;
+
+    side     = UnitGroups_SideIdx(isP1);
+    other    = 3 - side;
+    race     = UnitGroups_RaceOf(side);
+    preset   = g_ug_preset[side];
+    locked   = g_ug_locked[side];
+    canClick = !locked;
+    if (isP1) { sideName = "P1"; } else { sideName = "P2"; }
+
+    // Status lines.
+    if (locked) {
+        sub = "<c val=\"888888\">Locked in  -  waiting for your opponent...</c>";
+    } else if (oneHuman) {
+        sub = "<c val=\"00FF88\">Set up " + sideName + "'s unit groups, then Lock in</c>";
+    } else {
+        sub = "<c val=\"00FF88\">YOUR TURN  -  pick a split, give each group a modifier, then Lock in</c>";
+    }
+    info = "A modifier only affects units in its group  -  workers, structures and support units get none";
+    if (!oneHuman) {
+        info = "Your opponent:  " + UnitGroups_StateText(g_ug_locked[other])
+            + "   -   their choice stays hidden until the summary";
+    }
+    DialogControlSetPropertyAsText(g_ug_lblSub, c_triggerControlPropertyText, viewer, StringToText(sub));
+    DialogControlSetPropertyAsText(g_ug_lblInfo, c_triggerControlPropertyText, viewer,
+        StringToText(DraftStyle_Small("<c val=\"CCCCCC\">" + info + "</c>")));
+
+    // The four splits.
+    i = 1;
+    while (i <= c_ugPresets) {
+        if (preset == i) { state = c_draftStateSelected; tag = "CHOSEN"; }
+        else             { state = c_draftStateOpen;     tag = ""; }
+        DraftStyle_ApplyCard(g_ug_btnPreset[i], viewer, state,
+            DraftStyle_Card(state, tag, UnitGroups_PresetName(i), UnitGroups_PresetGroupsText(i, race)),
+            canClick);
+        DraftStyle_SetTip(g_ug_btnPreset[i], viewer, UnitGroups_PresetDesc(i));
+        i = i + 1;
+    }
+
+    // The three group columns: name, the modifier assigned to it, the units.
+    c = 1;
+    while (c <= c_ugGroups) {
+        s = UnitGroups_SlotInGroup(side, c);
+        if (s > 0) {
+            modName = "<c val=\"4ADB92\">" + CycleMod_Name(g_ug_slotMod[side][s]) + "</c>";
+        } else {
+            modName = "<c val=\"7A7A7A\">no modifier</c>";
+        }
+        colText = "<c val=\"" + UnitGroups_GroupColor(c) + "\">" + UnitGroups_GroupName(preset, race, c) + "</c>"
+            + "\n" + modName
+            + "\n" + DraftStyle_Small("<c val=\"CCCCCC\">"
+                + UnitGroups_UnitNames(UnitGroups_Units(preset, race, c), "\n") + "</c>");
+        DialogControlSetPropertyAsText(g_ug_lblCol[c], c_triggerControlPropertyText, viewer, StringToText(colText));
+        DialogControlSetVisible(g_ug_lblCol[c], viewer, true);
+
+        // One button per modifier under each column; the one assigned here is drawn chosen.
+        s = 1;
+        while (s <= c_ugSlots) {
+            if (s <= g_ug_modCount[side]) {
+                modIdx = g_ug_slotMod[side][s];
+                if (g_ug_slotGroup[side][s] == c) { state = c_draftStateSelected; tag = "ASSIGNED"; }
+                else                              { state = c_draftStateOpen;     tag = ""; }
+                DraftStyle_ApplyCard(g_ug_btnMod[c][s], viewer, state,
+                    DraftStyle_Card(state, tag, CycleMod_Name(modIdx), CycleMod_BucketName(CycleMod_Bucket(modIdx))),
+                    canClick);
+                DraftStyle_SetTip(g_ug_btnMod[c][s], viewer, CycleMod_Name(modIdx) + "<n/>" + CycleMod_Desc(modIdx));
+            } else {
+                DialogControlSetVisible(g_ug_btnMod[c][s], viewer, false);
+            }
+            s = s + 1;
+        }
+        c = c + 1;
+    }
+
+    // The Command pick, which is not scoped.
+    cmdMod = 0;
+    if (isP1) { cmdCount = g_cycle_p1Count; } else { cmdCount = g_cycle_p2Count; }
+    i = 1;
+    while (i <= cmdCount) {
+        if (isP1) { modIdx = CycleMod_P1Mod(i); } else { modIdx = CycleMod_P2Mod(i); }
+        if (CycleMod_Bucket(modIdx) == c_cycleBucketCommand) { cmdMod = modIdx; }
+        i = i + 1;
+    }
+    if (cmdMod > 0) {
+        cmdText = "<c val=\"7FD0FF\">COMMAND</c>  " + CycleMod_Name(cmdMod)
+            + "  <c val=\"AAAAAA\">applies to all units</c>";
+        DialogControlSetPropertyAsText(g_ug_lblCmd, c_triggerControlPropertyText, viewer,
+            StringToText(DraftStyle_Small(cmdText)));
+        DialogControlSetVisible(g_ug_lblCmd, viewer, true);
+    } else {
+        DialogControlSetVisible(g_ug_lblCmd, viewer, false);
+    }
+
+    // Lock in: greyed out for the first c_unitGroupsGrace seconds of a step (a
+    // misclick guard), and inert once the side is locked.
+    DialogControlSetVisible(g_ug_btnLock, viewer, true);
+    if (locked) {
+        DialogControlSetPropertyAsText(g_ug_btnLock, c_triggerControlPropertyText, viewer,
+            StringToText("<c val=\"888888\">Locked in</c>"));
+        DialogControlSetEnabled(g_ug_btnLock, viewer, false);
+    } else if (g_ug_graceLocked) {
+        DialogControlSetPropertyAsText(g_ug_btnLock, c_triggerControlPropertyText, viewer,
+            StringToText("<c val=\"888888\">...</c>"));
+        DialogControlSetEnabled(g_ug_btnLock, viewer, false);
+    } else {
+        DialogControlSetPropertyAsText(g_ug_btnLock, c_triggerControlPropertyText, viewer,
+            StringToText("<c val=\"00FF88\">Lock in</c>"));
+        DialogControlSetEnabled(g_ug_btnLock, viewer, true);
+    }
+}
+
+void UnitGroups_UpdateUI() {
+    string title;
+
+    title = "<c val=\"FFD700\">UNIT GROUPS</c>   -   pick a split, then give each group one of your modifiers";
+    if (!g_ug_simul) {
+        if (g_ug_step == 1) { title = title + "      <c val=\"7FD0FF\">P1</c>"; }
+        else                { title = title + "      <c val=\"FF9F7F\">P2</c>"; }
+    }
+    DialogControlSetPropertyAsText(g_ug_lblTitle, c_triggerControlPropertyText, Tardigrade_Viewers(),
+        StringToText(title));
+
+    if (g_draft_p1 == g_draft_p2) {
+        // One human for both sides: always the side that is up.
+        UnitGroups_RenderSide(PlayerGroupSingle(g_draft_p1), UnitGroups_UpIsP1(), true);
+    } else {
+        UnitGroups_RenderSide(PlayerGroupSingle(g_draft_p1), true, false);
+        UnitGroups_RenderSide(PlayerGroupSingle(g_draft_p2), false, false);
+    }
+
+    // Spectators: status only. Choices stay hidden until the summary.
+    if (Tardigrade_HasAudience()) {
+        UnitGroups_HideBoard(Tardigrade_Audience());
+        DialogControlSetPropertyAsText(g_ug_lblSub, c_triggerControlPropertyText, Tardigrade_Audience(),
+            StringToText("<c val=\"888888\">Spectating  -  the players are choosing their unit groups...</c>"));
+        DialogControlSetPropertyAsText(g_ug_lblInfo, c_triggerControlPropertyText, Tardigrade_Audience(),
+            StringToText(DraftStyle_Small("<c val=\"CCCCCC\">P1:  " + UnitGroups_StateText(g_ug_locked[1])
+                + "      P2:  " + UnitGroups_StateText(g_ug_locked[2]) + "</c>")));
+    }
+
+    // The YOLO button, for whichever side can still use it.
+    CycleMod_YoloButtonUpdate(g_ug_btnYolo, c_stageRoster, UnitGroups_UpIsP1());
+}
+
+//--------------------------------------------------------------------------------------------------
+// Flow
+//--------------------------------------------------------------------------------------------------
+void UnitGroups_RegisterSide(int side) {
+    int    race;
+    int    preset;
+    int    grp;
+    int    n;
+    int    a;
+    int    s;
+    int    m;
+    string unitList;
+    string baseType;
+    string altType;
+    string altList;
+    string logMsg;
+
+    race   = UnitGroups_RaceOf(side);
+    preset = g_ug_preset[side];
+
+    grp = 1;
+    while (grp <= c_ugGroups) {
+        unitList = UnitGroups_Units(preset, race, grp);
+        n = 1;
+        baseType = UnitGroups_Token(unitList, n);
+        while (baseType != "") {
+            DataTableSetInt(true, UnitGroups_Key(side, baseType), grp);
+            altList = UnitGroups_Alts(baseType);
+            a = 1;
+            altType = UnitGroups_Token(altList, a);
+            while (altType != "") {
+                DataTableSetInt(true, UnitGroups_Key(side, altType), grp);
+                a = a + 1;
+                altType = UnitGroups_Token(altList, a);
+            }
+            n = n + 1;
+            baseType = UnitGroups_Token(unitList, n);
+        }
+        grp = grp + 1;
+    }
+
+    m = 1;
+    while (m <= c_cycleModCount) {
+        g_ug_modGroup[side][m] = 0;
+        m = m + 1;
+    }
+    logMsg = "Unit groups P" + IntToString(side) + ": " + UnitGroups_PresetName(preset);
+    s = 1;
+    while (s <= g_ug_modCount[side]) {
+        g_ug_modGroup[side][g_ug_slotMod[side][s]] = g_ug_slotGroup[side][s];
+        logMsg = logMsg + "  " + CycleMod_Name(g_ug_slotMod[side][s]) + "="
+            + UnitGroups_GroupName(preset, race, g_ug_slotGroup[side][s]);
+        s = s + 1;
+    }
+    Debug_Log(logMsg);
+}
+
+// Register both sides, flip Active, tear the stage down, run the callback.
+void UnitGroups_Commit() {
+    int side;
+
+    side = 1;
+    while (side <= 2) {
+        UnitGroups_RegisterSide(side);
+        side = side + 1;
+    }
+    g_ug_done = true;
+
+    DraftTimer_Disarm();
+    if (g_ug_trigger != null) { TriggerDestroy(g_ug_trigger); g_ug_trigger = null; }
+    if (g_ug_dialog != c_invalidDialogId) {
+        DialogDestroy(g_ug_dialog);
+        g_ug_dialog = c_invalidDialogId;
+    }
+    if (g_ug_callback != null) {
+        TriggerExecute(g_ug_callback, false, false);
+    }
+}
+
+void UnitGroups_NextStep();
+
+// Frees Lock in c_unitGroupsGrace real seconds into a step, unless the step has
+// moved on meanwhile (a newer token).
+bool UnitGroups_Grace(bool testConds, bool runActions) {
+    int token;
+    token = g_ug_graceToken;
+    Wait(c_unitGroupsGrace, c_timeReal);
+    if (token != g_ug_graceToken) { return true; }
+    if (g_ug_step < 1 || g_ug_step > g_ug_stepCount) { return true; }
+    g_ug_graceLocked = false;
+    UnitGroups_UpdateUI();
+    return true;
+}
+
+void UnitGroups_BeginStep() {
+    int side;
+
+    if (g_ug_step > g_ug_stepCount) {
+        UnitGroups_Commit();
+        return;
+    }
+
+    // A YOLO side is rolled and locked in on the spot.
+    side = 1;
+    while (side <= 2) {
+        if (UnitGroups_StepHasSide(side == 1)) {
+            if (!g_ug_locked[side]) {
+                if (CycleMod_SideIsYolo(side == 1, c_stageRoster)) {
+                    UnitGroups_RandomizeSide(side);
+                    UnitGroups_LockSide(side);
+                }
+            }
+        }
+        side = side + 1;
+    }
+    if (UnitGroups_StepDone()) {
+        DraftTimer_Disarm();
+        UnitGroups_NextStep();
+        return;
+    }
+
+    // Lock in starts greyed out; UnitGroups_Grace frees it shortly.
+    g_ug_graceLocked = true;
+    g_ug_graceToken  = g_ug_graceToken + 1;
+    TriggerExecute(TriggerCreate("UnitGroups_Grace"), false, false);
+
+    // "Your turn" cue for each human acting this step (a lone human is cued once).
+    DraftStyle_TurnCuePlayer(g_draft_p1);
+    if (g_draft_p2 != g_draft_p1) { DraftStyle_TurnCuePlayer(g_draft_p2); }
+
+    UnitGroups_UpdateUI();
+
+    // Tournament: one clock for the step (no-op in other modes).
+    DraftTimer_ArmFor(g_ug_autoTrig, c_unitGroupsSeconds, "then your current choice is locked in");
+}
+
+void UnitGroups_NextStep() {
+    g_ug_step = g_ug_step + 1;
+    UnitGroups_BeginStep();
+}
+
+// After a side locked: move on once every side of the step has, else redraw.
+void UnitGroups_AfterLock() {
+    if (UnitGroups_StepDone()) {
+        UnitGroups_NextStep();
+    } else {
+        UnitGroups_UpdateUI();
+    }
+}
+
+// Tournament: the clock ran out - every unlocked side of the step is locked as it stands.
+bool UnitGroups_AutoAct(bool testConds, bool runActions) {
+    int side;
+
+    if (g_ug_step < 1 || g_ug_step > g_ug_stepCount) { return true; }
+    side = 1;
+    while (side <= 2) {
+        if (UnitGroups_StepHasSide(side == 1)) {
+            if (!g_ug_locked[side]) { UnitGroups_LockSide(side); }
+        }
+        side = side + 1;
+    }
+    UnitGroups_NextStep();
+    return true;
+}
+
+bool UnitGroups_OnClicked(bool testConds, bool runActions) {
+    int control;
+    int player;
+    int side;
+    int ySide;
+    int i;
+    int c;
+    int s;
+    int t;
+    int cur;
+
+    if (g_ug_step < 1 || g_ug_step > g_ug_stepCount) { return true; }
+    control = EventDialogControl();
+    player  = EventPlayer();
+
+    // YOLO: a random split and assignment, locked in at once.
+    if (control == g_ug_btnYolo) {
+        ySide = CycleMod_YoloPress(player, c_stageRoster, UnitGroups_UpIsP1());
+        if (ySide == 0) { return true; }
+        DraftStyle_ClickCue(PlayerGroupSingle(player));
+        if (!UnitGroups_StepHasSide(ySide == 1)) { return true; }
+        UnitGroups_RandomizeSide(ySide);
+        UnitGroups_LockSide(ySide);
+        UnitGroups_AfterLock();
+        return true;
+    }
+
+    side = UnitGroups_SideOfPlayer(player);
+    if (side == 0) { return true; }
+    if (g_ug_locked[side]) { return true; }
+
+    if (control == g_ug_btnLock) {
+        if (g_ug_graceLocked) { return true; }
+        DraftStyle_ClickCue(PlayerGroupSingle(player));
+        UnitGroups_LockSide(side);
+        UnitGroups_AfterLock();
+        return true;
+    }
+
+    i = 1;
+    while (i <= c_ugPresets) {
+        if (control == g_ug_btnPreset[i]) {
+            if (g_ug_preset[side] == i) { return true; }
+            DraftStyle_ClickCue(PlayerGroupSingle(player));
+            g_ug_preset[side] = i;
+            CycleMod_SideMarkActed(side == 1, c_stageRoster);   // ends its chance to go YOLO
+            UnitGroups_UpdateUI();
+            return true;
+        }
+        i = i + 1;
+    }
+
+    // A modifier button under column c: assign slot s to c, and the column's
+    // previous modifier takes the group slot s was in.
+    c = 1;
+    while (c <= c_ugGroups) {
+        s = 1;
+        while (s <= c_ugSlots) {
+            if (control == g_ug_btnMod[c][s]) {
+                if (s > g_ug_modCount[side]) { return true; }
+                cur = g_ug_slotGroup[side][s];
+                if (cur == c) { return true; }
+                DraftStyle_ClickCue(PlayerGroupSingle(player));
+                t = UnitGroups_SlotInGroup(side, c);
+                if (t > 0) { g_ug_slotGroup[side][t] = cur; }
+                g_ug_slotGroup[side][s] = c;
+                CycleMod_SideMarkActed(side == 1, c_stageRoster);   // ends its chance to go YOLO
+                UnitGroups_UpdateUI();
+                return true;
+            }
+            s = s + 1;
+        }
+        c = c + 1;
+    }
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Debug auto-run: a random split and assignment for both sides, committed at once
+// (no dialog, no clock).
+//--------------------------------------------------------------------------------------------------
+void UnitGroups_RandomizeAll() {
+    int side;
+
+    side = 1;
+    while (side <= 2) {
+        UnitGroups_BuildSlots(side);
+        UnitGroups_RandomizeSide(side);
+        side = side + 1;
+    }
+    UnitGroups_Commit();
+}
+
+//--------------------------------------------------------------------------------------------------
+// Start. Called by Tardigrade_OnCycleFinished once the roster globals are filled
+// (g_roster_p1Race / p2Race); callback continues to the summary and the game.
+//
+// Dialog layout (1100 x 676), everything c_anchorTop, x is the control's centre
+// relative to the dialog's centre (550):
+//
+//   title (y 16) / status (46) / info (68) / "SPLIT" heading (96)
+//   4 split cards, 255 x 56 at y 114, x -398 / -133 / 132 / 397
+//   3 group columns, 340 x 212 at y 180, x -360 / 0 / 360 (group name, assigned
+//     modifier, up to 8 unit names)
+//   3 modifier buttons per column, 340 x 52 at y 398 / 454 / 510
+//   Command line (1060 x 18) at y 572
+//   YOLO 270 x 48 at (-400, 604), Lock in 360 x 48 at (0, 604)
+//--------------------------------------------------------------------------------------------------
+void UnitGroups_Start(trigger callback) {
+    int side;
+    int i;
+    int c;
+    int s;
+    int lbl;
+
+    g_ug_callback = callback;
+    g_ug_done     = false;
+    side = 1;
+    while (side <= 2) {
+        g_ug_preset[side] = 1;
+        g_ug_locked[side] = false;
+        UnitGroups_BuildSlots(side);
+        side = side + 1;
+    }
+
+    // Two human deciders choose at once; one human does P1, then P2.
+    g_ug_simul = (g_draft_p1 != g_draft_p2);
+    if (g_ug_simul) { g_ug_stepCount = 1; } else { g_ug_stepCount = 2; }
+    g_ug_autoTrig = TriggerCreate("UnitGroups_AutoAct");
+
+    g_ug_dialog = DialogCreate(1100, 676, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_ug_dialog);
+    DialogSetVisible(g_ug_dialog, Tardigrade_Viewers(), true);
+
+    g_ug_lblTitle = DialogControlCreate(g_ug_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_ug_lblTitle, Tardigrade_Viewers(), 1060, 28);
+    DialogControlSetPosition(g_ug_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 16);
+
+    g_ug_lblSub = DialogControlCreate(g_ug_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_ug_lblSub, Tardigrade_Viewers(), 1060, 20);
+    DialogControlSetPosition(g_ug_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 46);
+
+    g_ug_lblInfo = DialogControlCreate(g_ug_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_ug_lblInfo, Tardigrade_Viewers(), 1060, 20);
+    DialogControlSetPosition(g_ug_lblInfo, Tardigrade_Viewers(), c_anchorTop, 0, 68);
+
+    lbl = DialogControlCreate(g_ug_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(lbl, Tardigrade_Viewers(), 1060, 14);
+    DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 96);
+    DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
+        StringToText(DraftStyle_Small("<c val=\"7FD0FF\">SPLIT YOUR UNITS INTO THREE GROUPS</c>")));
+
+    g_ug_trigger = TriggerCreate("UnitGroups_OnClicked");
+
+    i = 1;
+    while (i <= c_ugPresets) {
+        g_ug_btnPreset[i] = DialogControlCreate(g_ug_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_ug_btnPreset[i], Tardigrade_Viewers());
+        DialogControlSetSize(g_ug_btnPreset[i], Tardigrade_Viewers(), 255, 56);
+        DialogControlSetPosition(g_ug_btnPreset[i], Tardigrade_Viewers(), c_anchorTop,
+            -398 + (i - 1) * 265, 114);
+        DialogControlSetVisible(g_ug_btnPreset[i], Tardigrade_Viewers(), false);
+        TriggerAddEventDialogControl(g_ug_trigger, c_playerAny, g_ug_btnPreset[i],
+            c_triggerControlEventTypeClick);
+        i = i + 1;
+    }
+
+    c = 1;
+    while (c <= c_ugGroups) {
+        g_ug_lblCol[c] = DialogControlCreate(g_ug_dialog, c_triggerControlTypeLabel);
+        DialogControlSetSize(g_ug_lblCol[c], Tardigrade_Viewers(), 340, 212);
+        DialogControlSetPosition(g_ug_lblCol[c], Tardigrade_Viewers(), c_anchorTop, -360 + (c - 1) * 360, 180);
+        DialogControlSetVisible(g_ug_lblCol[c], Tardigrade_Viewers(), false);
+
+        s = 1;
+        while (s <= c_ugSlots) {
+            g_ug_btnMod[c][s] = DialogControlCreate(g_ug_dialog, c_triggerControlTypeButton);
+            DraftStyle_InitButton(g_ug_btnMod[c][s], Tardigrade_Viewers());
+            DialogControlSetSize(g_ug_btnMod[c][s], Tardigrade_Viewers(), 340, 52);
+            DialogControlSetPosition(g_ug_btnMod[c][s], Tardigrade_Viewers(), c_anchorTop,
+                -360 + (c - 1) * 360, 398 + (s - 1) * 56);
+            DialogControlSetVisible(g_ug_btnMod[c][s], Tardigrade_Viewers(), false);
+            TriggerAddEventDialogControl(g_ug_trigger, c_playerAny, g_ug_btnMod[c][s],
+                c_triggerControlEventTypeClick);
+            s = s + 1;
+        }
+        c = c + 1;
+    }
+
+    g_ug_lblCmd = DialogControlCreate(g_ug_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_ug_lblCmd, Tardigrade_Viewers(), 1060, 18);
+    DialogControlSetPosition(g_ug_lblCmd, Tardigrade_Viewers(), c_anchorTop, 0, 572);
+    DialogControlSetVisible(g_ug_lblCmd, Tardigrade_Viewers(), false);
+
+    g_ug_btnYolo = DialogControlCreate(g_ug_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_ug_btnYolo, Tardigrade_Viewers());
+    DialogControlSetSize(g_ug_btnYolo, Tardigrade_Viewers(), 270, 48);
+    DialogControlSetPosition(g_ug_btnYolo, Tardigrade_Viewers(), c_anchorTop, -400, 604);
+    DialogControlSetVisible(g_ug_btnYolo, Tardigrade_Viewers(), false);
+    TriggerAddEventDialogControl(g_ug_trigger, c_playerAny, g_ug_btnYolo,
+        c_triggerControlEventTypeClick);
+
+    g_ug_btnLock = DialogControlCreate(g_ug_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_ug_btnLock, Tardigrade_Viewers());
+    DialogControlSetSize(g_ug_btnLock, Tardigrade_Viewers(), 360, 48);
+    DialogControlSetPosition(g_ug_btnLock, Tardigrade_Viewers(), c_anchorTop, 0, 604);
+    DialogControlSetVisible(g_ug_btnLock, Tardigrade_Viewers(), false);
+    TriggerAddEventDialogControl(g_ug_trigger, c_playerAny, g_ug_btnLock,
+        c_triggerControlEventTypeClick);
+
+    g_ug_step = 1;
+    UnitGroups_BeginStep();
+}

@@ -35,6 +35,7 @@ via a callback chain:
 Setup screen → Race Draft → Modifier Draft → Unit (Roster) Draft → Summary + 30s countdown → Game
             ↘ (Testing) TestingMode_Start → Game
                                            ↘ (Full roster) skips the Unit Draft
+                                           ↘ (Unit groups) Modifier Draft (buckets) → Unit groups stage → Summary
 ```
 
 - `Tardigrade_Init` → `RaceDraft_Setup` (teams, deciders, P1/P2 roles, pause,
@@ -45,7 +46,10 @@ Setup screen → Race Draft → Modifier Draft → Unit (Roster) Draft → Summa
 - `Tardigrade_OnDraftFinished` → `CycleMod_StartDraft` (the Buckets hook sits
   there: `GameMode_IsBuckets()` switches it to the bucket draft)
 - `Tardigrade_OnCycleFinished` → `RosterDraft_Start`, or, with Full roster, fills
-  the `g_roster_*` race/player globals and goes straight to `Tardigrade_StartGame`
+  the `g_roster_*` race/player globals and goes straight to `Tardigrade_StartGame`.
+  With Unit groups (checked first - `GameMode_IsFullRoster()` is true there too)
+  it fills the same globals and calls `UnitGroups_Start`, whose callback
+  `Tardigrade_OnGroupsFinished` runs `Tardigrade_StartGame`.
 - `Tardigrade_OnRosterFinished` → `Tardigrade_StartGame`
 
 `Tardigrade_StartGame` shuts the Tournament timer down, shows
@@ -85,14 +89,19 @@ card columns move left via `g_cycle_boardShift`; the legacy phase board keeps
 - **Setup screen** (`GameMode_Select`, replaces the old mode screen): one dialog
   for `g_draft_modeChooser` = team 1's human decider (the only human in a PvAI
   game) with three rows and Start: **Mode** (Casual / Tournament / Testing),
-  **Roster** (Full roster / Alternating draft) and **Modifiers** (Buckets / Free
-  draft). Defaults Casual, Alternating draft, Free draft. A click selects (the
+  **Roster** (Full roster / Unit groups / Alternating draft, cards at x -190 / 0 /
+  190, width 180) and **Modifiers** (Buckets / Free draft). Defaults Casual,
+  Alternating draft, Free draft. A click selects (the
   chosen card is drawn `c_draftStateSelected`, "CHOSEN"); Start commits and runs
   the callback. Everyone else sees the same dialog disabled and updating live
   with "Player N is setting up..." Selecting Testing greys the Roster and
-  Modifiers rows (`c_draftStateTaken`). No Tournament clock. Choices live in
-  `g_game_mode`, `g_game_fullRoster`, `g_game_buckets`, read through
-  `GameMode_IsFullRoster()` / `GameMode_IsBuckets()` (both false in Testing).
+  Modifiers rows (`c_draftStateTaken`). Selecting Unit groups forces the bucket
+  draft: Buckets is drawn chosen, Free draft N/A (`c_draftStateTaken`), and
+  clicking Free draft does nothing. No Tournament clock. Choices live in
+  `g_game_mode`, `g_game_roster` (`c_gameRosterDraft` 0 / `c_gameRosterFull` 1 /
+  `c_gameRosterGroups` 2) and `g_game_buckets`, read through
+  `GameMode_IsFullRoster()` (Full **or** Groups) / `GameMode_IsUnitGroups()` /
+  `GameMode_IsBuckets()` (`g_game_buckets` **or** Groups); all false in Testing.
   The no-human and debug auto-run paths never open it and use the defaults.
   **Full roster:** the unit draft is skipped, every unit is allowed
   (`RosterEnforce_ApplyFullRoster`: no `TechTreeUnitAllow`, just
@@ -380,6 +389,100 @@ Protect branch is unreachable. `ProtectDraft.galaxy` and the Protect branches in
   cards), per-viewer hiding of points during the points step, and the summary
   READY / REROLL buttons.
 
+### 2c. Unit Groups (`UnitGroups.galaxy`)
+Setup option **Unit groups** (`GameMode_IsUnitGroups()`): every unit is allowed
+(it counts as Full roster everywhere: no unit draft, no roster HUD, no REROLL,
+No Bans N/A, Archon/Ravager/... fallbacks tidied), the modifier draft is the
+bucket draft (forced), and each side's three non-Command modifiers (Maneuver,
+Endurance, Firepower picks) apply to **one group of that side's units only**.
+The Command pick stays global. Chain: Setup → Race → Bucket modifier draft →
+**Unit groups stage** → Summary → Game. Included from `TardigradeLogic` after
+`RosterEnforce`, before `TestingMode`. Testing, the legacy phase mode and
+Protect and Ban never use it.
+
+**Stage, per side:** pick one of four splits (default Tech) of the race's pool
+units into three groups; assign the side's three non-Command mods to the three
+groups (a permutation; default Maneuver → group 1, Endurance → 2, Firepower → 3,
+`UnitGroups_BuildSlots`, bucket order via `CycleMod_Bucket`); Lock in. Clicking a
+mod button under a column assigns it there and the column's old mod takes the
+group the clicked mod left (swap). The Command pick is shown as "all units".
+
+**Presets** (pool ids from `TardigradeRosterConfig`; every pool unit appears
+exactly once per preset, largest group 8). Names and unit lists are in
+`UnitGroups_GroupName` / `UnitGroups_Units*`:
+
+| Preset | Terran | Protoss | Zerg |
+|---|---|---|---|
+| Tech (where built) | Barracks / Factory / Starport | Gateway / Robotics / Stargate | Hatchery / Lair / Hive |
+| Role | Bio / Mech / Energy | Frontline / Ranged / Energy | Frontline / Ranged / Energy |
+| Speed (base move speed) | Fast / Steady / Slow | same | same |
+| Cost (minerals + gas incl. morph source) | Cheap / Mid / Expensive | same | same |
+
+**Alternate forms / spawned units** count as their base type's group
+(`UnitGroups_Alts`): SiegeTankSieged, VikingAssault, LiberatorAG, ThorAP,
+WidowMineBurrowed, WarpPrismPhasing, AutoTurret (Raven), Interceptor (Carrier),
+DisruptorPhased, AdeptPhaseShift, the burrowed forms of Zergling / Baneling /
+Roach / Ravager / Hydralisk / LurkerMP / Infestor / Ultralisk / Queen,
+InfestorTerran, SwarmHostBurrowedMP + LocustMP + LocustMPFlying, Broodling +
+BroodlingEscort (Brood Lord). Cocoons and eggs (BanelingCocoon, RavagerCocoon,
+LurkerMPEgg, BroodLordCocoon) are in no group, as are workers, structures,
+Observer / Overseer / Overlord / Changeling and MULE. Hellion and Hellbat are
+separate pool units: a morph between them changes group.
+
+**Dialog** (`UnitGroups_Start`, one dialog 1100 × 676, `Tardigrade_ObservableDialog`,
+rendered per viewer with `PlayerGroupSingle(decider)` like ProtectDraft): title,
+status line and info line (y 16 / 46 / 68); four split cards 255 × 56 at y 114
+(chosen one `c_draftStateSelected`, "CHOSEN"; tooltip = what the split means);
+three group columns 340 × 212 at y 180 (x -360 / 0 / 360: group name, the
+assigned modifier, the group's unit names); three modifier buttons 340 × 52 per
+column at y 398 / 454 / 510 (assigned one drawn chosen, "ASSIGNED"; tooltip =
+mod description); Command line at y 572; YOLO (-400, 604) and Lock in (0, 604).
+After locking the side's controls are inert and Lock in reads "Locked in" (the
+status line says waiting for the opponent). A player only ever sees the
+opponent as choosing / locked in until the summary.
+
+**Deciders:** two different human deciders choose at once (one step, one clock).
+One human deciding both sides (`g_draft_p1 == g_draft_p2`) does P1 (step 1) then
+P2 (step 2), as ProtectDraft's "one task per step, P1 first". Deciders are
+always humans (an AI side is decided by the lone human), so nothing special is
+done for AI. Spectators get `Tardigrade_ObservableDialog` plus a hidden board and a
+status line (P1: choosing/locked in, P2: ...) targeted at `Tardigrade_Audience()`.
+
+**Tournament / grace / YOLO:** `DraftTimer_ArmFor(UnitGroups_AutoAct,
+c_unitGroupsSeconds = 30, "then your current choice is locked in")` per step;
+expiry locks every unlocked side of the step as it stands. Lock in is greyed for
+`c_unitGroupsGrace` = 2 real seconds at each step start (token-guarded
+`UnitGroups_Grace`, copied from ProtectDraft). YOLO reuses stage `c_stageRoster`
+(`CycleMod_YoloButtonUpdate` / `_YoloPress` / `_SideMarkActed`): a side's first
+split or assignment click, or its Lock in, marks it acted; YOLO press rolls a
+random split + random permutation and locks in at once (`UnitGroups_RandomizeSide`);
+a side already YOLO at step start is rolled and locked immediately. The YOLO
+card's text comes from CycleMod and reads "for the roster draft".
+
+**Commit** (`UnitGroups_Commit`, after the last step): writes `g_ug_modGroup[side][modIdx]`
+(`int[3][24]`, side 1 = P1) and, for every base type of each side's chosen preset
+and each alternate form, the data-table key `"TG_ug" + side + "_" + unitType`
+(global table) → group 1..3 (missing key reads 0); sets the done flag, disarms the
+timer, destroys the dialog and trigger, runs the callback. `UnitGroups_RandomizeAll`
+(debug auto-run) does a random split + permutation for both sides and commits.
+
+**Interface** (CycleMod forward-declares these): `bool UnitGroups_Active()` (true
+once committed); `bool UnitGroups_Covers(bool isP1, int modIdx, string unitType)` -
+true when not active or when the mod's bucket is Command/None, else the side's
+group for the mod is non-zero and equals the side's group for the type (one bool,
+one array read, one data-table read); `string UnitGroups_ModLabel(bool isP1, int
+modIdx)` - group name or "". Also used by the summary: `UnitGroups_ModUnits`,
+`UnitGroups_SidePresetName`.
+
+**Summary:** in this mode each group pick shows its group name beside the mod name
+and the group's unit names (small, grey) before the description, the Command pick
+says "all units", the UNITS section reads "All units (split: Speed)", the dialog
+grows from 780 × 710 to 780 × 800 (columns 570 tall, READY/REROLL pushed down 90),
+and REROLL is hidden whenever `GameMode_IsFullRoster()`. Debug auto-run:
+`GameMode_IsBuckets()` rolls one random mod per bucket per side (distinct across
+sides, never No Bans / YOLO), and in Unit groups it calls `UnitGroups_RandomizeAll()`
+before `Tardigrade_StartGame`.
+
 ### 3. Unit (Roster) Draft (`RosterDraft.galaxy`)
 - Each player ends with **6 drafted unit types** (no protected "core";
   `c_rosterRosterSize = 6`), or **7** for a YOLO side (`c_rosterYoloSize`).
@@ -506,6 +609,48 @@ Protect branch is unreachable. `ProtectDraft.galaxy` and the Protect branches in
   system: 3 drafted modifiers rotate, apply to every unit on the map, with a
   top-center legend HUD, per-phase lighting, and a countdown. All of this code
   is preserved behind the gate but unused.
+
+### Unit groups scoping (Unit groups mode only)
+When `UnitGroups_Active()`, a non-Command modifier reaches only the units in its
+group (`UnitGroups_Covers`). `CycleMod.galaxy` forward-declares `UnitGroups_Active`
+/ `_Covers` / `_ModLabel` at the top (UnitGroups is included after it). Outside the
+mode `Covers` is always true, so none of this changes anything.
+- **Per-unit gate:** `CycleMod_UnitHasBehavior` returns
+  `UnitGroups_Covers(side, thatModIdx, UnitGetType(u))` instead of `true` on a
+  match (the type is read only after a match - this runs per unit per scan). Its
+  only caller is `CycleMod_UnitModActive`, and every `UnitModActive` call site asks
+  about a specific unit, so this scopes all of: Forced March, Adrenaline,
+  Reinforcements, Predator (source), Battle Blink, Refund (dying unit), Shared
+  Damage (absorber and partners, via the buff), Martyrdom (dying unit and
+  recipients), Field Repair, Photon Coating, Entrenchment, Overwatch arming, the
+  Veteran killer root, Open Skies' per-unit penalty buff. Spawned children count
+  as their parent's type through the alternate-forms registration (Interceptor =
+  Carrier, Locust = Swarm Host, ...), so `VeteranRoot` / `SyncVeteranStacks` and
+  Overwatch's bonus-by-root stay consistent without changes.
+- **Quickstep / Arcane Surge** (`CycleMod_QuickstepForPlayer`,
+  `CycleMod_ArcaneSurgeForPlayer`): switching on skips cached types not covered for
+  the player's side; the caches stay global and unfiltered, and the revert paths
+  restore every type (harmless). Structures are in no group, so Arcane Surge does
+  not double their regen in this mode.
+- **Open Skies** (`CycleMod_OpenSkiesForPlayer`): when active,
+  `CycleMod_BuildOpenSkiesMarks(player, isP1)` sweeps the unit catalog once, and for
+  each covered type marks its `WeaponArray` weapons (`CycleMod_UnitWeaponSlot`) in
+  the data table (`CycleMod_OpenSkiesMarkKey` = `TgOSM<player>_<weapon>`); the
+  weapon-cache loop skips unmarked weapons. The skip list still applies. A weapon
+  shared with an uncovered type is edited for both (per-player weapon data can't
+  do better). The splash trigger `CycleMod_OnOpenSkiesSplash` also returns unless
+  the caster's type is covered. The `TardigradeVal_OpenSkies` validators read the
+  player-wide flag and were left alone: an unedited weapon cannot target the new
+  plane anyway.
+- **Overwatch baking** (`CycleMod_ApplyOverwatchDamageForPlayer`): when active,
+  effect index 6 (the Widow Mine direct hit) is baked only if `WidowMine` is covered
+  and indices 0-5 (the Baneling's effects, both Open Skies air splashes included)
+  only if `Baneling` is covered. The trigger-side bonus needs nothing: an uncovered
+  unit is never armed.
+- **In-game panel:** `CycleMod_ModLine(modIdx, isP1)` appends the group label after
+  the name, `Forced March  (Fast)  - desc`; `CycleMod_InitPanelForPlayer` works out
+  which side the YOURS rows belong to (`mineIsP1`). Rows are 450 wide - the longest
+  descriptions may clip with a label; unverified.
 
 ### Activation delay
 - `const fixed c_cycleActivationDelay = 180.0` — modifiers stay **dormant** until
@@ -929,6 +1074,7 @@ Notes:
 | `RosterDraft.galaxy` | Unit draft UI (opening picks → bans → final picks) + in-game roster HUD. |
 | `ProtectDraft.galaxy` | Protect and Ban points + bans screen; runs before the unit draft. Included after `RosterDraft`. |
 | `RosterEnforce.galaxy` | Disables non-drafted units; grants coupled units. |
+| `UnitGroups.galaxy` | Unit groups roster option: split + modifier-assignment stage, group data, `UnitGroups_Covers` lookup. Included after `RosterEnforce`, before `TestingMode`. |
 | `RequirementData.xml` | Un-gates the upgrade buttons Blizzard hid behind `CRequirementAllowUnit` (Protoss air weapons/armor, Stimpack) — see Roster enforcement. |
 | `CycleMod.galaxy` | Modifier draft + per-player in-game modifiers (+ gated legacy phase system). |
 | `Debug.galaxy` | Solo-test detection, auto-run, logging. |
@@ -969,6 +1115,7 @@ Notes:
 | **Modifiers 11–14, unverified in-editor** | Nothing below has been compiled or played. In order of risk: **(1) Shared Damage** — test first: hit one of the drafting side's units after 3:00. If it takes **no damage at all**, `TriggerAddEventUnitDamageAbsorbed` isn't firing for a `ModifyFraction=0` response (the handler already falls back to attempted − landed if the absorbed amount reads 0, but can't help if the event never fires). Also check the split is post-armor as intended — the handler assumes the absorbed amount is pre-armor. And confirm a Baneling on that side still dies when it detonates and an Adept shade still expires (Kill-flag exclusions). **(2) Refund** (replaced Salvage) — a dead Marine pays 8.75 minerals, a dead Barracks pays nothing, a Zergling morphing into a Baneling pays nothing. **(3) Auto Refineries** — confirm gas lands at ~160/real min, that `c_unitPropResources` on the refinery is the geyser's remaining gas (if it reads 0 the building will never pay), and that evicted workers go to minerals. **(4) No Bans** — pure draft logic, lowest risk. |
 | **This batch, unverified in-editor** (game modes, modifiers 15–17, Auto Refineries changes) | Nothing here has been compiled or played. Check, in order: **(1) compile** — five files changed plus two new ones. **(2) Minerals Only** — the debug log line "Cost paths: …" says which field-path spelling the probe picked, and "Minerals Only: N unit types, M ability cost slots" should be non-zero (dozens / ~80). In game: a Stalker should read and cost 200/0, Stimpack 250/0, Lair 300/0 from a Hatchery; mined gas should appear as minerals within half a second. **(3) Auto Refineries** — a Refinery costs 200 from 0:00 and self-mines from 0:00. **(4) Tournament** — the countdown shows during each step and a random pick lands at 0, including a YOLO side's auto-bans not waiting on the clock. **(5) YOLO** — the YOLO? screen appears before the bans, hides each choice until both lock in, a YOLO side's modifier bans happen by themselves and its picks are skipped, both YOLO skips the board, 7 random units dealt, the other side drafts 6 with no bans against YOLO, the 7th row renders on the draft panel and HUD. **(6) Testing** — `UnitSetProgressComplete` really finishes construction/training/research/morphs (slot numbering is the unknown), the panel toggles, and switching a catalog modifier off restores prices/ranges. **(7) Factory Lines** — the "Factory Lines: … time fields" log line is non-zero (hundreds); a Marine (18s) takes ~15.7s, a Supply Depot (21s) ~18.3s, an SCV still 12s; Siege Mode is unchanged. |
 | **Setup screen / per-stage YOLO / Full roster, unverified in-editor** | Nothing compiled or played. Check: **(1) compile** (GameMode, CycleMod, RaceDraft, RosterDraft, RosterEnforce, TardigradeLogic). **(2) Setup screen** - three rows plus Start, others see it disabled and live, Testing greys Roster/Modifiers. **(3) YOLO button** on each stage: appears only for a human side before its first choice, vanishes after, announces in chat, immediate random action on the side's own turn, race/modifier/unit behaviour as described; lone human deciding both sides gets it for the side that is up; both-YOLO on modifiers skips the board; both-YOLO on units deals both rosters. **(4) Roster mid-stage rebuild** (`RosterDraft_YoloPressed`) - P2 pressing during P1's first pick, and P1 pressing at step 1. **(5) Full roster** - no unit restrictions, Archon/Ravager/Lurker/Brood Lord/Baneling fallbacks hidden, Queen uncapped, no roster HUD, No Bans card N/A and never rolled. |
+| **Unit groups, unverified in-editor** | Nothing compiled or played. Check first: **(1) compile** (GameMode, UnitGroups, TardigradeLogic, CycleMod). **(2) Setup screen** - the three roster cards fit 180px (descriptions may clip when chosen), Unit groups shows Buckets chosen / Free draft N/A. **(3) Groups stage** - the dialog lays out (1100 × 676; unit lists fit the 212px columns at 8 units), split and modifier buttons swap correctly, Lock in grace, both humans choose at once and see only choosing / locked in, lone human gets P1 then P2, YOLO rolls and locks, Tournament expiry locks the current choice, spectators see the status line. **(4) `DataTableGetInt` of a missing key reads 0** and `UnitGroups_Covers` is cheap in the 0.5s scan. **(5) In game** - a group modifier touches only its group (alternate forms and spawned units follow their base unit), the Command pick is global, the panel shows the group label, Open Skies / Quickstep / Arcane Surge / Overwatch catalog edits honour the groups. **(6) Summary** - taller dialog fits, no REROLL, group lists read right. |
 | Economy modifier balance | Auto Refineries' 200-mineral gas buildings and Minerals Only's 1.5× are first-pass. Factory Lines waits for 3:00 like every other in-game modifier (only Auto Refineries and Minerals Only were asked to be live from 0:00) — add it to `CycleMod_ModActiveFromStart` if it should be too. |
 | Activation delay | 3:00 is a starting value (`c_cycleActivationDelay`). |
 | Battle Blink has no visual/audio feedback | `TardigradeAbil_Blink` teleports silently — the Stalker's Blink flash/sound actors are keyed to effect id `Blink`, not reusable under our separate id without duplicating those actor entries too. Not attempted blind (unverifiable without the SC2 Editor); functional but silent. |

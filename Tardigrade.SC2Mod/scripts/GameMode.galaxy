@@ -31,19 +31,40 @@ const int c_tournamentStepSeconds = 15;
 
 int g_game_mode = c_gameModeCasual;
 
-// The other two setup choices. Defaults: Alternating draft (not full roster) and
-// Free draft (not buckets). They only mean something outside Testing, which has
-// no draft - the helpers say so.
-bool g_game_fullRoster = false;
-bool g_game_buckets    = false;
+// The roster choice (what the unit stage is): Alternating draft, Full roster, or
+// Unit groups. Unit groups is Full roster (every unit allowed, no unit draft) plus
+// the bucket draft plus a groups stage after the modifiers (UnitGroups.galaxy).
+const int c_gameRosterDraft  = 0;
+const int c_gameRosterFull   = 1;
+const int c_gameRosterGroups = 2;
+
+// The other setup choices. Defaults: Alternating draft and Free draft (not
+// buckets). They only mean something outside Testing, which has no draft - the
+// helpers say so.
+int  g_game_roster  = c_gameRosterDraft;
+bool g_game_buckets = false;
 
 bool GameMode_IsTournament() { return g_game_mode == c_gameModeTournament; }
 bool GameMode_IsTesting()    { return g_game_mode == c_gameModeTesting; }
 // Full roster: no unit draft, every unit allowed (see RosterEnforce_ApplyFullRoster).
-bool GameMode_IsFullRoster() { return g_game_fullRoster && g_game_mode != c_gameModeTesting; }
+// Unit groups counts too - it allows every unit and has no unit draft - so every
+// Full-roster behaviour carries over to it.
+bool GameMode_IsFullRoster() {
+    if (g_game_mode == c_gameModeTesting) { return false; }
+    return g_game_roster == c_gameRosterFull || g_game_roster == c_gameRosterGroups;
+}
+// Unit groups: Full roster, plus each non-Command modifier applies to one group of
+// the side's units (UnitGroups.galaxy). Check this BEFORE IsFullRoster where the
+// two differ - both are true.
+bool GameMode_IsUnitGroups() {
+    return g_game_roster == c_gameRosterGroups && g_game_mode != c_gameModeTesting;
+}
 // Buckets: the bucket draft - one ban in each bucket, then four picks a side, one
-// per bucket (CycleMod_Bucket; see CycleMod_OpenBucketBoard).
-bool GameMode_IsBuckets()    { return g_game_buckets && g_game_mode != c_gameModeTesting; }
+// per bucket (CycleMod_Bucket; see CycleMod_OpenBucketBoard). Unit groups forces it.
+bool GameMode_IsBuckets() {
+    if (g_game_mode == c_gameModeTesting) { return false; }
+    return g_game_buckets || g_game_roster == c_gameRosterGroups;
+}
 
 // The three stages a side can go YOLO in, each separately (CycleMod_SideIsYolo).
 const int c_stageRace   = 0;
@@ -70,34 +91,39 @@ string GameMode_Desc(int mode) {
 // One dialog, shown to the decider (g_draft_modeChooser), with three rows and a
 // Start button:
 //   Mode       Casual / Tournament / Testing
-//   Roster     Full roster (every unit allowed, no unit draft) / Alternating draft
+//   Roster     Full roster (every unit allowed, no unit draft) / Unit groups
+//              (every unit allowed; each modifier powers one group of units) /
+//              Alternating draft
 //   Modifiers  Buckets (one modifier per bucket) / Free draft (ban 2, pick 3)
 // Defaults: Casual, Alternating draft, Free draft. A click selects an option
 // (the chosen card is drawn as SELECTED), Start commits. Everyone else sees the
 // same dialog disabled and updating live. Testing has no draft, so the Roster
-// and Modifiers rows are greyed out while it is selected.
+// and Modifiers rows are greyed out while it is selected. Unit groups forces the
+// bucket draft: the Modifiers row shows Buckets chosen and Free draft N/A.
 //
-// The choices live in g_game_mode / g_game_fullRoster / g_game_buckets and are
+// The choices live in g_game_mode / g_game_roster / g_game_buckets and are
 // read through the helpers above. They are written straight from the clicks (the
 // dialog IS the pending state); only the callback waits for Start.
 //==================================================================================================
 int     g_gmode_dialog   = c_invalidDialogId;
 int     g_gmode_label    = c_invalidDialogControlId;
 int[3]  g_gmode_btn;                 // [0..2] mode cards, indexed by c_gameMode*
-int[2]  g_gmode_rosterBtn;           // [0] Full roster, [1] Alternating draft
+int[3]  g_gmode_rosterBtn;           // [0] Full roster, [1] Unit groups, [2] Alternating draft
 int[2]  g_gmode_modBtn;              // [0] Buckets, [1] Free draft
 int     g_gmode_start    = c_invalidDialogControlId;
 int     g_gmode_chooser  = 0;
 trigger g_gmode_trigger  = null;
 trigger g_gmode_callback = null;
 
-string GameMode_RosterName(bool full) {
-    if (full) { return "Full roster"; }
+string GameMode_RosterName(int roster) {
+    if (roster == c_gameRosterFull)   { return "Full roster"; }
+    if (roster == c_gameRosterGroups) { return "Unit groups"; }
     return "Alternating draft";
 }
 
-string GameMode_RosterDesc(bool full) {
-    if (full) { return "every unit allowed - no unit draft"; }
+string GameMode_RosterDesc(int roster) {
+    if (roster == c_gameRosterFull)   { return "every unit, no unit draft"; }
+    if (roster == c_gameRosterGroups) { return "each modifier powers a group"; }
     return "pick and ban 6 units each";
 }
 
@@ -149,14 +175,25 @@ void GameMode_SetupRefresh() {
             GameMode_Name(i), GameMode_Desc(i));
         i = i + 1;
     }
-    GameMode_SetupDrawCard(g_gmode_rosterBtn[0], g_game_fullRoster, greyed,
-        GameMode_RosterName(true), GameMode_RosterDesc(true));
-    GameMode_SetupDrawCard(g_gmode_rosterBtn[1], !g_game_fullRoster, greyed,
-        GameMode_RosterName(false), GameMode_RosterDesc(false));
-    GameMode_SetupDrawCard(g_gmode_modBtn[0], g_game_buckets, greyed,
-        GameMode_ModsName(true), GameMode_ModsDesc(true));
-    GameMode_SetupDrawCard(g_gmode_modBtn[1], !g_game_buckets, greyed,
-        GameMode_ModsName(false), GameMode_ModsDesc(false));
+    // Card order: Full roster | Unit groups | Alternating draft.
+    GameMode_SetupDrawCard(g_gmode_rosterBtn[0], g_game_roster == c_gameRosterFull, greyed,
+        GameMode_RosterName(c_gameRosterFull), GameMode_RosterDesc(c_gameRosterFull));
+    GameMode_SetupDrawCard(g_gmode_rosterBtn[1], g_game_roster == c_gameRosterGroups, greyed,
+        GameMode_RosterName(c_gameRosterGroups), GameMode_RosterDesc(c_gameRosterGroups));
+    GameMode_SetupDrawCard(g_gmode_rosterBtn[2], g_game_roster == c_gameRosterDraft, greyed,
+        GameMode_RosterName(c_gameRosterDraft), GameMode_RosterDesc(c_gameRosterDraft));
+    // Unit groups forces the bucket draft: Buckets reads as chosen, Free draft N/A.
+    if (g_game_roster == c_gameRosterGroups) {
+        GameMode_SetupDrawCard(g_gmode_modBtn[0], true, greyed,
+            GameMode_ModsName(true), GameMode_ModsDesc(true));
+        GameMode_SetupDrawCard(g_gmode_modBtn[1], false, true,
+            GameMode_ModsName(false), GameMode_ModsDesc(false));
+    } else {
+        GameMode_SetupDrawCard(g_gmode_modBtn[0], g_game_buckets, greyed,
+            GameMode_ModsName(true), GameMode_ModsDesc(true));
+        GameMode_SetupDrawCard(g_gmode_modBtn[1], !g_game_buckets, greyed,
+            GameMode_ModsName(false), GameMode_ModsDesc(false));
+    }
 }
 
 bool GameMode_OnClicked(bool testConds, bool runActions) {
@@ -190,10 +227,18 @@ bool GameMode_OnClicked(bool testConds, bool runActions) {
 
     // The Roster and Modifiers rows do nothing while Testing is selected.
     if (g_game_mode == c_gameModeTesting) { return true; }
-    if (control == g_gmode_rosterBtn[0] || control == g_gmode_rosterBtn[1]) {
+    if (control == g_gmode_rosterBtn[0]) {
         DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
-        g_game_fullRoster = (control == g_gmode_rosterBtn[0]);
+        g_game_roster = c_gameRosterFull;
+    } else if (control == g_gmode_rosterBtn[1]) {
+        DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+        g_game_roster = c_gameRosterGroups;
+    } else if (control == g_gmode_rosterBtn[2]) {
+        DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+        g_game_roster = c_gameRosterDraft;
     } else if (control == g_gmode_modBtn[0] || control == g_gmode_modBtn[1]) {
+        // Unit groups forces the buckets: both cards do nothing.
+        if (g_game_roster == c_gameRosterGroups) { return true; }
         DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
         g_game_buckets = (control == g_gmode_modBtn[0]);
     } else {
@@ -262,8 +307,9 @@ void GameMode_Select(int chooser, trigger callback) {
     }
 
     GameMode_SetupRowLabel("ROSTER", 184);
-    g_gmode_rosterBtn[0] = GameMode_SetupButton(-145, 204, 280);
-    g_gmode_rosterBtn[1] = GameMode_SetupButton( 145, 204, 280);
+    g_gmode_rosterBtn[0] = GameMode_SetupButton(-190, 204, 180);
+    g_gmode_rosterBtn[1] = GameMode_SetupButton(   0, 204, 180);
+    g_gmode_rosterBtn[2] = GameMode_SetupButton( 190, 204, 180);
 
     GameMode_SetupRowLabel("MODIFIERS", 282);
     g_gmode_modBtn[0] = GameMode_SetupButton(-145, 302, 280);
@@ -288,9 +334,13 @@ void GameMode_Select(int chooser, trigger callback) {
         i = i + 1;
     }
     i = 0;
-    while (i <= 1) {
+    while (i <= 2) {
         TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_rosterBtn[i],
             c_triggerControlEventTypeClick);
+        i = i + 1;
+    }
+    i = 0;
+    while (i <= 1) {
         TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_modBtn[i],
             c_triggerControlEventTypeClick);
         i = i + 1;
