@@ -227,7 +227,7 @@
         <Duration value="8"/>
         <MaxStackCount value="1"/>
     </CBehaviorBuff>
-    <!-- Predator Protocol's healing cap. Each stack = 1% of max life + shields
+    <!-- Predator Protocol's healing cap. Each stack = 0.25% (c_cyclePredatorStep) of max life + shields
          healed by lifesteal in the last second; CycleMod_PredatorLeech refuses
          to heal past MaxStackCount (c_cyclePredatorCap, keep the two equal).
          Each stack must expire on its own timer, which is what makes this a
@@ -241,7 +241,7 @@
         <Alignment value="Neutral"/>
         <TimeScaleSource Value="Global"/>
         <Duration value="1.4"/>
-        <MaxStackCount value="8"/>
+        <MaxStackCount value="12"/>
     </CBehaviorBuff>
 
     <CBehaviorBuff id="TardigradeMod_EyesEverywhere">

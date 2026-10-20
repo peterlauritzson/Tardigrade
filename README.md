@@ -23,6 +23,7 @@ draft and Free draft.
 | **Mode** | Casual / Tournament / Testing (below) |
 | **Roster** | **Full roster:** every unit is allowed and there is no unit draft (the in-game roster panel is not shown, and No Bans is unavailable). **Unit groups:** every unit is allowed, and your modifiers each power one group of your units (see Unit groups below). **Alternating draft:** the unit draft below |
 | **Modifiers** | **Free draft:** the modifier draft below. **Buckets:** the bucket draft - one ban in each of four buckets, then four picks, one from each (see the Modifier Draft) |
+| **Free draft size** | **Bans each** (0-4, default 2) and **Picks each** (1-5, default 3) for the free draft. Each click steps the number up and wraps around. Casual only: unavailable in Tournament (always 2 / 3), with Buckets, and in Testing |
 
 The Roster and Modifiers rows are greyed out in Testing, which has no draft.
 Choosing Unit groups forces the Buckets draft: Buckets shows as chosen and Free
@@ -90,9 +91,15 @@ draft — there is no rotation and no shared phase:
 - Each player **bans 2** (22 → 18), ban order `P1, P2, P1, P2`.
 - Each player then **picks 3** (18 → 12), snake order `P1, P2, P2, P1, P1, P2`.
 
+In Casual, the setup screen's **Free draft size** row changes both numbers
+(0-4 bans, 1-5 picks each). Bans still alternate and picks still snake
+(`P1, P2, P2, P1, P1, P2, P2, P1, ...`); with 0 bans the draft starts at the
+picks.
+
 Twelve modifiers go unpicked in a normal game. Each pick is **always active in-game, but
 only for the picking side's own units** — never the opponent's. A top-center
-panel lists both sides' picks (YOURS / OPPONENT).
+panel lists both sides' picks (YOURS / OPPONENT). It stays open until you
+fold it with its toggle button.
 
 **Buckets draft.** If the setup screen's Modifiers row is **Buckets**, the board is
 four columns - **Command**, **Maneuver**, **Endurance**, **Firepower** - and the
@@ -126,7 +133,7 @@ data files store game seconds, which tick 1.4× quicker.
 | 1 | Open Skies | All your weapons can target ground and air. Against the plane a unit couldn't hit before, it deals half damage (Zealot vs air, Phoenix vs ground); units that already hit both, and structures, are unchanged |
 | 2 | Forced March | +40% move speed on all your units. Being in combat switches it off — taking damage or dealing it, either one. It comes back 10s after the last time the unit was hit or attacked. Disruptor novas, Adept shades and flying Locusts are not sped up |
 | 3 | Free Labor | Your workers no longer cost supply |
-| 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full — up to 8% of the unit's max health (life + shields) per second |
+| 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full — up to 3% of the unit's max health (life + shields) per second |
 | 5 | Eyes Everywhere | The battlefield and hidden units are revealed, for you only (excludes neutrals — minerals, Xel'Naga towers, critters). The modifier tooltip also shows how many workers the enemy has alive (burrowed drones and workers in refineries or transports included, MULEs not) |
 | 6 | Entrenchment | Your units gain +2 armor and +1 range after holding position for 7.5s. “Holding” is lenient — drifting up to 1.5 from where you settled still counts, so being bumped by an ally or shuffling to acquire a target doesn't reset it. Once earned it lingers ~2s after you move off, but re-earning it takes the full 7.5s. Units only — structures never entrench |
 | 7 | Arcane Surge | Double energy regeneration on all your units and structures |
@@ -144,7 +151,7 @@ data files store game seconds, which tick 1.4× quicker.
 | 19 | Martyrdom | When one of your units dies, 35% of its max health (life + shields) heals your other units within 3 range — split evenly among the injured ones, life first then shields. Anyone who needs less than their share is topped off and the rest goes to the others; what nobody can use is lost. Like Shared Damage, summons, hallucinations, eggs and workers neither give nor receive it |
 | 20 | Quickstep | Your units (workers excepted) accelerate and brake instantly and turn twice as fast, standing turns included |
 | 21 | Reinforcements | Every unit you create gets +50% move speed for 30s (shown on the unit as "Reinforcements"). Not workers, buildings, hallucinations, larva, eggs or spawned units like Interceptors and Locusts |
-| 22 | Field Repair | A unit that has taken no damage for 5s regains 3% of its max health every second until full or hit again. Health only — Protoss shields already regenerate by themselves. Not buildings or workers |
+| 22 | Field Repair | A unit that has taken no damage for 5s regains 3% of its max health (life + shields) every second until full or hit again: life first, then shields once life is full, on top of their normal regeneration. Not buildings or workers |
 | 23 | Photon Coating | The first 8s of each fight, a unit takes 20% less damage (shown on the unit as "Photon Coating"). A fight starts when the unit deals or takes damage, or begins an attack; the coating re-arms after 20s with none of that. Not buildings or workers |
 
 **No modifier grants a clickable ability.** Every pick is either always-on or

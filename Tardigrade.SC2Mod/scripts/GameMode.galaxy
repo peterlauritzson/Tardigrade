@@ -66,6 +66,32 @@ bool GameMode_IsBuckets() {
     return g_game_buckets || g_game_roster == c_gameRosterGroups;
 }
 
+// Free-draft size: bans and picks per side. Casual only - Tournament keeps the
+// standard 2 / 3 - and set on the setup screen's Free draft size row. The caps keep
+// every count in range: 2 x (4 + 5) = 18 cards at most leave the 22-card board
+// (21 with Full roster, No Bans N/A), and the draft's order arrays and the
+// in-game panel's rows are sized for them. The bucket draft has its own fixed
+// shape; CycleMod_BansEach / CycleMod_PicksEach decide which applies.
+const int c_gameModBansDefault  = 2;
+const int c_gameModBansMax      = 4;
+const int c_gameModPicksDefault = 3;
+const int c_gameModPicksMax     = 5;
+int g_game_modBans  = c_gameModBansDefault;
+int g_game_modPicks = c_gameModPicksDefault;
+
+int GameMode_FreeBansEach() {
+    if (g_game_mode == c_gameModeCasual) { return g_game_modBans; }
+    return c_gameModBansDefault;
+}
+int GameMode_FreePicksEach() {
+    if (g_game_mode == c_gameModeCasual) { return g_game_modPicks; }
+    return c_gameModPicksDefault;
+}
+// Whether the setup's Free draft size row can be changed: Casual, free draft.
+bool GameMode_FreeSizeLive() {
+    return g_game_mode == c_gameModeCasual && !GameMode_IsBuckets();
+}
+
 // The three stages a side can go YOLO in, each separately (CycleMod_SideIsYolo).
 const int c_stageRace   = 0;
 const int c_stageMod    = 1;
@@ -95,21 +121,27 @@ string GameMode_Desc(int mode) {
 //              (every unit allowed; each modifier powers one group of units) /
 //              Alternating draft
 //   Modifiers  Buckets (one modifier per bucket) / Free draft (ban 2, pick 3)
-// Defaults: Casual, Alternating draft, Free draft. A click selects an option
-// (the chosen card is drawn as SELECTED), Start commits. Everyone else sees the
-// same dialog disabled and updating live. Testing has no draft, so the Roster
-// and Modifiers rows are greyed out while it is selected. Unit groups forces the
-// bucket draft: the Modifiers row shows Buckets chosen and Free draft N/A.
+//   Free draft size  Bans each (0-4) / Picks each (1-5) for the free draft; each
+//              click steps the number up and wraps. Live only in Casual with
+//              the free draft, N/A otherwise.
+// Defaults: Casual, Alternating draft, Free draft, 2 bans, 3 picks. A click
+// selects an option (the chosen card is drawn as SELECTED), Start commits.
+// Everyone else sees the same dialog disabled and updating live. Testing has no
+// draft, so the Roster, Modifiers and Free draft size rows are greyed out while it is
+// selected. Unit groups forces the bucket draft: the Modifiers row shows Buckets
+// chosen and Free draft N/A.
 //
-// The choices live in g_game_mode / g_game_roster / g_game_buckets and are
-// read through the helpers above. They are written straight from the clicks (the
-// dialog IS the pending state); only the callback waits for Start.
+// The choices live in g_game_mode / g_game_roster / g_game_buckets /
+// g_game_modBans / g_game_modPicks and are read through the helpers above. They
+// are written straight from the clicks (the dialog IS the pending state); only
+// the callback waits for Start.
 //==================================================================================================
 int     g_gmode_dialog   = c_invalidDialogId;
 int     g_gmode_label    = c_invalidDialogControlId;
 int[3]  g_gmode_btn;                 // [0..2] mode cards, indexed by c_gameMode*
 int[3]  g_gmode_rosterBtn;           // [0] Full roster, [1] Unit groups, [2] Alternating draft
 int[2]  g_gmode_modBtn;              // [0] Buckets, [1] Free draft
+int[2]  g_gmode_sizeBtn;             // [0] Bans each, [1] Picks each (free draft size)
 int     g_gmode_start    = c_invalidDialogControlId;
 int     g_gmode_chooser  = 0;
 trigger g_gmode_trigger  = null;
@@ -134,7 +166,11 @@ string GameMode_ModsName(bool buckets) {
 
 string GameMode_ModsDesc(bool buckets) {
     if (buckets) { return "4 buckets: one ban in each, then one pick from each"; }
-    return "ban 2, pick 3 from the whole pool";
+    if (GameMode_FreeBansEach() == 0) {
+        return "no bans, pick " + IntToString(GameMode_FreePicksEach()) + " from the whole pool";
+    }
+    return "ban " + IntToString(GameMode_FreeBansEach()) + ", pick "
+        + IntToString(GameMode_FreePicksEach()) + " from the whole pool";
 }
 
 // One option card for both audiences. chosen = the selected option of its row;
@@ -194,6 +230,19 @@ void GameMode_SetupRefresh() {
         GameMode_SetupDrawCard(g_gmode_modBtn[1], !g_game_buckets, greyed,
             GameMode_ModsName(false), GameMode_ModsDesc(false));
     }
+    // Free draft size: plain open cards a click steps through; N/A outside a Casual
+    // free draft (the free-draft card above still says what Tournament uses).
+    if (GameMode_FreeSizeLive()) {
+        GameMode_SetupDrawCard(g_gmode_sizeBtn[0], false, false,
+            "Bans: " + IntToString(g_game_modBans) + " each",
+            "click to change (0-" + IntToString(c_gameModBansMax) + ")");
+        GameMode_SetupDrawCard(g_gmode_sizeBtn[1], false, false,
+            "Picks: " + IntToString(g_game_modPicks) + " each",
+            "click to change (1-" + IntToString(c_gameModPicksMax) + ")");
+    } else {
+        GameMode_SetupDrawCard(g_gmode_sizeBtn[0], false, true, "Bans each", "Casual free draft only");
+        GameMode_SetupDrawCard(g_gmode_sizeBtn[1], false, true, "Picks each", "Casual free draft only");
+    }
 }
 
 bool GameMode_OnClicked(bool testConds, bool runActions) {
@@ -241,6 +290,17 @@ bool GameMode_OnClicked(bool testConds, bool runActions) {
         if (g_game_roster == c_gameRosterGroups) { return true; }
         DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
         g_game_buckets = (control == g_gmode_modBtn[0]);
+    } else if (control == g_gmode_sizeBtn[0] || control == g_gmode_sizeBtn[1]) {
+        // Free draft size: each click steps the number up, wrapping at the cap.
+        if (!GameMode_FreeSizeLive()) { return true; }
+        DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+        if (control == g_gmode_sizeBtn[0]) {
+            g_game_modBans = g_game_modBans + 1;
+            if (g_game_modBans > c_gameModBansMax) { g_game_modBans = 0; }
+        } else {
+            g_game_modPicks = g_game_modPicks + 1;
+            if (g_game_modPicks > c_gameModPicksMax) { g_game_modPicks = 1; }
+        }
     } else {
         return true;
     }
@@ -285,7 +345,7 @@ void GameMode_Select(int chooser, trigger callback) {
     others = PlayerGroupCopy(PlayerGroupAll());
     PlayerGroupRemove(others, chooser);
 
-    g_gmode_dialog = DialogCreate(600, 520, c_anchorCenter, 0, 0, true);
+    g_gmode_dialog = DialogCreate(600, 600, c_anchorCenter, 0, 0, true);
     DialogSetObservedType(g_gmode_dialog, c_triggerObservedTypeObservedOrSelectedPlayerId);
     DialogSetTitle(g_gmode_dialog, StringToText("Tardigrade  -  Setup"));
     DialogSetVisible(g_gmode_dialog, all, true);
@@ -315,10 +375,14 @@ void GameMode_Select(int chooser, trigger callback) {
     g_gmode_modBtn[0] = GameMode_SetupButton(-145, 302, 280);
     g_gmode_modBtn[1] = GameMode_SetupButton( 145, 302, 280);
 
+    GameMode_SetupRowLabel("FREE DRAFT SIZE  (per player)", 380);
+    g_gmode_sizeBtn[0] = GameMode_SetupButton(-145, 400, 280);
+    g_gmode_sizeBtn[1] = GameMode_SetupButton( 145, 400, 280);
+
     g_gmode_start = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeButton);
     DraftStyle_InitButton(g_gmode_start, all);
     DialogControlSetSize(g_gmode_start, all, 300, 56);
-    DialogControlSetPosition(g_gmode_start, all, c_anchorTop, 0, 410);
+    DialogControlSetPosition(g_gmode_start, all, c_anchorTop, 0, 490);
     DraftStyle_ApplyCard(g_gmode_start, mine, c_draftStateOpen,
         DraftStyle_Card(c_draftStateOpen, "", "Start", "begin the draft"), true);
     DraftStyle_ApplyCard(g_gmode_start, others, c_draftStateOpen,
@@ -342,6 +406,8 @@ void GameMode_Select(int chooser, trigger callback) {
     i = 0;
     while (i <= 1) {
         TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_modBtn[i],
+            c_triggerControlEventTypeClick);
+        TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_sizeBtn[i],
             c_triggerControlEventTypeClick);
         i = i + 1;
     }

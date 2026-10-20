@@ -17,7 +17,8 @@
 //   1. Race Draft    - P1 bans a race, P2 picks, P1 gets the remainder.
 //                      Each team is set to a single race.
 //   2. Modifier Draft - each player bans 2 of 22 global modifiers, then picks
-//                      3. Each pick is ALWAYS active in-game, but only for the
+//                      3 (a Casual free draft can change both on the setup
+//                      screen). Each pick is ALWAYS active in-game, but only for the
 //                      drafting player's own units (no rotation, no phases).
 //                      No Bans acts on step 3 (and is N/A with Full roster).
 //   3. Unit Draft    - opening picks, bans, final picks; each side ends with 6
@@ -501,7 +502,8 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
                 usedMask = usedMask | (1 << (pick - 1));
                 if (pickCount <= CycleMod_PicksEach()) {
                     CycleMod_SetSideMod(true, pick, true);
-                    g_cycle_chosen[pickCount] = pick;   // keep legacy phase array populated too
+                    // keep legacy phase array populated too ([1..3], sized 5)
+                    if (pickCount <= c_cyclePicksEach) { g_cycle_chosen[pickCount] = pick; }
                 } else {
                     CycleMod_SetSideMod(false, pick, true);
                 }

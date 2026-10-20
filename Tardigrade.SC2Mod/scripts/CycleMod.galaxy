@@ -4,7 +4,8 @@
 // Default (c_cyclePhaseMode == false): a per-player modifier DRAFT. There are 23
 //   global battlefield modifiers, 22 of them on the board (YOLO is not). Each
 //   player bans 2 (22 -> 18), then picks 3, so twelve board modifiers go unpicked
-//   every game. Every pick is ALWAYS active
+//   every game - or, in a Casual free draft, the setup screen's Free draft size (0-4
+//   bans, 1-5 picks each). Every pick is ALWAYS active
 //   in-game, but only for the drafting player's own units. A shared reference
 //   panel lists both sides' picks.
 //
@@ -84,10 +85,11 @@ const fixed c_cycleFactoryRate = 1.15;
 // for that side only. The legacy code is kept intact behind this gate.
 const bool c_cyclePhaseMode  = false;
 
-// Per-player draft: 2 bans each (14 -> 10) then 3 picks each (10 -> 4 unpicked).
-const int  c_cycleBanTotal   = 4;   // total bans (2 per player)
-const int  c_cyclePickTotal  = 6;   // free draft only - ask CycleMod_PickTotal()
-const int  c_cyclePicksEach  = 3;   // free draft only - ask CycleMod_PicksEach() (4 with buckets)
+// Per-player draft: bans then picks, each side alike. How many is not a constant:
+// ask CycleMod_BansEach() / CycleMod_PicksEach() (the setup screen's Free draft size in
+// a Casual free draft, 2 / 3 otherwise, 2 / 4 for buckets). c_cyclePicksEach is
+// the standard free draft's 3 that the layouts are sized around.
+const int  c_cyclePicksEach  = 3;
 const fixed c_cycleActivationDelay = 180.0;  // buffs go live 3 minutes into the game
 
 // Idle/still thresholds for the two "hold position and be rewarded" modifiers.
@@ -232,7 +234,8 @@ const string c_cycleBlinkEffect    = "TardigradeAbil_Blink";
 const string c_cycleBlinkCooldown  = "TardigradeMod_BlinkCooldown";
 
 // Predator Protocol: attacks heal for c_cyclePredatorLeech of the damage dealt,
-// capped at c_cyclePredatorCap percent of max life + shields per real second.
+// capped at c_cyclePredatorCap x c_cyclePredatorStep (3%) of max life + shields
+// per real second.
 // Uncapped, healing per second is DPS x 30%, so what matters is DPS relative to
 // a unit's own health: a stimmed Marine refilled ~10% of its bar a second
 // against ~2.5% for a Zealot or Roach, and a bio ball simply never went down.
@@ -240,12 +243,14 @@ const string c_cycleBlinkCooldown  = "TardigradeMod_BlinkCooldown";
 // it hit) while beefier units rarely reach it.
 //
 // The window is kept by the engine, not by script: each stack of
-// c_cyclePredatorSated stands for 1% of max health healed in the last second,
+// c_cyclePredatorSated stands for 0.25% of max health healed in the last second,
 // and expires on its own (BehaviorData.xml). A hit's budget is the stacks
-// still free.
+// still free. The stacks are quarter-percent so the per-hit rounding (nearest
+// stack, at least 1) stays small next to a 3% cap: with 1% stacks a fast weak
+// attacker paid a whole third of its cap for a 0.3% heal.
 const fixed  c_cyclePredatorLeech  = 0.30;
-const int    c_cyclePredatorCap    = 8;      // stacks, = % of max health per real second
-const fixed  c_cyclePredatorStep   = 0.01;   // fraction of max health one stack stands for
+const int    c_cyclePredatorCap    = 12;     // stacks per real second; x step = 3% of max health
+const fixed  c_cyclePredatorStep   = 0.0025; // fraction of max health one stack stands for
 const string c_cyclePredatorSated  = "TardigradeMod_PredatorSated";
 
 // Shared Damage: every hit on one of your units is half taken by it and half
@@ -297,11 +302,11 @@ const string c_cycleReinforceBehavior = "TardigradeMod_Reinforcements";
 const string c_cycleReinforceBuff     = "TardigradeMod_ReinforcementsRush";
 
 // Field Repair: a unit that has taken no damage for c_cycleFieldRepairDelay
-// game seconds (5 real) regains 3% of max life per real second, healed on the
-// 0.5-game-second scan tick. Life only - Protoss shields already regenerate.
+// game seconds (5 real) regains 3% of max life + max shields per real second,
+// healed on the 0.5-game-second scan tick: life first, then shields.
 const string c_cycleFieldRepairBehavior = "TardigradeMod_FieldRepair";
 const fixed  c_cycleFieldRepairDelay    = 7.0;
-const fixed  c_cycleFieldRepairRate     = 0.03;   // of max life per REAL second
+const fixed  c_cycleFieldRepairRate     = 0.03;   // of max life + shields per REAL second
 
 // Photon Coating: the first 8 real seconds (11.2 game) of each fight take 20%
 // less damage. The unit re-arms once c_cyclePhotonRearm game seconds (20 real)
@@ -357,10 +362,10 @@ bool    g_cycle_p1Protect  = false;
 bool    g_cycle_p2Protect  = false;
 int     g_cycle_draftPhase = 0;     // 0 = ban, 1 = pick
 int     g_cycle_stepIndex  = 1;     // step within the current phase order
-int[5]  g_cycle_banOrder;           // [1..4] picker per ban step
-bool[5] g_cycle_banIsP1;
-int[9]  g_cycle_pickOrder;          // [1..CycleMod_PickTotal()] picker per pick step (6, or 8 for buckets)
-bool[9] g_cycle_pickIsP1;
+int[9]  g_cycle_banOrder;           // [1..CycleMod_BanTotal()] picker per ban step (up to 8)
+bool[9] g_cycle_banIsP1;
+int[11] g_cycle_pickOrder;          // [1..CycleMod_PickTotal()] picker per pick step (up to 10)
+bool[11] g_cycle_pickIsP1;
 // In-game modifier reference panel. One dialog PER VIEWER rather than a single
 // shared one, so each player can minimise their own copy: DialogSetSize takes no
 // playergroup, so a shared dialog cannot be resized for one player without
@@ -371,17 +376,17 @@ int[16] g_cycle_panelBtn;
 int[16] g_cycle_panelTitle;
 int[16] g_cycle_panelHdrMine;
 int[16] g_cycle_panelHdrOpp;
-int[16][5] g_cycle_panelRowMine;   // [player][1..CycleMod_PicksEach()]
-int[16][5] g_cycle_panelRowOpp;
+int[16][6] g_cycle_panelRowMine;   // [player][1..CycleMod_PicksEach()], up to 5
+int[16][6] g_cycle_panelRowOpp;
 // The modifier index each row shows, so the stat refresh can look its number
 // up (see CycleMod_PanelStatsTick).
-int[16][5] g_cycle_panelModMine;
-int[16][5] g_cycle_panelModOpp;
+int[16][6] g_cycle_panelModMine;
+int[16][6] g_cycle_panelModOpp;
 fixed   g_cycle_panelStatsAt = 0.0;   // mission time of the last stat refresh
 bool[16] g_cycle_panelExpanded;
 // Auto-fold: mission time at which a panel folds itself away (0 = never). Set
-// when the panel opens on its own (game start, activation); cleared the moment
-// its viewer clicks the toggle, so a player who chose a state keeps it.
+// only when the activation peek opens a panel its viewer had folded; cleared the
+// moment its viewer clicks the toggle, so a player who chose a state keeps it.
 fixed[16] g_cycle_panelFoldAt;
 bool    g_cycle_delayedApplied = false;          // one-time 3-minute activation done
 bool    g_cycle_activationWarned = false;        // the "activating soon" heads-up was shown
@@ -636,17 +641,29 @@ int CycleMod_Bucket(int idx) {
     return c_cycleBucketNone;
 }
 
-// Picks per side: 4 in the bucket draft (one per bucket), 3 in the free draft.
+// Picks per side: 4 in the bucket draft (one per bucket); in the free draft the
+// setup's Free draft size (1-5, Casual) or the standard 3 (GameMode_FreePicksEach).
 // Everything that means "how many mods does a side hold" asks this, not the
 // constant - the in-game panel, the stats tooltip, the picks panel, YOLO rolls.
 const int c_cycleBucketCount = 4;
 int CycleMod_PicksEach() {
     if (GameMode_IsBuckets()) { return c_cycleBucketCount; }
-    return c_cyclePicksEach;
+    return GameMode_FreePicksEach();
 }
 
 int CycleMod_PickTotal() {
     return CycleMod_PicksEach() * 2;
+}
+
+// Bans per side: one per bucket between the two in the bucket draft (2 each); in
+// the free draft the setup's Free draft size (0-4, Casual) or the standard 2.
+int CycleMod_BansEach() {
+    if (GameMode_IsBuckets()) { return c_cycleBucketCount / 2; }
+    return GameMode_FreeBansEach();
+}
+
+int CycleMod_BanTotal() {
+    return CycleMod_BansEach() * 2;
 }
 
 string CycleMod_BucketName(int bucket) {
@@ -713,7 +730,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 1)  { return "units hit ground and air; half damage to the new one"; }
     if (idx == 2)  { return "+40% move speed, lost on damage dealt or taken, back 10s later"; }
     if (idx == 3)  { return "your workers no longer cost supply"; }
-    if (idx == 4)  { return "attacks heal 30% of damage dealt, max 8% of HP per second"; }
+    if (idx == 4)  { return "attacks heal 30% of damage dealt, max 3% of HP per second"; }
     if (idx == 5)  { return "map and hidden units revealed; you see the enemy worker count"; }
     if (idx == 6)  { return "units holding 7.5s get +2 armor and +1 range; not buildings"; }
     if (idx == 7)  { return "double energy regeneration, units and structures"; }
@@ -731,7 +748,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 19) { return "a unit that dies heals nearby allies for 35% of its max HP"; }
     if (idx == 20) { return "instant acceleration and double turn rate"; }
     if (idx == 21) { return "new units: +50% move speed for 30s"; }
-    if (idx == 22) { return "after 5s without taking damage, regain 3% max life per second"; }
+    if (idx == 22) { return "unhurt 5s: regain 3% of max HP per second, life then shields"; }
     if (idx == 23) { return "first 8s of a fight: -20% damage taken; re-arms after 20s calm"; }
     return "";
 }
@@ -1486,8 +1503,9 @@ bool CycleMod_OnClicked(bool testConds, bool runActions) {
 
 //==================================================================================================
 // PER-PLAYER DRAFT  (c_cyclePhaseMode == false)
-// 2 bans each (14 -> 10) then 3 picks each, leaving 4 unpicked. Every pick is
-// ALWAYS active in-game, but only for the drafting player's own units.
+// CycleMod_BansEach() bans each (2 by default), then CycleMod_PicksEach() picks
+// each (3 by default). Every pick is ALWAYS active in-game, but only for the
+// drafting player's own units.
 //==================================================================================================
 int CycleMod_DraftPicker() {
     if (g_cycle_draftPhase == 0) { return g_cycle_banOrder[g_cycle_stepIndex]; }
@@ -1509,6 +1527,7 @@ void CycleMod_DraftChooseRandom();
 // banned or already-taken modifier can be seen.
 string CycleMod_PicksBlock(bool isP1, string heading, string clr) {
     string s;
+    string gap;
     int    i;
     int    idx;
     int    race;
@@ -1536,14 +1555,18 @@ string CycleMod_PicksBlock(bool isP1, string heading, string clr) {
         }
         return s;
     }
+    // More than the standard three picks (Casual Free draft size) drop the blank
+    // line between slots so they fit the panel.
+    if (CycleMod_PicksEach() > c_cyclePicksEach) { gap = "\n"; }
+    else                                          { gap = "\n\n"; }
     i = 1;
     while (i <= CycleMod_PicksEach()) {
         if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
         if (idx > 0) {
-            s = s + "\n\n<c val=\"FFFFFF\">" + IntToString(i) + ".  " + CycleMod_Name(idx) + "</c>\n"
+            s = s + gap + "<c val=\"FFFFFF\">" + IntToString(i) + ".  " + CycleMod_Name(idx) + "</c>\n"
                 + DraftStyle_Small("<c val=\"8A9AA6\">" + CycleMod_Desc(idx) + "</c>");
         } else {
-            s = s + "\n\n<c val=\"555555\">" + IntToString(i) + ".  —</c>";
+            s = s + gap + "<c val=\"555555\">" + IntToString(i) + ".  —</c>";
         }
         i = i + 1;
     }
@@ -1590,7 +1613,7 @@ void CycleMod_UpdateDraftUI() {
     picker    = CycleMod_DraftPicker();
     pickGroup = PlayerGroupSingle(picker);
     isBan = (g_cycle_draftPhase == 0);
-    if (isBan) { total = c_cycleBanTotal; }
+    if (isBan) { total = CycleMod_BanTotal(); }
     else       { total = CycleMod_PickTotal(); }
 
     // The phase word is the coloured heading, not a small word buried mid-line -
@@ -1866,7 +1889,7 @@ void CycleMod_DraftChoose(int idx) {
 
     if (g_cycle_draftPhase == 0) {
         g_cycle_stepIndex = g_cycle_stepIndex + 1;
-        if (g_cycle_stepIndex > c_cycleBanTotal) {
+        if (g_cycle_stepIndex > CycleMod_BanTotal()) {
             // Into the picks, through AdvancePick so a YOLO side's turns are
             // skipped from the very first one.
             g_cycle_draftPhase = 1;
@@ -2250,24 +2273,27 @@ void CycleMod_StartDraftPerPlayer(trigger callback, int p1, int p2) {
         g_cycle_modState[c_cycleModNoBans] = c_cycleSlotTaken;
     }
 
-    // Ban order: P1, P2, P1, P2  (2 each).
-    g_cycle_banOrder[1] = p1; g_cycle_banIsP1[1] = true;
-    g_cycle_banOrder[2] = p2; g_cycle_banIsP1[2] = false;
-    g_cycle_banOrder[3] = p1; g_cycle_banIsP1[3] = true;
-    g_cycle_banOrder[4] = p2; g_cycle_banIsP1[4] = false;
-
-    // Snake pick order: P1, P2, P2, P1, P1, P2  (3 each).
-    g_cycle_pickOrder[1] = p1; g_cycle_pickIsP1[1] = true;
-    g_cycle_pickOrder[2] = p2; g_cycle_pickIsP1[2] = false;
-    g_cycle_pickOrder[3] = p2; g_cycle_pickIsP1[3] = false;
-    g_cycle_pickOrder[4] = p1; g_cycle_pickIsP1[4] = true;
-    g_cycle_pickOrder[5] = p1; g_cycle_pickIsP1[5] = true;
-    g_cycle_pickOrder[6] = p2; g_cycle_pickIsP1[6] = false;
-    // Bucket draft: 8 picks, P1 P2 P2 P1 P1 P2 P2 P1.
-    if (GameMode_IsBuckets()) {
-        g_cycle_pickOrder[7] = p2; g_cycle_pickIsP1[7] = false;
-        g_cycle_pickOrder[8] = p1; g_cycle_pickIsP1[8] = true;
+    // Ban order alternates: P1, P2, P1, P2, ...
+    i = 1;
+    while (i <= CycleMod_BanTotal()) {
+        g_cycle_banIsP1[i] = (i % 2 == 1);
+        if (g_cycle_banIsP1[i]) { g_cycle_banOrder[i] = p1; }
+        else                    { g_cycle_banOrder[i] = p2; }
+        i = i + 1;
     }
+
+    // Pick order snakes: P1, P2, P2, P1, P1, P2, P2, P1, ... (P1 on steps 1 and
+    // 0 mod 4). Every pair of steps is one each, so any even total is even.
+    i = 1;
+    while (i <= CycleMod_PickTotal()) {
+        g_cycle_pickIsP1[i] = (i % 4 == 1 || i % 4 == 0);
+        if (g_cycle_pickIsP1[i]) { g_cycle_pickOrder[i] = p1; }
+        else                     { g_cycle_pickOrder[i] = p2; }
+        i = i + 1;
+    }
+
+    // No bans (Casual Free draft size 0): straight into the picks.
+    if (CycleMod_BanTotal() == 0) { g_cycle_draftPhase = 1; }
 
     CycleMod_OpenDraftBoard();
 }
@@ -5120,26 +5146,32 @@ void CycleMod_TryReinforcements(unit u) {
     CycleMod_StatAdd(UnitGetOwner(u), c_cycleModReinforce, 1.0);
 }
 
+void CycleMod_Mend(unit u, fixed amount);   // defined below, with the healing helpers
+fixed CycleMod_MendRoom(unit u);
+
 // Field Repair (modifier 22), from the scan: a unit that has taken no damage for
 // c_cycleFieldRepairDelay game seconds regains c_cycleFieldRepairRate of its max
-// life per REAL second, paid in 0.5-game-second ticks. Life only - Protoss shields
-// already regenerate on their own, so CycleMod_Mend's spill into shields is not
-// used. c_cycleStateLastDamaged is stamped by CycleMod_OnUnitDamaged.
+// life + max shields per REAL second, paid in 0.5-game-second ticks. CycleMod_Mend
+// puts it into life first and spills the rest into shields, so once life is full
+// it tops shields up on top of their own regeneration. c_cycleStateLastDamaged is
+// stamped by CycleMod_OnUnitDamaged.
 void CycleMod_TryFieldRepair(unit u, fixed now) {
-    fixed life;
-    fixed maxLife;
+    fixed maxTotal;
+    fixed room;
     fixed heal;
 
     if (!UnitIsAlive(u)) { return; }
     if (now - UnitGetCustomValue(u, c_cycleStateLastDamaged) < c_cycleFieldRepairDelay) { return; }
-    life    = UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent);
-    maxLife = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent);
-    if (life <= 0.0 || life >= maxLife) { return; }
+    if (UnitGetPropertyFixed(u, c_unitPropLife, c_unitPropCurrent) <= 0.0) { return; }
+    room = CycleMod_MendRoom(u);
+    if (room <= 0.0) { return; }
     if (!CycleMod_CanShareDamage(u)) { return; }
+    maxTotal = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent)
+        + UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent);
     // 3% of max per real second = per 1.4 game seconds; a tick is half a game second.
-    heal = maxLife * c_cycleFieldRepairRate / 1.4 * 0.5;
-    if (life + heal > maxLife) { heal = maxLife - life; }
-    UnitSetPropertyFixed(u, c_unitPropLife, life + heal);
+    heal = maxTotal * c_cycleFieldRepairRate / 1.4 * 0.5;
+    if (heal > room) { heal = room; }
+    CycleMod_Mend(u, heal);
     CycleMod_StatAdd(UnitGetOwner(u), c_cycleModFieldRepair, heal);
 }
 
@@ -5168,7 +5200,7 @@ void CycleMod_TryPhotonCoating(unit u, bool needEnemy) {
 
 // Healing the mods hand out goes to life first, then spills whatever is left
 // over into shields - otherwise it is dead weight on a full-health Protoss unit
-// that has taken shield damage. Shared by Predator Protocol and Martyrdom.
+// that has taken shield damage. Shared by Predator Protocol, Martyrdom and Field Repair.
 void CycleMod_Mend(unit u, fixed amount) {
     fixed currentLife;
     fixed maxLife;
@@ -6575,11 +6607,12 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         i = i + 1;
     }
 
-    // Starts open so everyone reads their picks once, then folds itself after
-    // ~20 real seconds: left open it covered 232px of the top-centre for the
-    // whole game. It re-opens for a look at activation (CycleMod_PanelPeekAll).
+    // Starts open and stays open until its viewer folds it with the toggle. (It
+    // used to fold itself ~20 real seconds in, which read as the window closing
+    // on its own.) A panel folded by hand re-opens for a look at activation
+    // (CycleMod_PanelPeekAll) and folds back after it.
     CycleMod_SetPanelExpanded(player, true);
-    g_cycle_panelFoldAt[player] = GameGetMissionTime() + 28.0;
+    g_cycle_panelFoldAt[player] = 0.0;
     if (player == 0) {
         TriggerAddEventDialogControl(t, c_playerAny, g_cycle_panelBtn[player], c_triggerControlEventTypeClick);
     } else {
