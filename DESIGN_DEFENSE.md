@@ -209,8 +209,8 @@ Brief root or slow in an area. Deferred until mercs and tower have had a
 playtest. Worth building eventually because it is the only entry that answers
 the "I can never catch them" problem (Overwatch + the old Medivac Boost on a
 long-range unit), which is where this whole design thread started. Medivac Boost
-has since become Forced March, which switches off on damage taken *or dealt* and
-so cannot help a kiting unit at all — the first version broke only on damage
+has since become Forced March, which switches off on damage taken *or dealt*, or
+on a caster's spell, and so cannot help a kiting unit at all — the first version broke only on damage
 taken, which still left a unit that out-ranges its target (Colossus into
 workers, Tempest into a Carrier) kiting at full march speed. It still favours
 the drafting side's disengage, so the entry stands.

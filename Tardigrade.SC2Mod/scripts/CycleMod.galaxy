@@ -426,6 +426,7 @@ trigger g_cycle_damageTrig = null;
 trigger g_cycle_attackTrig = null;
 trigger g_cycle_deathTrig  = null;
 trigger g_cycle_shareTrig  = null;
+trigger g_cycle_castTrig   = null;
 
 const int c_cycleStateRegistered   = 0;
 const int c_cycleStateLastX        = 1;
@@ -728,7 +729,7 @@ string CycleMod_Name(int idx) {
 // CycleMod_ActivationClockText does the same conversion for the activation time.
 string CycleMod_Desc(int idx) {
     if (idx == 1)  { return "units hit ground and air; half damage to the new one"; }
-    if (idx == 2)  { return "+40% move speed, lost on damage dealt or taken, back 10s later"; }
+    if (idx == 2)  { return "+40% move speed; damage dealt/taken or a spell stops it for 10s"; }
     if (idx == 3)  { return "your workers no longer cost supply"; }
     if (idx == 4)  { return "attacks heal 30% of damage dealt, max 3% of HP per second"; }
     if (idx == 5)  { return "map and hidden units revealed; you see the enemy worker count"; }
@@ -5643,6 +5644,72 @@ bool CycleMod_OnUnitStartedAttack(bool testConds, bool runActions) {
     return true;
 }
 
+// Casting a spell breaks Forced March too. Plenty of spells do their work with
+// no weapon swing and no damage - the Raven's Auto-Turret and Interference
+// Matrix, a Medivac heal, Force Field, Abduct - so neither path above ever saw
+// them, and a caster could fight at full march speed.
+//
+// "Spell" is read off the data rather than listed: an effect, toggle or build
+// ability used by a unit that has energy. That is every caster's whole spell
+// list, including the ones that cost no energy up front (a Medivac heal drains
+// it per heal, Viper's Consume runs on a cooldown). Units without energy are
+// left out on purpose - Stim, Blink, Corrosive Bile, Tactical Jump - since many
+// of those are how a unit travels or escapes, and any of them that hurts
+// something breaks the march through the damage path anyway.
+//
+// The stage is the one where the spell goes off, not the order: a Raven sent to
+// drop a turret across the map keeps its speed until the turret lands. The
+// event is registered for any ability at each of these stage numbers, and the
+// numbers overlap between classes (2 is an effect's Prep and a build's
+// Construct), so the class decides which stage counts.
+const int c_cycleAbilClassBehavior      = 11;   // c_classIdCAbilBehavior
+const int c_cycleAbilClassEffectInstant = 14;   // c_classIdCAbilEffectInstant
+const int c_cycleAbilClassEffectTarget  = 15;   // c_classIdCAbilEffectTarget
+const int c_cycleAbilStageToggled       = 1;    // c_abilBehaviorStageToggled
+const int c_cycleAbilStageConstruct     = 2;    // c_abilBuildStageConstruct
+const int c_cycleAbilStageCast          = 3;    // c_abilEffectStageCast
+
+// Caster abilities that are not spells. Afterburners is a speed boost that has
+// cost no energy since LotV, and switching the march off would punish the very
+// escape it is for. Hold Fire / Weapons Free are the Ghost's stance switch,
+// flipped to stay hidden.
+bool CycleMod_IsMarchSafeAbil(string abil) {
+    return abil == "MedivacSpeedBoost" || abil == "GhostHoldFire"
+        || abil == "GhostWeaponsFree";
+}
+
+bool CycleMod_OnUnitCastSpell(bool testConds, bool runActions) {
+    unit   u;
+    string abil;
+    int    cls;
+    int    stage;
+
+    u = EventUnit();
+    // Cheapest test first: this fires for every unit's ability stages - every
+    // build, morph and train in the game - and most of those have no energy.
+    if (UnitGetPropertyFixed(u, c_unitPropEnergyMax, c_unitPropCurrent) <= 0.0) { return true; }
+
+    abil  = AbilityCommandGetAbility(EventUnitAbility());
+    cls   = CatalogEntryClass(c_gameCatalogAbil, abil);
+    stage = EventUnitAbilityStage();
+    if (cls == c_cycleAbilClassEffectInstant || cls == c_cycleAbilClassEffectTarget) {
+        if (stage != c_cycleAbilStageCast) { return true; }
+    } else if (cls == c_cycleAbilClassBehavior) {
+        if (stage != c_cycleAbilStageToggled) { return true; }
+    } else if (cls == c_cycleAbilClassBuild) {
+        if (stage != c_cycleAbilStageConstruct) { return true; }
+    } else {
+        return true;
+    }
+    if (CycleMod_IsMarchSafeAbil(abil)) { return true; }
+
+    if (CycleMod_UnitModActive(u, c_cycleMarchBehavior)) {
+        Debug_Log("Forced March: " + UnitGetType(u) + " broke on cast " + abil);
+    }
+    CycleMod_BreakMarch(u);
+    return true;
+}
+
 //--------------------------------------------------------------------------------------------------
 // Veterancy marker: a persistent "V<stacks>" text tag attached to a unit that
 // has earned Veteran Forces stacks, so a player can read the army's veterancy
@@ -6689,6 +6756,13 @@ void CycleMod_StartCycle() {
         c_unitDamageTypeAny, c_unitDamageEither, null);
     TriggerAddEventUnitStartedAttack(g_cycle_attackTrig, null);
     TriggerAddEventUnitDied(g_cycle_deathTrig, null);
+
+    // Forced March's spell break: any ability, at the stage each class goes
+    // off at (see CycleMod_OnUnitCastSpell for why there are three).
+    g_cycle_castTrig = TriggerCreate("CycleMod_OnUnitCastSpell");
+    TriggerAddEventUnitAbility(g_cycle_castTrig, null, null, c_cycleAbilStageCast, false);
+    TriggerAddEventUnitAbility(g_cycle_castTrig, null, null, c_cycleAbilStageToggled, false);
+    TriggerAddEventUnitAbility(g_cycle_castTrig, null, null, c_cycleAbilStageConstruct, false);
 
     // Shared Damage's redistribution. Registered unconditionally like the
     // triggers above: it only ever fires for units carrying the behavior,

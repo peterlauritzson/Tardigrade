@@ -131,7 +131,7 @@ data files store game seconds, which tick 1.4× quicker.
 | # | Modifier | Effect (applies to your units only) |
 |---|---|---|
 | 1 | Open Skies | All your weapons can target ground and air. Against the plane a unit couldn't hit before, it deals half damage (Zealot vs air, Phoenix vs ground); units that already hit both, and structures, are unchanged |
-| 2 | Forced March | +40% move speed on all your units. Being in combat switches it off — taking damage or dealing it, either one. It comes back 10s after the last time the unit was hit or attacked. Disruptor novas, Adept shades and flying Locusts are not sped up |
+| 2 | Forced March | +40% move speed on all your units. Being in combat switches it off — taking damage, dealing it, or casting a spell (any spell from a unit with energy: Auto-Turret, heal, Force Field, cloak…; Medivac Afterburners and the Ghost's Hold Fire don't count). It comes back 10s after the unit's last hit, attack or spell. Disruptor novas, Adept shades and flying Locusts are not sped up |
 | 3 | Free Labor | Your workers no longer cost supply |
 | 4 | Predator Protocol | Your attacks restore 30% of the damage dealt — health first, then shields once health is full — up to 3% of the unit's max health (life + shields) per second |
 | 5 | Eyes Everywhere | The battlefield and hidden units are revealed, for you only (excludes neutrals — minerals, Xel'Naga towers, critters). The modifier tooltip also shows how many workers the enemy has alive (burrowed drones and workers in refineries or transports included, MULEs not) |
