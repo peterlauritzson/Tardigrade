@@ -182,4 +182,50 @@
 		<SearchFlags index="OffsetByUnitRadius" value="0"/>
 		<SearchFlags index="SameCliff" value="0"/>
 	</CEffectDamage>
+
+	<!-- Doctrines (Doctrine.galaxy). The four damage effects have Amount 0, so
+	     the whole payload is UnitDamage's argument, and ArmorReduction 0, like the
+	     Overwatch bonus. Kinds are chosen so none of them reaches
+	     Doctrine_OnWeaponHit (Melee/Ranged only) and so they can't chain:
+	     Ricochet and the Volatile blast are Splash (Loose Formation cuts them),
+	     Cull and Burn are Spell (Spell Ward cuts them; Cull overkills anyway). -->
+	<CEffectDamage id="TardigradeDoc_RicochetHit">
+		<Amount value="0"/>
+		<Kind value="Splash"/>
+		<KindSplash value="Splash"/>
+		<ArmorReduction value="0"/>
+	</CEffectDamage>
+	<CEffectDamage id="TardigradeDoc_CullHit">
+		<Amount value="0"/>
+		<Kind value="Spell"/>
+		<KindSplash value="Spell"/>
+		<ArmorReduction value="0"/>
+	</CEffectDamage>
+	<CEffectDamage id="TardigradeDoc_BurnTick">
+		<Amount value="0"/>
+		<Kind value="Spell"/>
+		<KindSplash value="Spell"/>
+		<ArmorReduction value="0"/>
+	</CEffectDamage>
+	<CEffectDamage id="TardigradeDoc_VolatileBlast">
+		<Amount value="0"/>
+		<Kind value="Splash"/>
+		<KindSplash value="Splash"/>
+		<ArmorReduction value="0"/>
+	</CEffectDamage>
+	<!-- Last Breath: run by TardigradeDoc_LastBreathReady's fatal damage
+	     response. Caster is the unit carrying the buff (the scan adds it with the
+	     unit as its own caster), as in Blizzard's Immortal Barrier set. -->
+	<CEffectSet id="TardigradeDoc_LastBreathUse">
+		<EffectArray value="TardigradeDoc_LastBreathSpend"/>
+		<EffectArray value="TardigradeDoc_LastBreathClear"/>
+	</CEffectSet>
+	<CEffectApplyBehavior id="TardigradeDoc_LastBreathSpend">
+		<WhichUnit Value="Caster"/>
+		<Behavior value="TardigradeDoc_LastBreathSpent"/>
+	</CEffectApplyBehavior>
+	<CEffectRemoveBehavior id="TardigradeDoc_LastBreathClear">
+		<WhichUnit Value="Caster"/>
+		<BehaviorLink value="TardigradeDoc_LastBreathReady"/>
+	</CEffectRemoveBehavior>
 </Catalog>

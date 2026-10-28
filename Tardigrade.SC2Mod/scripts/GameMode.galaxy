@@ -92,10 +92,28 @@ bool GameMode_FreeSizeLive() {
     return g_game_mode == c_gameModeCasual && !GameMode_IsBuckets();
 }
 
-// The three stages a side can go YOLO in, each separately (CycleMod_SideIsYolo).
-const int c_stageRace   = 0;
-const int c_stageMod    = 1;
-const int c_stageRoster = 2;
+// Doctrines (Doctrine.galaxy): the setup's DOCTRINES row is a tick box and a
+// count. Ticked, a stage after the unit stage lets each side pick up to that many
+// trade-offs for its army - not exclusive, both sides may take the same one.
+// Off by default; never in Testing, which has its own doctrine panel.
+const int c_gameDocPicksDefault = 2;
+const int c_gameDocPicksMax     = 3;
+bool g_game_doctrines = false;
+int  g_game_docPicks  = c_gameDocPicksDefault;
+
+bool GameMode_DoctrinesOn() {
+    return g_game_doctrines && g_game_mode != c_gameModeTesting;
+}
+int GameMode_DoctrinePicks() {
+    return g_game_docPicks;
+}
+
+// The stages a side can go YOLO in, each separately (CycleMod_SideIsYolo). The
+// flag arrays in CycleMod are sized 4 - keep them above the last stage.
+const int c_stageRace     = 0;
+const int c_stageMod      = 1;
+const int c_stageRoster   = 2;
+const int c_stageDoctrine = 3;
 
 string GameMode_Name(int mode) {
     if (mode == c_gameModeTournament) { return "Tournament"; }
@@ -114,7 +132,7 @@ string GameMode_Desc(int mode) {
 //==================================================================================================
 // SETUP SCREEN
 //
-// One dialog, shown to the decider (g_draft_modeChooser), with three rows and a
+// One dialog, shown to the decider (g_draft_modeChooser), with five rows and a
 // Start button:
 //   Mode       Casual / Tournament / Testing
 //   Roster     Full roster (every unit allowed, no unit draft) / Unit groups
@@ -124,15 +142,18 @@ string GameMode_Desc(int mode) {
 //   Free draft size  Bans each (0-4) / Picks each (1-5) for the free draft; each
 //              click steps the number up and wraps. Live only in Casual with
 //              the free draft, N/A otherwise.
-// Defaults: Casual, Alternating draft, Free draft, 2 bans, 3 picks. A click
-// selects an option (the chosen card is drawn as SELECTED), Start commits.
-// Everyone else sees the same dialog disabled and updating live. Testing has no
-// draft, so the Roster, Modifiers and Free draft size rows are greyed out while it is
-// selected. Unit groups forces the bucket draft: the Modifiers row shows Buckets
-// chosen and Free draft N/A.
+//   Doctrines  a tick box (on / off) and Up to N each (1-3, each click steps it up
+//              and wraps; N/A while the box is off). See Doctrine.galaxy.
+// Defaults: Casual, Alternating draft, Free draft, 2 bans, 3 picks, Doctrines off
+// (2 each). A click selects an option (the chosen card is drawn as SELECTED),
+// Start commits. Everyone else sees the same dialog disabled and updating live.
+// Testing has no draft, so every row but Mode is greyed out while it is selected.
+// Unit groups forces the bucket draft: the Modifiers row shows Buckets chosen and
+// Free draft N/A.
 //
 // The choices live in g_game_mode / g_game_roster / g_game_buckets /
-// g_game_modBans / g_game_modPicks and are read through the helpers above. They
+// g_game_modBans / g_game_modPicks / g_game_doctrines / g_game_docPicks and are
+// read through the helpers above. They
 // are written straight from the clicks (the dialog IS the pending state); only
 // the callback waits for Start.
 //==================================================================================================
@@ -142,6 +163,7 @@ int[3]  g_gmode_btn;                 // [0..2] mode cards, indexed by c_gameMode
 int[3]  g_gmode_rosterBtn;           // [0] Full roster, [1] Unit groups, [2] Alternating draft
 int[2]  g_gmode_modBtn;              // [0] Buckets, [1] Free draft
 int[2]  g_gmode_sizeBtn;             // [0] Bans each, [1] Picks each (free draft size)
+int[2]  g_gmode_docBtn;              // [0] the Doctrines tick box, [1] Up to N each
 int     g_gmode_start    = c_invalidDialogControlId;
 int     g_gmode_chooser  = 0;
 trigger g_gmode_trigger  = null;
@@ -175,8 +197,9 @@ string GameMode_ModsDesc(bool buckets) {
 
 // One option card for both audiences. chosen = the selected option of its row;
 // greyed = the row is switched off (Testing). Only the decider can click, and
-// only on a live row.
-void GameMode_SetupDrawCard(int control, bool chosen, bool greyed, string name, string desc) {
+// only on a live row. chosenTag is the chip a chosen card carries.
+void GameMode_SetupDrawCardTag(int control, bool chosen, bool greyed, string name, string desc,
+                               string chosenTag) {
     playergroup mine;
     playergroup others;
     int         state;
@@ -186,7 +209,7 @@ void GameMode_SetupDrawCard(int control, bool chosen, bool greyed, string name, 
     others = PlayerGroupCopy(PlayerGroupAll());
     PlayerGroupRemove(others, g_gmode_chooser);
 
-    tag = "CHOSEN";
+    tag = chosenTag;
     if (greyed) {
         state = c_draftStateTaken;
         tag = "N/A";
@@ -198,6 +221,10 @@ void GameMode_SetupDrawCard(int control, bool chosen, bool greyed, string name, 
     }
     DraftStyle_ApplyCard(control, mine, state, DraftStyle_Card(state, tag, name, desc), true);
     DraftStyle_ApplyCard(control, others, state, DraftStyle_Card(state, tag, name, desc), false);
+}
+
+void GameMode_SetupDrawCard(int control, bool chosen, bool greyed, string name, string desc) {
+    GameMode_SetupDrawCardTag(control, chosen, greyed, name, desc, "CHOSEN");
 }
 
 void GameMode_SetupRefresh() {
@@ -243,6 +270,21 @@ void GameMode_SetupRefresh() {
         GameMode_SetupDrawCard(g_gmode_sizeBtn[0], false, true, "Bans each", "Casual free draft only");
         GameMode_SetupDrawCard(g_gmode_sizeBtn[1], false, true, "Picks each", "Casual free draft only");
     }
+    // Doctrines: a tick box, drawn chosen while ticked, and the count beside it.
+    if (g_game_doctrines) {
+        GameMode_SetupDrawCardTag(g_gmode_docBtn[0], true, greyed, "[x] Doctrines",
+            "trade-off picks after the units", "ON");
+    } else {
+        GameMode_SetupDrawCard(g_gmode_docBtn[0], false, greyed, "[ ] Doctrines",
+            "click to add trade-off picks after the units");
+    }
+    if (g_game_doctrines && !greyed) {
+        GameMode_SetupDrawCard(g_gmode_docBtn[1], false, false,
+            "Up to " + IntToString(g_game_docPicks) + " each",
+            "click to change (1-" + IntToString(c_gameDocPicksMax) + "); both may pick the same");
+    } else {
+        GameMode_SetupDrawCard(g_gmode_docBtn[1], false, true, "Up to N each", "tick Doctrines first");
+    }
 }
 
 bool GameMode_OnClicked(bool testConds, bool runActions) {
@@ -274,7 +316,7 @@ bool GameMode_OnClicked(bool testConds, bool runActions) {
         i = i + 1;
     }
 
-    // The Roster and Modifiers rows do nothing while Testing is selected.
+    // The rows below Mode do nothing while Testing is selected.
     if (g_game_mode == c_gameModeTesting) { return true; }
     if (control == g_gmode_rosterBtn[0]) {
         DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
@@ -301,6 +343,15 @@ bool GameMode_OnClicked(bool testConds, bool runActions) {
             g_game_modPicks = g_game_modPicks + 1;
             if (g_game_modPicks > c_gameModPicksMax) { g_game_modPicks = 1; }
         }
+    } else if (control == g_gmode_docBtn[0]) {
+        DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+        g_game_doctrines = !g_game_doctrines;
+    } else if (control == g_gmode_docBtn[1]) {
+        // Up to N each: steps up and wraps, only while the box is ticked.
+        if (!g_game_doctrines) { return true; }
+        DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+        g_game_docPicks = g_game_docPicks + 1;
+        if (g_game_docPicks > c_gameDocPicksMax) { g_game_docPicks = 1; }
     } else {
         return true;
     }
@@ -345,7 +396,7 @@ void GameMode_Select(int chooser, trigger callback) {
     others = PlayerGroupCopy(PlayerGroupAll());
     PlayerGroupRemove(others, chooser);
 
-    g_gmode_dialog = DialogCreate(600, 600, c_anchorCenter, 0, 0, true);
+    g_gmode_dialog = DialogCreate(600, 700, c_anchorCenter, 0, 0, true);
     DialogSetObservedType(g_gmode_dialog, c_triggerObservedTypeObservedOrSelectedPlayerId);
     DialogSetTitle(g_gmode_dialog, StringToText("Tardigrade  -  Setup"));
     DialogSetVisible(g_gmode_dialog, all, true);
@@ -379,10 +430,14 @@ void GameMode_Select(int chooser, trigger callback) {
     g_gmode_sizeBtn[0] = GameMode_SetupButton(-145, 400, 280);
     g_gmode_sizeBtn[1] = GameMode_SetupButton( 145, 400, 280);
 
+    GameMode_SetupRowLabel("DOCTRINES  (trade-offs, picked after the units)", 478);
+    g_gmode_docBtn[0] = GameMode_SetupButton(-145, 498, 280);
+    g_gmode_docBtn[1] = GameMode_SetupButton( 145, 498, 280);
+
     g_gmode_start = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeButton);
     DraftStyle_InitButton(g_gmode_start, all);
     DialogControlSetSize(g_gmode_start, all, 300, 56);
-    DialogControlSetPosition(g_gmode_start, all, c_anchorTop, 0, 490);
+    DialogControlSetPosition(g_gmode_start, all, c_anchorTop, 0, 588);
     DraftStyle_ApplyCard(g_gmode_start, mine, c_draftStateOpen,
         DraftStyle_Card(c_draftStateOpen, "", "Start", "begin the draft"), true);
     DraftStyle_ApplyCard(g_gmode_start, others, c_draftStateOpen,
@@ -408,6 +463,8 @@ void GameMode_Select(int chooser, trigger callback) {
         TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_modBtn[i],
             c_triggerControlEventTypeClick);
         TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_sizeBtn[i],
+            c_triggerControlEventTypeClick);
+        TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_docBtn[i],
             c_triggerControlEventTypeClick);
         i = i + 1;
     }

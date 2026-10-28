@@ -31,6 +31,18 @@ bool   UnitGroups_Active();
 bool   UnitGroups_Covers(bool isP1, int modIdx, string unitType);
 string UnitGroups_ModLabel(bool isP1, int modIdx);
 
+// Doctrines (Doctrine.galaxy, included after this file): the scan hands every unit
+// to Doctrine_ApplyToUnit (after one Doctrine_ScanTick per pass), StartCycle has
+// Doctrine_InitHooks register the doctrine weapon-hit and death triggers, and once
+// the doctrine stage has committed the in-game panel adds a doctrine row per side.
+// Without doctrines all of them are no-ops.
+void   Doctrine_ApplyToUnit(unit u);
+void   Doctrine_ScanTick();
+void   Doctrine_InitHooks();
+bool   Doctrine_InPlay();
+string Doctrine_PanelLine(bool isP1);
+string Doctrine_PanelTip(bool isP1);
+
 // Number of modifiers in the pool and how many are drafted (= number of phases).
 // The draft dialog lays the pool out in two columns of c_cycleModRows buttons.
 // Every array indexed by modifier is sized with the literal 24 - Galaxy array
@@ -308,13 +320,13 @@ const string c_cycleFieldRepairBehavior = "TardigradeMod_FieldRepair";
 const fixed  c_cycleFieldRepairDelay    = 7.0;
 const fixed  c_cycleFieldRepairRate     = 0.03;   // of max life + shields per REAL second
 
-// Photon Coating: the first 8 real seconds (11.2 game) of each fight take 20%
+// Photon Coating: the first 8 real seconds (11.2 game) of each fight take 15%
 // less damage. The unit re-arms once c_cyclePhotonRearm game seconds (20 real)
 // have passed with no combat event on it.
 const string c_cyclePhotonBehavior = "TardigradeMod_PhotonCoating";
 const string c_cyclePhotonBuff     = "TardigradeMod_PhotonCoatingActive";
 const fixed  c_cyclePhotonRearm    = 28.0;
-const fixed  c_cyclePhotonReduction = 0.2;
+const fixed  c_cyclePhotonReduction = 0.15;
 
 const fixed  c_cycleMartyrFraction = 0.35;
 const fixed  c_cycleMartyrRadius   = 3.0;
@@ -346,15 +358,15 @@ int[24] g_cycle_p1Mods;             // [1..g_cycle_p1Count] modifier indices act
 int[24] g_cycle_p2Mods;             // [1..g_cycle_p2Count] modifier indices active for P2
 int     g_cycle_p1Count    = 0;
 int     g_cycle_p2Count    = 0;
-// YOLO is a flag on the side PER STAGE (c_stageRace / c_stageMod / c_stageRoster
-// in GameMode.galaxy), not an entry in its list: a side presses the YOLO button
-// on a stage's dialog and from then on that stage's turns for it are random.
-// g_cycle_pXActed is "this side has made its own first choice (a ban or a pick)
-// in the stage" - after that the button is gone and YOLO can't be taken.
-bool[3] g_cycle_p1Yolo;
-bool[3] g_cycle_p2Yolo;
-bool[3] g_cycle_p1Acted;
-bool[3] g_cycle_p2Acted;
+// YOLO is a flag on the side PER STAGE (c_stageRace / c_stageMod / c_stageRoster /
+// c_stageDoctrine in GameMode.galaxy), not an entry in its list: a side presses the
+// YOLO button on a stage's dialog and from then on that stage's turns for it are
+// random. g_cycle_pXActed is "this side has made its own first choice (a ban or a
+// pick) in the stage" - after that the button is gone and YOLO can't be taken.
+bool[4] g_cycle_p1Yolo;
+bool[4] g_cycle_p2Yolo;
+bool[4] g_cycle_p1Acted;
+bool[4] g_cycle_p2Acted;
 // Protect & Ban is DORMANT: nothing sets these any more (the drafting-style
 // screen that did is gone), so every Protect branch below is unreachable. The
 // points stage itself is intact in ProtectDraft.galaxy - see IDEAS.md.
@@ -382,6 +394,10 @@ int[16][6] g_cycle_panelRowOpp;
 // up (see CycleMod_PanelStatsTick).
 int[16][6] g_cycle_panelModMine;
 int[16][6] g_cycle_panelModOpp;
+// One doctrine row under each side's modifiers, only built when doctrines are in
+// play (Doctrine_InPlay) - see CycleMod_PanelDocRow.
+int[16] g_cycle_panelDocMine;
+int[16] g_cycle_panelDocOpp;
 fixed   g_cycle_panelStatsAt = 0.0;   // mission time of the last stat refresh
 bool[16] g_cycle_panelExpanded;
 // Auto-fold: mission time at which a panel folds itself away (0 = never). Set
@@ -750,7 +766,7 @@ string CycleMod_Desc(int idx) {
     if (idx == 20) { return "instant acceleration and double turn rate"; }
     if (idx == 21) { return "new units: +50% move speed for 30s"; }
     if (idx == 22) { return "unhurt 5s: regain 3% of max HP per second, life then shields"; }
-    if (idx == 23) { return "first 8s of a fight: -20% damage taken; re-arms after 20s calm"; }
+    if (idx == 23) { return "first 8s of a fight: -15% damage taken; re-arms after 20s calm"; }
     return "";
 }
 
@@ -862,6 +878,7 @@ bool CycleMod_SideHasHuman(bool isP1) {
 string CycleMod_StageName(int stage) {
     if (stage == c_stageRace) { return "race draft"; }
     if (stage == c_stageMod)  { return "modifier draft"; }
+    if (stage == c_stageDoctrine) { return "doctrines"; }
     // Unit groups has no unit draft; its groups stage borrows the roster stage.
     if (GameMode_IsUnitGroups()) { return "unit groups"; }
     return "roster draft";
@@ -880,6 +897,10 @@ string CycleMod_YoloStagesText(bool isP1) {
         if (s != "") { s = s + ", "; }
         if (GameMode_IsUnitGroups()) { s = s + "groups"; }
         else                         { s = s + "units"; }
+    }
+    if (CycleMod_SideIsYolo(isP1, c_stageDoctrine)) {
+        if (s != "") { s = s + ", "; }
+        s = s + "doctrines";
     }
     return s;
 }
@@ -5455,6 +5476,11 @@ bool CycleMod_OnUnitDamaged(bool testConds, bool runActions) {
     // the null-source bail so environmental damage counts too.
     UnitSetCustomValue(target, c_cycleStateLastDamaged, GameGetMissionTime());
     if (source == null) { return true; }
+    // A unit damaging itself is not an attack: Ignite's burn and the Volatile Cores
+    // blast (Doctrine.galaxy) are dealt by the victim to itself. Left to run on, it
+    // would consume the unit's own Overwatch charge, reset its idle timer, name it
+    // its own last attacker and let Predator Protocol heal it off its own burn.
+    if (source == target) { return true; }
 
     // Overwatch's own bonus damage re-enters this handler. Bail before anything
     // else: it must not re-arm/re-consume Overwatch (which would recurse), must
@@ -6258,6 +6284,8 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
             // becomes minerals.
             if (CycleMod_P1HasModIdx(c_cycleModMineralsOnly)) { CycleMod_ConvertGasIncome(CycleMod_P1Team()); }
             if (CycleMod_P2HasModIdx(c_cycleModMineralsOnly)) { CycleMod_ConvertGasIncome(CycleMod_P2Team()); }
+            // Doctrines: crown a new Champion, announce Battle Rhythm's phase.
+            Doctrine_ScanTick();
         }
         if (c_cyclePhaseMode) { doScan = g_cycle_activeBehavior != ""; }
         else                  { doScan = true; }
@@ -6307,6 +6335,8 @@ bool CycleMod_ScanTrigger(bool testConds, bool runActions) {
                     CycleMod_SyncVeteranStacks(u);
                     // Everyone sees everything until modifiers switch on.
                     CycleMod_UpdateOpeningVision(u);
+                    // Doctrines: their buffs on exactly the units they cover.
+                    Doctrine_ApplyToUnit(u);
                 }
                 CycleMod_UpdateConditionalBehaviors(u);
                 i = i + 1;
@@ -6411,9 +6441,17 @@ playergroup CycleMod_PanelViewers(int key) {
 // Collapsed shows the toggle button only; expanded shows both mod lists. Width
 // is constant across both states so every control's anchor offset (relative to
 // the dialog's centre) stays put instead of shifting when the height changes.
-// 232 for three rows a side, 40 more for four (the bucket draft).
+// Height of the doctrine row under each side's modifiers: 20 when doctrines are
+// in play, else 0 (no row is built).
+int CycleMod_PanelDocRow() {
+    if (Doctrine_InPlay()) { return 20; }
+    return 0;
+}
+
+// 232 for three rows a side, 40 more for four (the bucket draft), and one doctrine
+// row a side on top when doctrines are in play.
 int CycleMod_PanelHeight() {
-    return 232 + (CycleMod_PicksEach() - c_cyclePicksEach) * 40;
+    return 232 + (CycleMod_PicksEach() - c_cyclePicksEach) * 40 + 2 * CycleMod_PanelDocRow();
 }
 
 void CycleMod_SetPanelExpanded(int player, bool expanded) {
@@ -6433,6 +6471,10 @@ void CycleMod_SetPanelExpanded(int player, bool expanded) {
         DialogControlSetVisible(g_cycle_panelRowMine[player][i], viewer, expanded);
         DialogControlSetVisible(g_cycle_panelRowOpp[player][i], viewer, expanded);
         i = i + 1;
+    }
+    if (CycleMod_PanelDocRow() > 0) {
+        DialogControlSetVisible(g_cycle_panelDocMine[player], viewer, expanded);
+        DialogControlSetVisible(g_cycle_panelDocOpp[player], viewer, expanded);
     }
 
     if (expanded) {
@@ -6602,6 +6644,7 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     int         i;
     int         mineMod;
     int         oppMod;
+    int         docRow;
     bool        mineIsP1;
 
     viewer = CycleMod_PanelViewers(player);
@@ -6649,10 +6692,21 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         g_cycle_panelModMine[player][i] = mineMod;
         i = i + 1;
     }
+    // Doctrines: names on the row, what each does on its tooltip.
+    docRow = CycleMod_PanelDocRow();
+    if (docRow > 0) {
+        g_cycle_panelDocMine[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
+        DialogControlSetSize(g_cycle_panelDocMine[player], viewer, 450, 18);
+        DialogControlSetPosition(g_cycle_panelDocMine[player], viewer, c_anchorTop, 8, 76 + CycleMod_PicksEach() * 20);
+        DialogControlSetPropertyAsText(g_cycle_panelDocMine[player], c_triggerControlPropertyText,
+            viewer, StringToText(Doctrine_PanelLine(mineIsP1)));
+        DialogControlSetPropertyAsText(g_cycle_panelDocMine[player], c_triggerControlPropertyTooltip,
+            viewer, StringToText(Doctrine_PanelTip(mineIsP1)));
+    }
 
     g_cycle_panelHdrOpp[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
     DialogControlSetSize(g_cycle_panelHdrOpp[player], viewer, 450, 16);
-    DialogControlSetPosition(g_cycle_panelHdrOpp[player], viewer, c_anchorTop, 8, 84 + CycleMod_PicksEach() * 20);
+    DialogControlSetPosition(g_cycle_panelHdrOpp[player], viewer, c_anchorTop, 8, 84 + CycleMod_PicksEach() * 20 + docRow);
     if (role == 0) {
         DialogControlSetPropertyAsText(g_cycle_panelHdrOpp[player], c_triggerControlPropertyText,
             viewer, StringToText("<c val=\"FF9F7F\">PLAYER 2</c>"));
@@ -6667,11 +6721,21 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
         else           { oppMod = CycleMod_Team2Mod(i); }
         g_cycle_panelRowOpp[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
         DialogControlSetSize(g_cycle_panelRowOpp[player][i], viewer, 450, 18);
-        DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, 8, 102 + CycleMod_PicksEach() * 20 + (i - 1) * 20);
+        DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, 8, 102 + CycleMod_PicksEach() * 20 + docRow + (i - 1) * 20);
         DialogControlSetPropertyAsText(g_cycle_panelRowOpp[player][i], c_triggerControlPropertyText,
             viewer, StringToText(CycleMod_ModLine(oppMod, !mineIsP1)));
         g_cycle_panelModOpp[player][i] = oppMod;
         i = i + 1;
+    }
+    if (docRow > 0) {
+        g_cycle_panelDocOpp[player] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
+        DialogControlSetSize(g_cycle_panelDocOpp[player], viewer, 450, 18);
+        DialogControlSetPosition(g_cycle_panelDocOpp[player], viewer, c_anchorTop, 8,
+            102 + 2 * CycleMod_PicksEach() * 20 + docRow);
+        DialogControlSetPropertyAsText(g_cycle_panelDocOpp[player], c_triggerControlPropertyText,
+            viewer, StringToText(Doctrine_PanelLine(!mineIsP1)));
+        DialogControlSetPropertyAsText(g_cycle_panelDocOpp[player], c_triggerControlPropertyTooltip,
+            viewer, StringToText(Doctrine_PanelTip(!mineIsP1)));
     }
 
     // Starts open and stays open until its viewer folds it with the toggle. (It
@@ -6756,6 +6820,9 @@ void CycleMod_StartCycle() {
         c_unitDamageTypeAny, c_unitDamageEither, null);
     TriggerAddEventUnitStartedAttack(g_cycle_attackTrig, null);
     TriggerAddEventUnitDied(g_cycle_deathTrig, null);
+
+    // Doctrines' own weapon-hit (Melee and Ranged only) and death triggers.
+    Doctrine_InitHooks();
 
     // Forced March's spell break: any ability, at the stage each class goes
     // off at (see CycleMod_OnUnitCastSpell for why there are three).

@@ -1,0 +1,1891 @@
+//--------------------------------------------------------------------------------------------------
+// Doctrines  (the setup screen's DOCTRINES row: a tick box and "up to N each")
+//
+// A doctrine is a trade-off for a side's army: every one has a pro AND a con,
+// e.g. Loose Formation = -40% splash damage taken, -20% health. With the tick box
+// on, this stage runs AFTER the unit stage (alternating draft, Full roster or Unit
+// groups) and before the summary: each side picks up to GameMode_DoctrinePicks()
+// doctrines, then locks in.
+//
+//   - Picks are not exclusive: both sides may take the same doctrine, so there is
+//     nothing to ban and no turn order. Both sides choose at once (two human
+//     deciders) and cannot see each other's picks until the summary. One human
+//     deciding both sides does P1's picks, then P2's - the UnitGroups rule.
+//   - The CON is always about the side's own units (health, speed, armor, attack
+//     speed, range, sight, energy, or its own units caught in a blast), so it
+//     always bites. The PRO may depend on the matchup (splash, spells, armored
+//     targets...). The rosters are known by now, so a con that only applied
+//     against certain enemies would be free against a roster without them.
+//   - A caster's con hits casting (energy, max energy, regen), never only its
+//     health: a High Templar spends its energy in one burst, so its health was
+//     never what it traded.
+//   - A doctrine only touches the units its scope names (Doctrine_Covers). Casters
+//     are left out of every weapon doctrine - a High Templar would take +50%
+//     damage and the slower attacks as a free gift - and get energy doctrines of
+//     their own instead. Workers, structures, Overlords / Overseers / Observers,
+//     cocoons, Adept shades and Disruptor novas get no doctrine at all.
+//   - Like a modifier, a doctrine is dormant until the activation delay
+//     (CycleMod_ModsLive) and only reaches its own side's units. It is global in
+//     Unit groups mode: a doctrine is not a modifier and has no group.
+//
+// In game:
+//   - The CycleMod scan hands every unit to Doctrine_ApplyToUnit, which keeps each
+//     doctrine's buff (BehaviorData.xml, TardigradeDoc_*) on exactly the units it
+//     covers, plus the per-doctrine state: Last Stand's low-health buff, Pack
+//     Tactics' tier, Lone Wolves' alone/crowded buff, Battle Rhythm's phase, Last
+//     Breath's recharge, the Champion's crown, War Banners' aura, Ignite's burn.
+//     The buffs have no Duration: nothing has to re-add them, and a unit hidden in
+//     a transport (the scan skips Hidden units) keeps its doctrines.
+//   - Doctrine_ScanTick runs once per scan pass, before the units: it crowns a new
+//     Champion when the old one is gone and announces Battle Rhythm's phases.
+//   - Doctrine_OnWeaponHit is registered for MELEE and RANGED damage only, so it
+//     sees direct weapon hits: never splash victims, never spells, and never this
+//     file's own bonus damage (Ricochet's bounce is Splash, the rest Spell). It
+//     applies Exposing Fire, Frost Rounds and Ignite to the target, bounces
+//     Ricochet and finishes Culling Rounds.
+//   - Doctrine_OnUnitDied pays Bounty Hunters and sets off Volatile Cores.
+//
+// Tournament: one clock per step (DraftTimer_ArmFor, c_docSeconds); at zero every
+// unlocked side of the step is locked in with what it has picked. YOLO is its own
+// stage (c_stageDoctrine): pressing it picks random doctrines and locks in.
+//
+// Testing mode has no stage; Doctrine_InitTestPanel adds a second panel next to the
+// modifier panel to switch doctrines on and off for the clicking player's side.
+//
+// Requires: DraftStyle, GameMode (DraftTimer, GameMode_Doctrine*), RaceDraft
+// globals, CycleMod (YOLO, owners, ModsLive, BlinkHealthFraction, UnitCost,
+// RefundCanVanish, IsHostileTarget, FloatText), RosterDraft (rosters, pools,
+// display names). Included after UnitGroups, before TestingMode. CycleMod
+// forward-declares Doctrine_ApplyToUnit / _ScanTick / _InitHooks / _InPlay /
+// _PanelLine / _PanelTip.
+//--------------------------------------------------------------------------------------------------
+
+const int   c_docCount   = 34;          // arrays indexed by doctrine are sized 35
+const int   c_docSeconds = 30;          // Tournament: the clock for the step
+const fixed c_docGrace   = 2.0;         // real seconds Lock in stays grey at a step's start
+const int   c_docColumns = 4;
+const int   c_docRows    = 9;
+
+// Who a doctrine reaches (Doctrine_Scope).
+const int c_docScopeArmy     = 1;       // every army unit, casters and support included
+const int c_docScopeWeapon   = 2;       // units with a real weapon
+const int c_docScopeRanged   = 3;
+const int c_docScopeMelee    = 4;
+const int c_docScopeEnergy   = 5;       // units with energy
+const int c_docScopeArmyCore = 6;       // army units except Interceptors, Locusts, Broodlings
+
+// A unit type's class, bits (Doctrine_ClassOf).
+const int c_docClsArmy    = 1;
+const int c_docClsWeapon  = 2;
+const int c_docClsRanged  = 4;
+const int c_docClsMelee   = 8;
+const int c_docClsEnergy  = 16;
+const int c_docClsSpawned = 32;
+
+// Doctrines with script behaviour beyond their buff.
+const int c_docLastStand    = 14;
+const int c_docDeepReserves = 20;
+const int c_docExpose       = 21;
+const int c_docFrost        = 22;
+const int c_docRicochet     = 23;
+const int c_docCulling      = 24;
+const int c_docIgnite       = 25;
+const int c_docPack         = 26;
+const int c_docLoneWolves   = 27;
+const int c_docRhythm       = 28;
+const int c_docLastBreath   = 29;
+const int c_docChampion     = 30;
+const int c_docVolatile     = 31;
+const int c_docBounty       = 32;
+const int c_docWarBanners   = 34;
+
+// Helper buffs (BehaviorData.xml) and this file's bonus-damage effects
+// (EffectData.xml). Every attacker-side damage response in the doctrine buffs
+// excludes the four effects, so a bonus computed from damage that already landed
+// is never multiplied a second time.
+const string c_docLastStandActive = "TardigradeDoc_LastStandActive";
+const string c_docExposedBuff     = "TardigradeDoc_Exposed";
+const string c_docChilledBuff     = "TardigradeDoc_Chilled";
+const string c_docBurningBuff     = "TardigradeDoc_Burning";
+const string c_docPackTier        = "TardigradeDoc_Pack";            // + 1..c_docPackMax
+const string c_docLoneAlone       = "TardigradeDoc_LoneWolfAlone";
+const string c_docLoneCrowded     = "TardigradeDoc_LoneWolfCrowded";
+const string c_docRhythmSurge     = "TardigradeDoc_RhythmSurge";
+const string c_docRhythmLull      = "TardigradeDoc_RhythmLull";
+const string c_docBreathReady     = "TardigradeDoc_LastBreathReady";
+const string c_docBreathSpent     = "TardigradeDoc_LastBreathSpent";
+const string c_docChampionCrown   = "TardigradeDoc_ChampionCrown";
+const string c_docBanneredBuff    = "TardigradeDoc_Bannered";
+const string c_docRicochetEffect  = "TardigradeDoc_RicochetHit";
+const string c_docCullEffect      = "TardigradeDoc_CullHit";
+const string c_docBurnEffect      = "TardigradeDoc_BurnTick";
+const string c_docBlastEffect     = "TardigradeDoc_VolatileBlast";
+
+// Numbers that live in script. Distances are game units; times are game seconds
+// (x1.4 on Faster) unless they say real.
+const fixed c_docLastStandAt      = 0.35;   // life + shields fraction Last Stand kicks in below
+const fixed c_docRicochetRadius   = 2.5;
+const fixed c_docRicochetShare    = 0.5;    // of the damage that landed on the first target
+const fixed c_docCullAt           = 0.15;   // life + shields fraction a hit finishes off
+const fixed c_docBurnPerTick      = 0.01;   // of max life + shields per 0.5s scan tick (~2.8%/real s)
+const fixed c_docPackRadius       = 3.0;
+const int   c_docPackMax          = 5;      // tiers: +5% weapon damage each
+const fixed c_docLoneRadius       = 4.0;
+const fixed c_docRhythmPeriod     = 28.0;   // each phase: 20 real seconds
+const fixed c_docVolatileFraction = 0.3;    // of the dead unit's max life + shields
+const fixed c_docVolatileRadius   = 2.0;
+const int   c_docBlastDepthMax    = 6;      // explosions setting off explosions, at most this deep
+const fixed c_docBountyFraction   = 0.15;
+const fixed c_docBannerRadius     = 4.0;
+
+// Unit classes. Explicit lists rather than a catalog sweep, so the public page can
+// name every unit. Alternate forms carry their base unit's class, so a buff keeps
+// fitting through a siege, a landing or a burrow. Anything not listed (workers,
+// structures, Overlord, Overseer, Observer, Changeling, cocoons and eggs, Larva,
+// AdeptPhaseShift, DisruptorPhased, AutoTurret, MULE) is in no class.
+//   Ranged: a real ranged weapon. Lurkers count unburrowed too, the Carrier for its
+//   launch range, the Hellbat (range 2) because its damage is Ranged in the data.
+const string c_docRangedTypes =
+    " Marine Marauder Reaper Ghost Hellion HellionTank Cyclone SiegeTank SiegeTankSieged"
+    + " Thor ThorAP VikingFighter VikingAssault Liberator LiberatorAG Banshee Battlecruiser"
+    + " Stalker Adept Archon Immortal Colossus Phoenix VoidRay Oracle Tempest Carrier Mothership"
+    + " Queen QueenBurrowed Roach RoachBurrowed Ravager RavagerBurrowed Hydralisk"
+    + " HydraliskBurrowed LurkerMP LurkerMPBurrowed Mutalisk Corruptor BroodLord ";
+const string c_docMeleeTypes =
+    " Zealot DarkTemplar Zergling ZerglingBurrowed Ultralisk UltraliskBurrowed ";
+//   Spawned attackers: a weapon, but neither melee nor ranged for doctrine purposes -
+//   an Interceptor's range is meaningless, it flies to its target. Also left out of
+//   the "army core" scope (Champion, Volatile Cores): they come and go by the dozen.
+const string c_docSpawnedTypes = " Interceptor LocustMP LocustMPFlying Broodling ";
+//   Army only: no real weapon. High Templar and Sentry do have an attack, but it is
+//   not what they are for, so weapon doctrines skip them (see the header).
+const string c_docSupportTypes =
+    " HighTemplar Sentry Medivac Raven Infestor InfestorBurrowed Viper WidowMine"
+    + " WidowMineBurrowed WarpPrism WarpPrismPhasing Disruptor SwarmHostMP SwarmHostBurrowedMP"
+    + " Baneling BanelingBurrowed ";
+//   Energy, on top of the class above. Ladder data: Battlecruiser, Mothership and Thor
+//   have none (voidmulti EnergyMax 0).
+const string c_docEnergyTypes =
+    " Ghost Banshee Oracle Queen QueenBurrowed HighTemplar Sentry Medivac Raven Infestor"
+    + " InfestorBurrowed Viper ";
+
+// State. "side" is 1 for P1, 2 for P2 throughout (arrays sized 3, [0] unused).
+bool[3][35] g_doc_has;                  // [side][doctrine] picked / switched on
+int[3]      g_doc_count;                // picks per side
+bool[35]    g_doc_ever;                 // any side ever had it: the scan checks these
+bool        g_doc_anyEver = false;      // ...and skips everything while none has
+bool        g_doc_done    = false;      // the stage committed: Doctrine_InPlay()
+fixed       g_doc_liveAt  = -1.0;       // mission time the scan first saw doctrines live
+int[36]     g_doc_scratch;              // candidate list for random picks
+bool        g_doc_hooksBuilt = false;
+unit[3]     g_doc_champ;                // each side's Champion (dead or null = none yet)
+unit[3]     g_doc_champCand;            // the most expensive candidate seen this scan pass
+fixed[3]    g_doc_champCandCost;
+int         g_doc_rhythmShown = -1;     // the Battle Rhythm phase last announced
+int         g_doc_blastDepth  = 0;      // Volatile Cores explosions in progress
+
+// Steps: two human deciders pick at once (one step); one human deciding both
+// sides does P1, then P2 (two steps).
+trigger  g_doc_callback   = null;
+bool[3]  g_doc_locked;
+bool     g_doc_simul      = false;
+int      g_doc_stepCount  = 0;
+int      g_doc_step       = 0;          // 1-based; past stepCount = done
+trigger  g_doc_autoTrig   = null;
+bool     g_doc_graceLocked = false;
+int      g_doc_graceToken  = 0;
+
+// Stage UI
+int      g_doc_dialog   = c_invalidDialogId;
+int      g_doc_lblTitle = c_invalidDialogControlId;
+int      g_doc_lblSub   = c_invalidDialogControlId;
+int      g_doc_lblInfo  = c_invalidDialogControlId;
+int      g_doc_lblPicks = c_invalidDialogControlId;
+int[5]   g_doc_lblHead;                 // [1..4] column headings
+int[35]  g_doc_btn;                     // [1..34]
+int      g_doc_btnLock  = c_invalidDialogControlId;
+int      g_doc_btnYolo  = c_invalidDialogControlId;
+trigger  g_doc_trigger  = null;
+
+// Testing panel (one per human player)
+bool[16]     g_doc_testBuilt;
+bool[16]     g_doc_testExpanded;
+int[16]      g_doc_testDialog;
+int[16]      g_doc_testToggle;
+int[16][35]  g_doc_testBtn;
+trigger      g_doc_testTrig = null;
+
+//--------------------------------------------------------------------------------------------------
+// The doctrines. Indices are stable (1-20 the first set, 21-34 the second); the
+// board places them by Doctrine_Column / Doctrine_Row. Numbers live in
+// BehaviorData.xml (TardigradeDoc_*) or the constants above; keep Doctrine_Desc,
+// Doctrine_Card and the GameStrings tooltips in step with them.
+//--------------------------------------------------------------------------------------------------
+string Doctrine_Name(int d) {
+    if (d == 1)  { return "Loose Formation"; }
+    if (d == 2)  { return "Spell Ward"; }
+    if (d == 3)  { return "Deflector Plating"; }
+    if (d == 4)  { return "Riot Gear"; }
+    if (d == 5)  { return "Phalanx"; }
+    if (d == 6)  { return "Heavy Plating"; }
+    if (d == 7)  { return "Stripped Down"; }
+    if (d == 8)  { return "Heavy Hitters"; }
+    if (d == 9)  { return "Hair Trigger"; }
+    if (d == 10) { return "Armor-Piercing"; }
+    if (d == 11) { return "Anti-Personnel"; }
+    if (d == 12) { return "Glass Cannon"; }
+    if (d == 13) { return "Skirmishers"; }
+    if (d == 14) { return "Last Stand"; }
+    if (d == 15) { return "Rapid Fire"; }
+    if (d == 16) { return "Long Barrels"; }
+    if (d == 17) { return "Sniper Scopes"; }
+    if (d == 18) { return "Bloodlust"; }
+    if (d == 19) { return "Overcharged Cells"; }
+    if (d == 20) { return "Deep Reserves"; }
+    if (d == 21) { return "Exposing Fire"; }
+    if (d == 22) { return "Frost Rounds"; }
+    if (d == 23) { return "Ricochet"; }
+    if (d == 24) { return "Culling Rounds"; }
+    if (d == 25) { return "Ignite"; }
+    if (d == 26) { return "Pack Tactics"; }
+    if (d == 27) { return "Lone Wolves"; }
+    if (d == 28) { return "Battle Rhythm"; }
+    if (d == 29) { return "Last Breath"; }
+    if (d == 30) { return "Champion"; }
+    if (d == 31) { return "Volatile Cores"; }
+    if (d == 32) { return "Bounty Hunters"; }
+    if (d == 33) { return "Spellweaver"; }
+    if (d == 34) { return "War Banners"; }
+    return "";
+}
+
+// The full effect: tooltips, the summary, the in-game panel. "Health" is life and
+// shields.
+string Doctrine_Desc(int d) {
+    if (d == 1)  { return "-40% splash damage taken, -20% health"; }
+    if (d == 2)  { return "-40% spell damage taken, -15% health"; }
+    if (d == 3)  { return "-20% ranged damage taken, -15% move speed"; }
+    if (d == 4)  { return "-40% melee damage taken, -10% health"; }
+    if (d == 5)  { return "+3 armor, -25% health"; }
+    if (d == 6)  { return "+25% health, -15% move speed"; }
+    if (d == 7)  { return "+20% move speed, -2 armor"; }
+    if (d == 8)  { return "+50% damage per hit, attacks 35% slower"; }
+    if (d == 9)  { return "attacks 60% faster, -35% damage per hit"; }
+    if (d == 10) { return "+40% damage vs Armored, attacks 15% slower"; }
+    if (d == 11) { return "+40% damage vs Light, attacks 15% slower"; }
+    if (d == 12) { return "+30% damage, -25% health"; }
+    if (d == 13) { return "+25% move speed, -20% damage"; }
+    if (d == 14) { return "+50% attack speed below 35% health, -15% health"; }
+    if (d == 15) { return "+25% attack speed, -1 range"; }
+    if (d == 16) { return "+1 range, attacks 20% slower"; }
+    if (d == 17) { return "+2 range, -4 sight"; }
+    if (d == 18) { return "+35% attack speed, -2 armor"; }
+    if (d == 19) { return "double energy regeneration, -35% max energy"; }
+    if (d == 20) { return "new units start with full energy, -40% energy regen"; }
+    if (d == 21) { return "hits make the target take +25% damage for 3s, -20% damage"; }
+    if (d == 22) { return "hits slow the target's movement 35% for 2s, -20% damage"; }
+    if (d == 23) { return "half of each hit strikes a second enemy within 2.5, -25% damage"; }
+    if (d == 24) { return "hits destroy enemies left below 15% health, -15% damage"; }
+    if (d == 25) { return "hits burn the target and stop its regeneration for 3s, -25% damage"; }
+    if (d == 26) { return "+5% damage per unit of yours within 3 (up to +25%), -15% health"; }
+    if (d == 27) { return "alone: +30% attack speed and +2 armor; next to your units: attacks 10% slower"; }
+    if (d == 28) { return "every 20s: Surge +25% attack and move speed, then Lull -20%"; }
+    if (d == 29) { return "once every 45s, a hit that would kill the unit does nothing; -20% health"; }
+    if (d == 30) { return "your most expensive unit gets +60% health and +30% damage, all others -10% health"; }
+    if (d == 31) { return "units explode on death for 30% of their max health, hurting your own units too"; }
+    if (d == 32) { return "every enemy unit you kill pays you 15% of its cost, -10% health"; }
+    if (d == 33) { return "+35% spell damage, energy regenerates 30% slower"; }
+    if (d == 34) { return "your units near units with energy get +15% attack speed and +1 armor; -40% max energy"; }
+    return "";
+}
+
+// The card's second line: the same effect, short enough for a 255-wide card.
+string Doctrine_Card(int d) {
+    if (d == 1)  { return "-40% splash taken, -20% health"; }
+    if (d == 2)  { return "-40% spell damage taken, -15% health"; }
+    if (d == 3)  { return "-20% ranged taken, -15% speed"; }
+    if (d == 4)  { return "-40% melee taken, -10% health"; }
+    if (d == 5)  { return "+3 armor, -25% health"; }
+    if (d == 6)  { return "+25% health, -15% speed"; }
+    if (d == 7)  { return "+20% speed, -2 armor"; }
+    if (d == 8)  { return "+50% dmg per hit, 35% slower attacks"; }
+    if (d == 9)  { return "60% faster attacks, -35% dmg per hit"; }
+    if (d == 10) { return "+40% dmg vs Armored, 15% slower"; }
+    if (d == 11) { return "+40% dmg vs Light, 15% slower"; }
+    if (d == 12) { return "+30% damage, -25% health"; }
+    if (d == 13) { return "+25% speed, -20% damage"; }
+    if (d == 14) { return "+50% atk speed under 35%, -15% health"; }
+    if (d == 15) { return "+25% attack speed, -1 range"; }
+    if (d == 16) { return "+1 range, 20% slower attacks"; }
+    if (d == 17) { return "+2 range, -4 sight"; }
+    if (d == 18) { return "+35% attack speed, -2 armor"; }
+    if (d == 19) { return "2x energy regen, -35% max energy"; }
+    if (d == 20) { return "spawn with full energy, -40% regen"; }
+    if (d == 21) { return "target takes +25% for 3s, -20% dmg"; }
+    if (d == 22) { return "hits slow 35% for 2s, -20% damage"; }
+    if (d == 23) { return "half of each hit bounces, -25% dmg"; }
+    if (d == 24) { return "kills targets under 15%, -15% dmg"; }
+    if (d == 25) { return "burns, stops regen, -25% damage"; }
+    if (d == 26) { return "+5% dmg per ally near, -15% health"; }
+    if (d == 27) { return "alone: +30% atk speed, +2 armor"; }
+    if (d == 28) { return "20s surge +25%, 20s lull -20%"; }
+    if (d == 29) { return "cheat death every 45s, -20% health"; }
+    if (d == 30) { return "top unit +60% hp, +30% dmg"; }
+    if (d == 31) { return "explode on death, hits yours too"; }
+    if (d == 32) { return "kills pay 15% of cost, -10% health"; }
+    if (d == 33) { return "+35% spell damage, -30% regen"; }
+    if (d == 34) { return "aura +15% atk speed, -40% max energy"; }
+    return "";
+}
+
+// The fine print, for tooltips: what the numbers do and do not count.
+string Doctrine_Note(int d) {
+    if (d == 1)  { return "Splash is the area part of an attack: tank shells, Banelings, Hellions, Widow Mines, Colossi, Volatile Cores. Spells are not splash."; }
+    if (d == 2)  { return "Spell damage: Storm, Corrosive Bile, Purification Nova, Snipe, Yamato, a Widow Mine's main hit, Ignite's burn."; }
+    if (d == 3)  { return "Ranged weapon damage only. Most of the game's damage is ranged."; }
+    if (d == 4)  { return "Melee damage only: Zealots, Zerglings, Ultralisks, Dark Templar, Broodlings."; }
+    if (d == 5)  { return "Armor on life and shields both. Strong against many small hits, weak against big ones."; }
+    if (d == 8)  { return "Weapon damage only - spells are unchanged. Flat armor matters less, overkill more."; }
+    if (d == 9)  { return "Weapon damage only - spells are unchanged. Flat armor matters more, overkill less."; }
+    if (d == 10) { return "Weapon damage only. The slower attacks apply against every target."; }
+    if (d == 11) { return "Weapon damage only. The slower attacks apply against every target."; }
+    if (d == 12) { return "Weapon damage only - spells are unchanged."; }
+    if (d == 13) { return "Weapon damage only - spells are unchanged."; }
+    if (d == 14) { return "Health is life plus shields. The -15% always applies."; }
+    if (d == 17) { return "Units can outrange their own sight: they need a spotter to use the extra range."; }
+    if (d == 19) { return "Fewer spells banked, but they come back twice as fast."; }
+    if (d == 20) { return "Units already alive when doctrines switch on are not refilled."; }
+    if (d == 21) { return "Direct weapon hits only, not splash or spells. The +25% counts every source of damage on that target, spells and splash included. A new hit restarts the 3s."; }
+    if (d == 22) { return "Direct weapon hits only. Doesn't stack: a new hit restarts the 2s."; }
+    if (d == 23) { return "Direct weapon hits only, not splash. The bounce goes to the closest other enemy on the same plane (ground or air) and can't bounce again."; }
+    if (d == 24) { return "Checked after every direct weapon hit. Health is life plus shields, so shields count."; }
+    if (d == 25) { return "The burn takes about 3% of the target's max health per second and stops all its regeneration: life, shields and energy. A new hit restarts the 3s."; }
+    if (d == 26) { return "Counts your other army units within 3, up to 5 of them. Workers, Larva, eggs, Interceptors, Locusts and Broodlings don't count."; }
+    if (d == 27) { return "Alone means none of your other army units within 4. Workers, Larva, eggs, Interceptors, Locusts and Broodlings don't count."; }
+    if (d == 28) { return "The clock starts when doctrines switch on, Surge first, and your side is told each time it turns. Casters get the move speed."; }
+    if (d == 29) { return "Then 45s to recharge, shown on the unit. The -20% always applies. A Baneling still dies to its own blast."; }
+    if (d == 30) { return "Your most expensive unit when doctrines switch on, and a new one each time the Champion dies. Never Interceptors, Locusts, Broodlings or hallucinations."; }
+    if (d == 31) { return "30% of the unit's max health as damage to every unit within 2, both sides. Explosions can set each other off. Not Interceptors, Locusts or Broodlings."; }
+    if (d == 32) { return "Army units only, not workers or buildings. The kill counts for whichever of your units landed it, Interceptors and Locusts included."; }
+    if (d == 33) { return "Spell damage: Storm, Snipe, Fungal Growth, Parasitic Bomb, Anti-Armor Missile and the like."; }
+    if (d == 34) { return "The aura reaches all your non-worker units within 4 of a unit with energy, the bearer included, and doesn't stack."; }
+    return "";
+}
+
+int Doctrine_Scope(int d) {
+    if (d <= 7)  { return c_docScopeArmy; }
+    if (d <= 14) { return c_docScopeWeapon; }
+    if (d <= 17) { return c_docScopeRanged; }
+    if (d == 18) { return c_docScopeMelee; }
+    if (d <= 20) { return c_docScopeEnergy; }
+    if (d <= 27) { return c_docScopeWeapon; }
+    if (d <= 29) { return c_docScopeArmy; }
+    if (d <= 31) { return c_docScopeArmyCore; }
+    if (d == 32) { return c_docScopeArmy; }
+    return c_docScopeEnergy;
+}
+
+string Doctrine_ScopeText(int scope) {
+    if (scope == c_docScopeArmy)     { return "all army units"; }
+    if (scope == c_docScopeWeapon)   { return "units with a weapon (not casters)"; }
+    if (scope == c_docScopeRanged)   { return "ranged units"; }
+    if (scope == c_docScopeMelee)    { return "melee units"; }
+    if (scope == c_docScopeArmyCore) { return "army units (not Interceptors, Locusts or Broodlings)"; }
+    return "units with energy";
+}
+
+string Doctrine_ColumnTitle(int c) {
+    if (c == 1) { return "ALL ARMY UNITS"; }
+    if (c == 2) { return "UNITS WITH A WEAPON"; }
+    if (c == 3) { return "ON HIT  /  RANGED  /  MELEE"; }
+    return "WHOLE ARMY  /  ENERGY UNITS";
+}
+
+// Board placement, 4 columns of up to 9:
+//   1 army:        1-7, Battle Rhythm 28, Last Breath 29
+//   2 weapon:      8-14, Pack Tactics 26, Lone Wolves 27
+//   3 on hit:      21-25, then ranged 15-17 and melee 18
+//   4 special:     Champion 30, Volatile 31, Bounty 32, then energy 33, 34, 19, 20
+int Doctrine_Column(int d) {
+    if (d <= 7 || d == 28 || d == 29) { return 1; }
+    if (d <= 14 || d == 26 || d == 27) { return 2; }
+    if ((d >= 15 && d <= 18) || (d >= 21 && d <= 25)) { return 3; }
+    return 4;
+}
+
+int Doctrine_Row(int d) {
+    if (d <= 7)  { return d; }
+    if (d <= 14) { return d - 7; }
+    if (d <= 18) { return d - 9; }      // 15..18 -> rows 6..9 under the on-hit five
+    if (d <= 20) { return d - 13; }     // 19, 20 -> rows 6, 7 under the energy pair
+    if (d <= 25) { return d - 20; }
+    if (d == 26 || d == 28) { return 8; }
+    if (d == 27 || d == 29) { return 9; }
+    if (d <= 32) { return d - 29; }     // 30..32 -> rows 1..3
+    return d - 29;                      // 33, 34 -> rows 4, 5
+}
+
+string Doctrine_Behavior(int d) {
+    if (d == 1)  { return "TardigradeDoc_LooseFormation"; }
+    if (d == 2)  { return "TardigradeDoc_SpellWard"; }
+    if (d == 3)  { return "TardigradeDoc_DeflectorPlating"; }
+    if (d == 4)  { return "TardigradeDoc_RiotGear"; }
+    if (d == 5)  { return "TardigradeDoc_Phalanx"; }
+    if (d == 6)  { return "TardigradeDoc_HeavyPlating"; }
+    if (d == 7)  { return "TardigradeDoc_StrippedDown"; }
+    if (d == 8)  { return "TardigradeDoc_HeavyHitters"; }
+    if (d == 9)  { return "TardigradeDoc_HairTrigger"; }
+    if (d == 10) { return "TardigradeDoc_ArmorPiercing"; }
+    if (d == 11) { return "TardigradeDoc_AntiPersonnel"; }
+    if (d == 12) { return "TardigradeDoc_GlassCannon"; }
+    if (d == 13) { return "TardigradeDoc_Skirmishers"; }
+    if (d == 14) { return "TardigradeDoc_LastStand"; }
+    if (d == 15) { return "TardigradeDoc_RapidFire"; }
+    if (d == 16) { return "TardigradeDoc_LongBarrels"; }
+    if (d == 17) { return "TardigradeDoc_SniperScopes"; }
+    if (d == 18) { return "TardigradeDoc_Bloodlust"; }
+    if (d == 19) { return "TardigradeDoc_OverchargedCells"; }
+    if (d == 20) { return "TardigradeDoc_DeepReserves"; }
+    if (d == 21) { return "TardigradeDoc_ExposingFire"; }
+    if (d == 22) { return "TardigradeDoc_FrostRounds"; }
+    if (d == 23) { return "TardigradeDoc_Ricochet"; }
+    if (d == 24) { return "TardigradeDoc_CullingRounds"; }
+    if (d == 25) { return "TardigradeDoc_Ignite"; }
+    if (d == 26) { return "TardigradeDoc_PackTactics"; }
+    if (d == 27) { return "TardigradeDoc_LoneWolves"; }
+    if (d == 28) { return "TardigradeDoc_BattleRhythm"; }
+    if (d == 29) { return "TardigradeDoc_LastBreath"; }
+    if (d == 30) { return "TardigradeDoc_ChampionRanks"; }   // everyone but the Champion
+    if (d == 31) { return "TardigradeDoc_VolatileCores"; }
+    if (d == 32) { return "TardigradeDoc_BountyHunters"; }
+    if (d == 33) { return "TardigradeDoc_Spellweaver"; }
+    if (d == 34) { return "TardigradeDoc_WarBanners"; }
+    return "";
+}
+
+// Doctrines whose buff changes max life / shields. Adding or removing one keeps
+// the unit's health PERCENT (Doctrine_SetBuff): the engine can otherwise refill a
+// unit when a vital maximum changes, and a +25% unit would never be "full".
+// Max ENERGY changes (19, 34) are left alone: clamping energy down is what they
+// are meant to do.
+bool Doctrine_ChangesHealth(int d) {
+    return d == 1 || d == 2 || d == 4 || d == 5 || d == 6 || d == 12 || d == 14
+        || d == 26 || d == 29 || d == 30 || d == 32;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Unit classes
+//--------------------------------------------------------------------------------------------------
+bool Doctrine_InList(string unitType, string typeList) {
+    return StringFind(typeList, " " + unitType + " ", c_stringCase) != c_stringNotFound;
+}
+
+// Cached per type in the global data table, like CycleMod_UnitOriginalPlanes:
+// this runs for every unit on every scan.
+int Doctrine_ClassOf(string unitType) {
+    string key;
+    int    cls;
+
+    key = "TgDocC_" + unitType;
+    if (DataTableValueExists(true, key)) { return DataTableGetInt(true, key); }
+
+    cls = 0;
+    if (Doctrine_InList(unitType, c_docRangedTypes)) {
+        cls = c_docClsArmy | c_docClsWeapon | c_docClsRanged;
+    } else if (Doctrine_InList(unitType, c_docMeleeTypes)) {
+        cls = c_docClsArmy | c_docClsWeapon | c_docClsMelee;
+    } else if (Doctrine_InList(unitType, c_docSpawnedTypes)) {
+        cls = c_docClsArmy | c_docClsWeapon | c_docClsSpawned;
+    } else if (Doctrine_InList(unitType, c_docSupportTypes)) {
+        cls = c_docClsArmy;
+    }
+    if (cls != 0 && Doctrine_InList(unitType, c_docEnergyTypes)) {
+        cls = cls | c_docClsEnergy;
+    }
+    DataTableSetInt(true, key, cls);
+    return cls;
+}
+
+bool Doctrine_Covers(int d, int cls) {
+    int scope;
+    scope = Doctrine_Scope(d);
+    if (scope == c_docScopeArmy)     { return (cls & c_docClsArmy) != 0; }
+    if (scope == c_docScopeWeapon)   { return (cls & c_docClsWeapon) != 0; }
+    if (scope == c_docScopeRanged)   { return (cls & c_docClsRanged) != 0; }
+    if (scope == c_docScopeMelee)    { return (cls & c_docClsMelee) != 0; }
+    if (scope == c_docScopeArmyCore) {
+        if ((cls & c_docClsSpawned) != 0) { return false; }
+        return (cls & c_docClsArmy) != 0;
+    }
+    return (cls & c_docClsEnergy) != 0;
+}
+
+// The unit a roster entry spawns and fights through, for "does this doctrine do
+// anything for my roster": a Swarm Host is support, its Locusts have a weapon.
+string Doctrine_ChildOf(string unitType) {
+    if (unitType == "SwarmHostMP") { return "LocustMP"; }
+    if (unitType == "Carrier")     { return "Interceptor"; }
+    if (unitType == "BroodLord")   { return "Broodling"; }
+    return "";
+}
+
+string Doctrine_ChildLabel(string unitType) {
+    if (unitType == "SwarmHostMP") { return "Locusts"; }
+    if (unitType == "Carrier")     { return "Interceptors"; }
+    return "Broodlings";
+}
+
+// Minerals + gas, cached per type (Champion's election runs every scan).
+fixed Doctrine_TypeCost(string unitType, int player) {
+    string key;
+    fixed  cost;
+
+    key = "TgDocCost_" + unitType;
+    if (DataTableValueExists(true, key)) { return DataTableGetFixed(true, key); }
+    cost = CycleMod_UnitCost(unitType, "Minerals", player) + CycleMod_UnitCost(unitType, "Vespene", player);
+    DataTableSetFixed(true, key, cost);
+    return cost;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Sides and rosters
+//--------------------------------------------------------------------------------------------------
+int Doctrine_SideIdx(bool isP1) {
+    if (isP1) { return 1; }
+    return 2;
+}
+
+int Doctrine_SideOfOwner(int owner) {
+    if (CycleMod_OwnerIsP1(owner)) { return 1; }
+    if (CycleMod_OwnerIsP2(owner)) { return 2; }
+    return 0;
+}
+
+int Doctrine_RaceOf(int side) {
+    if (side == 1) { return g_roster_p1Race; }
+    return g_roster_p2Race;
+}
+
+// The n-th unit type the side can build (1-based), "" past the end: its drafted
+// roster, or its race's whole pool with Full roster / Unit groups.
+string Doctrine_RosterUnit(int side, int n) {
+    int race;
+    if (GameMode_IsFullRoster()) {
+        race = Doctrine_RaceOf(side);
+        if (n > GetRosterPoolCount(race)) { return ""; }
+        return GetRosterPoolUnit(race, n);
+    }
+    if (n > c_rosterMaxSize) { return ""; }
+    if (side == 1) { return g_roster_p1Units[n]; }
+    return g_roster_p2Units[n];
+}
+
+int Doctrine_RosterLength(int side) {
+    if (GameMode_IsFullRoster()) { return GetRosterPoolCount(Doctrine_RaceOf(side)); }
+    return c_rosterMaxSize;
+}
+
+// Display names of the side's units doctrine d would touch, joined with ", ";
+// "" if none (the card is drawn N/A).
+string Doctrine_AffectedNames(int side, int d) {
+    string s;
+    string unitType;
+    string child;
+    int    n;
+    int    len;
+
+    s = "";
+    len = Doctrine_RosterLength(side);
+    n = 1;
+    while (n <= len) {
+        unitType = Doctrine_RosterUnit(side, n);
+        if (unitType != "") {
+            child = Doctrine_ChildOf(unitType);
+            if (Doctrine_Covers(d, Doctrine_ClassOf(unitType))) {
+                if (s != "") { s = s + ", "; }
+                s = s + RosterUnitDisplayName(unitType);
+            } else if (child != "") {
+                if (Doctrine_Covers(d, Doctrine_ClassOf(child))) {
+                    if (s != "") { s = s + ", "; }
+                    s = s + RosterUnitDisplayName(unitType) + " (" + Doctrine_ChildLabel(unitType) + ")";
+                }
+            }
+        }
+        n = n + 1;
+    }
+    return s;
+}
+
+bool Doctrine_Affects(int side, int d) {
+    return Doctrine_AffectedNames(side, d) != "";
+}
+
+void Doctrine_SetPick(int side, int d, bool on) {
+    if (g_doc_has[side][d] == on) { return; }
+    g_doc_has[side][d] = on;
+    if (on) { g_doc_count[side] = g_doc_count[side] + 1; }
+    else    { g_doc_count[side] = g_doc_count[side] - 1; }
+}
+
+void Doctrine_ClearPicks(int side) {
+    int d;
+    d = 1;
+    while (d <= c_docCount) {
+        g_doc_has[side][d] = false;
+        d = d + 1;
+    }
+    g_doc_count[side] = 0;
+}
+
+// Random picks for a side: up to the limit, only doctrines that touch its units.
+void Doctrine_RandomizeSide(int side) {
+    int n;
+    int d;
+    int i;
+    int j;
+    int t;
+    int want;
+
+    Doctrine_ClearPicks(side);
+    n = 0;
+    d = 1;
+    while (d <= c_docCount) {
+        if (Doctrine_Affects(side, d)) {
+            n = n + 1;
+            g_doc_scratch[n] = d;
+        }
+        d = d + 1;
+    }
+    want = GameMode_DoctrinePicks();
+    if (want > n) { want = n; }
+    i = 1;
+    while (i <= want) {
+        j = RandomInt(i, n);
+        t = g_doc_scratch[i];
+        g_doc_scratch[i] = g_doc_scratch[j];
+        g_doc_scratch[j] = t;
+        Doctrine_SetPick(side, g_doc_scratch[i], true);
+        i = i + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Interface for CycleMod (forward-declared there) and TardigradeLogic
+//--------------------------------------------------------------------------------------------------
+
+// The stage committed: the summary and the in-game panel show doctrines.
+bool Doctrine_InPlay() {
+    return g_doc_done;
+}
+
+bool Doctrine_SideHas(bool isP1, int d) {
+    return g_doc_has[Doctrine_SideIdx(isP1)][d];
+}
+
+string Doctrine_NamesText(bool isP1) {
+    string s;
+    int    d;
+
+    s = "";
+    d = 1;
+    while (d <= c_docCount) {
+        if (Doctrine_SideHas(isP1, d)) {
+            if (s != "") { s = s + ", "; }
+            s = s + Doctrine_Name(d);
+        }
+        d = d + 1;
+    }
+    if (s == "") { return "none"; }
+    return s;
+}
+
+// One row of the in-game modifier panel, under the side's modifiers.
+string Doctrine_PanelLine(bool isP1) {
+    return "<c val=\"FFD54A\">  Doctrines</c>  <c val=\"FFFFFF\">" + Doctrine_NamesText(isP1) + "</c>";
+}
+
+// That row's tooltip: every doctrine with what it does.
+string Doctrine_PanelTip(bool isP1) {
+    string s;
+    int    d;
+
+    s = "";
+    d = 1;
+    while (d <= c_docCount) {
+        if (Doctrine_SideHas(isP1, d)) {
+            if (s != "") { s = s + "<n/>"; }
+            s = s + Doctrine_Name(d) + "  <c val=\"AAAAAA\">" + Doctrine_Desc(d)
+                + " (" + Doctrine_ScopeText(Doctrine_Scope(d)) + ")</c>";
+        }
+        d = d + 1;
+    }
+    if (s == "") { s = "No doctrines."; }
+    return s;
+}
+
+// The summary column's DOCTRINES block, "" when doctrines are not in play.
+string Doctrine_SummaryBlock(bool isP1) {
+    string s;
+    int    d;
+    int    side;
+
+    if (!g_doc_done) { return ""; }
+    side = Doctrine_SideIdx(isP1);
+    s = "\n\n<c val=\"FFD54A\">DOCTRINES</c>";
+    d = 1;
+    while (d <= c_docCount) {
+        if (g_doc_has[side][d]) {
+            s = s + "\n" + Doctrine_Name(d)
+                + "\n" + DraftStyle_Small("<c val=\"AAAAAA\">" + Doctrine_Desc(d) + "</c>");
+        }
+        d = d + 1;
+    }
+    if (g_doc_count[side] == 0) { s = s + "\n<c val=\"7A7A7A\">none</c>"; }
+    return s;
+}
+
+// Extra summary-dialog height for that block: heading plus two lines per pick.
+int Doctrine_SummaryExtra() {
+    if (!g_doc_done) { return 0; }
+    return 40 + 36 * GameMode_DoctrinePicks();
+}
+
+//--------------------------------------------------------------------------------------------------
+// In game: per unit, from the CycleMod scan
+//--------------------------------------------------------------------------------------------------
+
+// Add or remove one doctrine buff. keepHealth: restore the life and shield
+// percentages afterwards (see Doctrine_ChangesHealth).
+void Doctrine_SetBuff(unit u, string beh, bool on, bool keepHealth) {
+    fixed lifePct;
+    fixed shieldPct;
+    bool  hasShields;
+
+    if ((UnitBehaviorCount(u, beh) > 0) == on) { return; }
+    lifePct    = UnitGetPropertyFixed(u, c_unitPropLifePercent, c_unitPropCurrent);
+    shieldPct  = UnitGetPropertyFixed(u, c_unitPropShieldsPercent, c_unitPropCurrent);
+    hasShields = UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent) > 0.0;
+    if (on) { UnitBehaviorAdd(u, beh, u, 1); }
+    else    { libNtve_gf_SetBehaviorCount(u, beh, u, 0); }
+    if (keepHealth) {
+        UnitSetPropertyFixed(u, c_unitPropLifePercent, lifePct);
+        if (hasShields) { UnitSetPropertyFixed(u, c_unitPropShieldsPercent, shieldPct); }
+    }
+}
+
+// Deep Reserves: a NEW unit starts with full energy. Units the activation sweep
+// finds already alive are not new, so nothing fills during the first game second
+// doctrines are live. Once per unit tag, so a morph that drops and re-adds the buff
+// (burrow, say) can never refill it.
+void Doctrine_FillEnergy(unit u) {
+    string key;
+
+    if (GameGetMissionTime() < g_doc_liveAt + 1.0) { return; }
+    key = "TgDocF_" + IntToString(UnitGetTag(u));
+    if (DataTableValueExists(true, key)) { return; }
+    DataTableSetBool(true, key, true);
+    UnitSetPropertyFixed(u, c_unitPropEnergyPercent, 100.0);
+}
+
+bool Doctrine_IsLow(unit u) {
+    fixed f;
+    f = CycleMod_BlinkHealthFraction(u);
+    return f >= 0.0 && f < c_docLastStandAt;
+}
+
+// The side's other ARMY units within radius of u, as the doctrine classes define
+// them: not workers, structures, Larva, eggs or cocoons, and not Interceptors,
+// Locusts or Broodlings - a Zerg army beside its Hatchery is not "in a pack", and
+// a Carrier is not a pack by itself.
+int Doctrine_CountFriends(unit u, fixed radius) {
+    unitgroup g;
+    unit      other;
+    int       cls;
+    int       count;
+    int       n;
+    int       i;
+
+    g = UnitGroupAlliance(UnitGetOwner(u), c_unitAllianceAlly,
+        RegionCircle(UnitGetPosition(u), radius),
+        UnitFilter(0, 0,
+            (1 << c_targetFilterStructure) | (1 << c_targetFilterWorker) | (1 << c_targetFilterMissile),
+            (1 << (c_targetFilterDead - 32)) | (1 << (c_targetFilterHidden - 32))), 0);
+    count = 0;
+    n = UnitGroupCount(g, c_unitCountAll);
+    i = 1;
+    while (i <= n) {
+        other = UnitGroupUnit(g, i);
+        if (other != u) {
+            cls = Doctrine_ClassOf(UnitGetType(other));
+            if ((cls & c_docClsArmy) != 0 && (cls & c_docClsSpawned) == 0) { count = count + 1; }
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+// Ignite: a burning unit loses c_docBurnPerTick of its max health per scan tick.
+// Dealt by the unit to itself, so nobody is credited with a burn kill (the burn
+// buff added from script carries no reliable caster - see TardigradeMod_VeteranLink).
+// Kind Spell (EffectData.xml): Spell Ward cuts it, weapon doctrines never touch it.
+void Doctrine_BurnTick(unit u) {
+    fixed maxHealth;
+
+    if (UnitBehaviorCount(u, c_docBurningBuff) == 0) { return; }
+    if (!UnitIsAlive(u)) { return; }
+    maxHealth = UnitGetPropertyFixed(u, c_unitPropLifeMax, c_unitPropCurrent)
+        + UnitGetPropertyFixed(u, c_unitPropShieldsMax, c_unitPropCurrent);
+    if (maxHealth <= 0.0) { return; }
+    UnitDamage(u, c_docBurnEffect, u, maxHealth * c_docBurnPerTick);
+}
+
+// Pack Tactics: exactly one tier buff, +5% weapon damage per friend nearby.
+// Five separate buffs rather than one stacking buff: a damage response is not
+// known to scale with stack count.
+void Doctrine_ApplyPack(unit u, bool on) {
+    int tier;
+    int n;
+
+    tier = 0;
+    if (on) {
+        tier = Doctrine_CountFriends(u, c_docPackRadius);
+        if (tier > c_docPackMax) { tier = c_docPackMax; }
+    }
+    n = 1;
+    while (n <= c_docPackMax) {
+        Doctrine_SetBuff(u, c_docPackTier + IntToString(n), n == tier, false);
+        n = n + 1;
+    }
+}
+
+void Doctrine_ApplyLone(unit u, bool on) {
+    bool alone;
+
+    alone = false;
+    if (on) { alone = (Doctrine_CountFriends(u, c_docLoneRadius) == 0); }
+    Doctrine_SetBuff(u, c_docLoneAlone, on && alone, false);
+    Doctrine_SetBuff(u, c_docLoneCrowded, on && !alone, false);
+}
+
+// Battle Rhythm's phase: 0 = Surge, 1 = Lull, counted from the moment doctrines
+// went live, so both sides with it are in step.
+int Doctrine_RhythmPhase() {
+    int n;
+    if (g_doc_liveAt < 0.0) { return 0; }
+    n = FixedToInt((GameGetMissionTime() - g_doc_liveAt) / c_docRhythmPeriod);
+    return n - (n / 2) * 2;
+}
+
+void Doctrine_ApplyRhythm(unit u, bool on) {
+    int phase;
+    phase = Doctrine_RhythmPhase();
+    Doctrine_SetBuff(u, c_docRhythmSurge, on && phase == 0, false);
+    Doctrine_SetBuff(u, c_docRhythmLull, on && phase == 1, false);
+}
+
+// Champion: the ranks buff (-10% health) on everyone covered but the Champion,
+// the crown on the Champion. Every other covered unit is a candidate for the
+// next election (Doctrine_ScanTick), most expensive first.
+void Doctrine_ApplyChampion(unit u, int side, bool on) {
+    bool  isChamp;
+    fixed cost;
+
+    isChamp = (u == g_doc_champ[side]);
+    Doctrine_SetBuff(u, Doctrine_Behavior(c_docChampion), on && !isChamp, true);
+    Doctrine_SetBuff(u, c_docChampionCrown, on && isChamp, true);
+    if (!on || isChamp) { return; }
+    if (UnitTestState(u, c_unitStateHallucination)) { return; }
+    cost = Doctrine_TypeCost(UnitGetType(u), UnitGetOwner(u));
+    if (cost > g_doc_champCandCost[side]) {
+        g_doc_champCand[side]     = u;
+        g_doc_champCandCost[side] = cost;
+    }
+}
+
+// War Banners: every unit with energy that carries the doctrine refreshes the
+// short aura buff on the side's units around it. The aura is a separate buff
+// with its own short Duration, so it fades the moment the bearer moves away.
+void Doctrine_RaiseBanner(unit bearer) {
+    unitgroup g;
+    unit      ally;
+    int       n;
+    int       i;
+
+    g = UnitGroupAlliance(UnitGetOwner(bearer), c_unitAllianceAlly,
+        RegionCircle(UnitGetPosition(bearer), c_docBannerRadius),
+        UnitFilter(0, 0,
+            (1 << c_targetFilterStructure) | (1 << c_targetFilterWorker) | (1 << c_targetFilterMissile),
+            (1 << (c_targetFilterDead - 32)) | (1 << (c_targetFilterHidden - 32))), 0);
+    n = UnitGroupCount(g, c_unitCountAll);
+    i = 1;
+    while (i <= n) {
+        ally = UnitGroupUnit(g, i);
+        if ((Doctrine_ClassOf(UnitGetType(ally)) & c_docClsArmy) != 0) {
+            UnitBehaviorAdd(ally, c_docBanneredBuff, ally, 1);
+        }
+        i = i + 1;
+    }
+}
+
+// Called by the CycleMod scan for every unit, every 0.5s: each doctrine any side
+// has ever had is put on, or taken off, this unit. Only those - a doctrine nobody
+// picked costs nothing, and none at all runs before the first pick.
+void Doctrine_ApplyToUnit(unit u) {
+    int    side;
+    int    cls;
+    int    d;
+    bool   live;
+    bool   want;
+    string beh;
+
+    if (!g_doc_anyEver) { return; }
+    // Ignite's burn reaches whatever was hit, workers and buildings included,
+    // so it runs before the filters below.
+    if (g_doc_ever[c_docIgnite]) { Doctrine_BurnTick(u); }
+
+    side = Doctrine_SideOfOwner(UnitGetOwner(u));
+    if (side == 0) { return; }
+    // Never a doctrine target, and no army unit morphs into one.
+    if (CycleMod_IsWorker(u)) { return; }
+    if (UnitTypeTestAttribute(UnitGetType(u), c_unitAttributeStructure)) { return; }
+
+    cls  = Doctrine_ClassOf(UnitGetType(u));
+    live = CycleMod_ModsLive();
+    if (live && g_doc_liveAt < 0.0) { g_doc_liveAt = GameGetMissionTime(); }
+
+    d = 1;
+    while (d <= c_docCount) {
+        if (g_doc_ever[d]) {
+            want = live && g_doc_has[side][d] && Doctrine_Covers(d, cls);
+            if (d == c_docChampion) {
+                Doctrine_ApplyChampion(u, side, want);
+            } else {
+                beh = Doctrine_Behavior(d);
+                if (d == c_docDeepReserves && want) {
+                    if (UnitBehaviorCount(u, beh) == 0) { Doctrine_FillEnergy(u); }
+                }
+                Doctrine_SetBuff(u, beh, want, Doctrine_ChangesHealth(d));
+                if (d == c_docLastStand) {
+                    Doctrine_SetBuff(u, c_docLastStandActive, want && Doctrine_IsLow(u), false);
+                } else if (d == c_docPack) {
+                    Doctrine_ApplyPack(u, want);
+                } else if (d == c_docLoneWolves) {
+                    Doctrine_ApplyLone(u, want);
+                } else if (d == c_docRhythm) {
+                    Doctrine_ApplyRhythm(u, want);
+                } else if (d == c_docLastBreath) {
+                    // Ready again once the 45s recharge (the Spent buff) is over.
+                    Doctrine_SetBuff(u, c_docBreathReady,
+                        want && UnitBehaviorCount(u, c_docBreathSpent) == 0, false);
+                } else if (d == c_docWarBanners) {
+                    if (want) { Doctrine_RaiseBanner(u); }
+                }
+            }
+        }
+        d = d + 1;
+    }
+}
+
+// Once per scan pass, before the units: crown a new Champion if the old one is
+// gone (from the candidates the previous pass saw), then reset the candidates;
+// tell each Battle Rhythm side when its phase turns.
+void Doctrine_ScanTick() {
+    int         side;
+    int         phase;
+    bool        needCrown;
+    unit        cand;
+    playergroup team;
+
+    if (!g_doc_anyEver) { return; }
+
+    side = 1;
+    while (side <= 2) {
+        if (g_doc_has[side][c_docChampion]) {
+            // Nested, not ||-chained: UnitIsAlive must never be asked about null.
+            needCrown = true;
+            if (g_doc_champ[side] != null) {
+                if (UnitIsAlive(g_doc_champ[side])) { needCrown = false; }
+            }
+            cand = g_doc_champCand[side];
+            if (needCrown && cand != null) {
+                if (UnitIsAlive(cand)) {
+                    g_doc_champ[side] = cand;
+                    CycleMod_FloatTextSized(UnitGetPosition(cand), "Champion", "FFD54A",
+                        Tardigrade_Viewers(), 18);
+                    Debug_Log("Champion P" + IntToString(side) + ": " + UnitGetType(cand));
+                }
+            }
+        }
+        g_doc_champCand[side]     = null;
+        g_doc_champCandCost[side] = 0.0;
+        side = side + 1;
+    }
+
+    if (g_doc_ever[c_docRhythm] && g_doc_liveAt >= 0.0) {
+        phase = Doctrine_RhythmPhase();
+        if (phase != g_doc_rhythmShown) {
+            g_doc_rhythmShown = phase;
+            side = 1;
+            while (side <= 2) {
+                if (g_doc_has[side][c_docRhythm]) {
+                    if (side == 1) { team = CycleMod_P1Team(); } else { team = CycleMod_P2Team(); }
+                    if (phase == 0) {
+                        UIDisplayMessage(team, c_messageAreaSubtitle, StringToText(
+                            "<c val=\"4ADB92\">Battle Rhythm: SURGE</c>  +25% attack and move speed for 20s"));
+                    } else {
+                        UIDisplayMessage(team, c_messageAreaSubtitle, StringToText(
+                            "<c val=\"F0A050\">Battle Rhythm: LULL</c>  -20% attack and move speed for 20s"));
+                    }
+                }
+                side = side + 1;
+            }
+        }
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// In game: weapon hits and deaths
+//--------------------------------------------------------------------------------------------------
+
+// Ricochet: a share of the hit to the closest other enemy on the target's plane.
+// The bounce is Splash kind, so it never reaches Doctrine_OnWeaponHit again.
+void Doctrine_Ricochet(unit source, unit target, fixed amount) {
+    unitgroup g;
+    unit      other;
+    int       plane;
+
+    if (UnitTestPlane(target, c_planeAir)) { plane = 1 << c_targetFilterAir; }
+    else                                   { plane = 1 << c_targetFilterGround; }
+    g = UnitGroupAlliance(UnitGetOwner(source), c_unitAllianceEnemy,
+        RegionCircle(UnitGetPosition(target), c_docRicochetRadius),
+        UnitFilter(plane, 0, (1 << c_targetFilterMissile),
+            (1 << (c_targetFilterStasis - 32)) | (1 << (c_targetFilterDead - 32))
+            | (1 << (c_targetFilterHidden - 32)) | (1 << (c_targetFilterInvulnerable - 32))), 0);
+    UnitGroupRemove(g, target);
+    other = UnitGroupClosestToPoint(g, UnitGetPosition(target));
+    if (other == null) { return; }
+    UnitDamage(source, c_docRicochetEffect, other, amount * c_docRicochetShare);
+}
+
+// Culling Rounds: a target the hit left under c_docCullAt is finished off with
+// far more than it has left (several times over, so no damage cut can save it -
+// only Last Breath, which is the point of Last Breath).
+void Doctrine_TryCull(unit source, unit target) {
+    fixed hp;
+    fixed hpMax;
+
+    if (!UnitIsAlive(target)) { return; }
+    hp    = UnitGetPropertyFixed(target, c_unitPropLife, c_unitPropCurrent)
+        + UnitGetPropertyFixed(target, c_unitPropShields, c_unitPropCurrent);
+    hpMax = UnitGetPropertyFixed(target, c_unitPropLifeMax, c_unitPropCurrent)
+        + UnitGetPropertyFixed(target, c_unitPropShieldsMax, c_unitPropCurrent);
+    if (hpMax <= 0.0) { return; }
+    if (hp / hpMax >= c_docCullAt) { return; }
+    UnitDamage(source, c_docCullEffect, target, hp * 4.0 + 10.0);
+    CycleMod_FloatTextSized(UnitGetPosition(target), "Culled", "C8C8C8",
+        PlayerGroupSingle(UnitGetOwner(source)), 14);
+}
+
+// Registered for Melee and Ranged damage only (Doctrine_InitHooks): direct weapon
+// hits. The source carries a doctrine's buff only while that doctrine is live and
+// covers it, so the buff count is the whole test.
+bool Doctrine_OnWeaponHit(bool testConds, bool runActions) {
+    unit  target;
+    unit  source;
+    fixed amount;
+
+    if (!g_doc_anyEver) { return true; }
+    target = EventUnit();
+    source = EventUnitDamageSourceUnit();
+    if (source == null || target == null) { return true; }
+    if (!CycleMod_IsHostileTarget(source, target)) { return true; }
+    amount = EventUnitDamageAmount();
+
+    // The target is its own caster for these, as for every buff this mod adds from
+    // script: re-adding a one-stack buff from the same caster is what refreshes it
+    // (TardigradeMod_MarchBroken relies on it), whoever lands the next hit.
+    if (UnitIsAlive(target)) {
+        if (UnitBehaviorCount(source, Doctrine_Behavior(c_docExpose)) > 0) {
+            UnitBehaviorAdd(target, c_docExposedBuff, target, 1);
+        }
+        if (UnitBehaviorCount(source, Doctrine_Behavior(c_docFrost)) > 0) {
+            UnitBehaviorAdd(target, c_docChilledBuff, target, 1);
+        }
+        if (UnitBehaviorCount(source, Doctrine_Behavior(c_docIgnite)) > 0) {
+            UnitBehaviorAdd(target, c_docBurningBuff, target, 1);
+        }
+    }
+    if (UnitBehaviorCount(source, Doctrine_Behavior(c_docRicochet)) > 0) {
+        if (amount > 0.0) { Doctrine_Ricochet(source, target, amount); }
+    }
+    if (UnitBehaviorCount(source, Doctrine_Behavior(c_docCulling)) > 0) {
+        Doctrine_TryCull(source, target);
+    }
+    return true;
+}
+
+// Bounty Hunters: an enemy army unit killed by one of the side's units (which
+// carries the buff, so it is live and covered) pays 15% of the victim's cost.
+// Raw killer only - a self-inflicted death (Ignite, Volatile Cores) pays nobody.
+void Doctrine_PayBounty(unit dead, unit killer) {
+    int    owner;
+    fixed  minerals;
+    fixed  gas;
+    string unitType;
+
+    if (killer == null || killer == dead) { return; }
+    if (UnitBehaviorCount(killer, Doctrine_Behavior(c_docBounty)) == 0) { return; }
+    if (!CycleMod_IsHostileTarget(killer, dead)) { return; }
+    unitType = UnitGetType(dead);
+    if (Doctrine_ClassOf(unitType) == 0) { return; }
+
+    owner    = UnitGetOwner(killer);
+    minerals = CycleMod_UnitCost(unitType, "Minerals", UnitGetOwner(dead)) * c_docBountyFraction;
+    gas      = CycleMod_UnitCost(unitType, "Vespene", UnitGetOwner(dead)) * c_docBountyFraction;
+    if (minerals <= 0.0 && gas <= 0.0) { return; }
+    if (minerals > 0.0) {
+        PlayerModifyPropertyFixed(owner, c_playerPropMinerals, c_playerPropOperAdd, minerals);
+    }
+    if (gas > 0.0) {
+        PlayerModifyPropertyFixed(owner, c_playerPropVespene, c_playerPropOperAdd, gas);
+    }
+    if (gas > 0.0) {
+        CycleMod_FloatTextSized(UnitGetPosition(dead), "+" + IntToString(FixedToInt(minerals))
+            + " / +" + IntToString(FixedToInt(gas)), "FFD54A", PlayerGroupSingle(owner), 16);
+    } else {
+        CycleMod_FloatTextSized(UnitGetPosition(dead), "+" + IntToString(FixedToInt(minerals)),
+            "FFD54A", PlayerGroupSingle(owner), 16);
+    }
+}
+
+// Volatile Cores: the dead unit's side has it, it is live and covers the type.
+// Read from the side's picks, not the dead unit's buffs, which may already be
+// gone in its death event. Each victim takes the blast from itself, like Ignite.
+// Units the blast kills can explode in turn, c_docBlastDepthMax deep at most.
+void Doctrine_TryVolatile(unit dead) {
+    int       side;
+    int       n;
+    int       i;
+    fixed     amount;
+    fixed     catalogMax;
+    point     pos;
+    unitgroup g;
+    unit      victim;
+    string    unitType;
+
+    if (!g_doc_ever[c_docVolatile]) { return; }
+    side = Doctrine_SideOfOwner(UnitGetOwner(dead));
+    if (side == 0) { return; }
+    if (!g_doc_has[side][c_docVolatile]) { return; }
+    if (!CycleMod_ModsLive()) { return; }
+    unitType = UnitGetType(dead);
+    if (!Doctrine_Covers(c_docVolatile, Doctrine_ClassOf(unitType))) { return; }
+    if (g_doc_blastDepth >= c_docBlastDepthMax) { return; }
+
+    // A unit inside its own death event may report 0 max life (see
+    // CycleMod_TryMartyrdom): the catalog value is the floor.
+    amount = UnitGetPropertyFixed(dead, c_unitPropLifeMax, c_unitPropCurrent)
+        + UnitGetPropertyFixed(dead, c_unitPropShieldsMax, c_unitPropCurrent);
+    catalogMax = StringToFixed(CatalogFieldValueGet(c_gameCatalogUnit, unitType, "LifeMax", UnitGetOwner(dead)))
+        + StringToFixed(CatalogFieldValueGet(c_gameCatalogUnit, unitType, "ShieldsMax", UnitGetOwner(dead)));
+    if (catalogMax > amount) { amount = catalogMax; }
+    amount = amount * c_docVolatileFraction;
+    if (amount <= 0.0) { return; }
+
+    pos = UnitGetPosition(dead);
+    g = UnitGroup(null, c_playerAny, RegionCircle(pos, c_docVolatileRadius),
+        UnitFilter(0, 0, (1 << c_targetFilterMissile),
+            (1 << (c_targetFilterStasis - 32)) | (1 << (c_targetFilterDead - 32))
+            | (1 << (c_targetFilterHidden - 32)) | (1 << (c_targetFilterInvulnerable - 32))), 0);
+    CycleMod_FloatTextSized(pos, "BOOM", "FF8040", Tardigrade_Viewers(), 16);
+
+    g_doc_blastDepth = g_doc_blastDepth + 1;
+    n = UnitGroupCount(g, c_unitCountAll);
+    i = 1;
+    while (i <= n) {
+        victim = UnitGroupUnit(g, i);
+        if (victim != dead && UnitIsAlive(victim)) {
+            if (Doctrine_SideOfOwner(UnitGetOwner(victim)) != 0) {
+                UnitDamage(victim, c_docBlastEffect, victim, amount);
+            }
+        }
+        i = i + 1;
+    }
+    g_doc_blastDepth = g_doc_blastDepth - 1;
+}
+
+bool Doctrine_OnUnitDied(bool testConds, bool runActions) {
+    unit dead;
+    unit killer;
+
+    if (!g_doc_anyEver) { return true; }
+    dead   = EventUnit();
+    killer = EventUnitDamageSourceUnit();
+    if (dead == null) { return true; }
+    if (UnitTestState(dead, c_unitStateHallucination)) { return true; }
+    // A morph, a merge or a cocoon is not a death (CycleMod_RefundCanVanish).
+    if (CycleMod_RefundCanVanish(dead) && (killer == null || killer == dead)) { return true; }
+
+    Doctrine_PayBounty(dead, killer);
+    Doctrine_TryVolatile(dead);
+    return true;
+}
+
+// From CycleMod_StartCycle (game start and Testing). Registered whether or not
+// anyone has a doctrine yet - Testing can switch one on at any time - and every
+// handler returns at once until someone does.
+void Doctrine_InitHooks() {
+    trigger t;
+
+    if (g_doc_hooksBuilt) { return; }
+    g_doc_hooksBuilt = true;
+
+    t = TriggerCreate("Doctrine_OnWeaponHit");
+    TriggerAddEventUnitDamaged(t, null, c_unitDamageTypeMelee, c_unitDamageEither, null);
+    TriggerAddEventUnitDamaged(t, null, c_unitDamageTypeRanged, c_unitDamageEither, null);
+
+    t = TriggerCreate("Doctrine_OnUnitDied");
+    TriggerAddEventUnitDied(t, null);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Stage: steps
+//--------------------------------------------------------------------------------------------------
+bool Doctrine_StepHasSide(bool isP1) {
+    if (g_doc_simul) { return true; }
+    return isP1 == (g_doc_step == 1);
+}
+
+bool Doctrine_UpIsP1() {
+    return g_doc_step == 1;
+}
+
+bool Doctrine_StepDone() {
+    if (Doctrine_StepHasSide(true)) {
+        if (!g_doc_locked[1]) { return false; }
+    }
+    if (Doctrine_StepHasSide(false)) {
+        if (!g_doc_locked[2]) { return false; }
+    }
+    return true;
+}
+
+// The side this player is picking for right now, or 0.
+int Doctrine_SideOfPlayer(int player) {
+    if (g_draft_p1 == g_draft_p2) {
+        if (player != g_draft_p1) { return 0; }
+        if (g_doc_step == 1) { return 1; }
+        return 2;
+    }
+    if (player == g_draft_p1) { return 1; }
+    if (player == g_draft_p2) { return 2; }
+    return 0;
+}
+
+// Locking ends the side's chance to go YOLO.
+void Doctrine_LockSide(int side) {
+    g_doc_locked[side] = true;
+    CycleMod_SideMarkActed(side == 1, c_stageDoctrine);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Stage: UI
+//--------------------------------------------------------------------------------------------------
+string Doctrine_StateText(bool locked) {
+    if (locked) { return "<c val=\"4ADB92\">locked in</c>"; }
+    return "<c val=\"FFD54A\">choosing</c>";
+}
+
+string Doctrine_CardTip(int side, int d, string affected) {
+    string tip;
+    tip = Doctrine_Name(d) + "<n/>" + Doctrine_Desc(d)
+        + "<n/><c val=\"AAAAAA\">Affects " + Doctrine_ScopeText(Doctrine_Scope(d)) + ".";
+    if (Doctrine_Note(d) != "") { tip = tip + " " + Doctrine_Note(d); }
+    tip = tip + "</c><n/>";
+    if (affected == "") { tip = tip + "<c val=\"B07878\">None of your units.</c>"; }
+    else                { tip = tip + "<c val=\"7FD0FF\">Your units:</c> " + affected; }
+    return tip;
+}
+
+void Doctrine_HideBoard(playergroup viewer) {
+    int d;
+    int c;
+
+    d = 1;
+    while (d <= c_docCount) {
+        DialogControlSetVisible(g_doc_btn[d], viewer, false);
+        d = d + 1;
+    }
+    c = 1;
+    while (c <= c_docColumns) {
+        DialogControlSetVisible(g_doc_lblHead[c], viewer, false);
+        c = c + 1;
+    }
+    DialogControlSetVisible(g_doc_lblPicks, viewer, false);
+    DialogControlSetVisible(g_doc_btnLock, viewer, false);
+}
+
+// One decider's whole board. oneHuman = a single human decides both sides.
+void Doctrine_RenderSide(playergroup viewer, bool isP1, bool oneHuman) {
+    int    side;
+    int    other;
+    int    d;
+    int    c;
+    int    state;
+    int    limit;
+    bool   locked;
+    bool   canClick;
+    string sub;
+    string info;
+    string sideName;
+    string tag;
+    string detail;
+    string affected;
+
+    side     = Doctrine_SideIdx(isP1);
+    other    = 3 - side;
+    locked   = g_doc_locked[side];
+    canClick = !locked;
+    limit    = GameMode_DoctrinePicks();
+    if (isP1) { sideName = "P1"; } else { sideName = "P2"; }
+
+    if (locked) {
+        sub = "<c val=\"888888\">Locked in  -  waiting for your opponent...</c>";
+    } else if (oneHuman) {
+        sub = "<c val=\"00FF88\">Pick up to " + IntToString(limit) + " doctrines for " + sideName
+            + ", then Lock in</c>";
+    } else {
+        sub = "<c val=\"00FF88\">YOUR TURN  -  pick up to " + IntToString(limit)
+            + " doctrines, then Lock in</c>";
+    }
+    info = "Every doctrine has an upside and a downside. Both players may take the same one. Hover a card for the details.";
+    if (!oneHuman) {
+        info = "Your opponent:  " + Doctrine_StateText(g_doc_locked[other])
+            + "   -   picks stay hidden until the summary, and never block yours";
+    }
+    DialogControlSetPropertyAsText(g_doc_lblSub, c_triggerControlPropertyText, viewer, StringToText(sub));
+    DialogControlSetPropertyAsText(g_doc_lblInfo, c_triggerControlPropertyText, viewer,
+        StringToText(DraftStyle_Small("<c val=\"CCCCCC\">" + info + "</c>")));
+
+    c = 1;
+    while (c <= c_docColumns) {
+        DialogControlSetVisible(g_doc_lblHead[c], viewer, true);
+        c = c + 1;
+    }
+
+    d = 1;
+    while (d <= c_docCount) {
+        affected = Doctrine_AffectedNames(side, d);
+        detail   = Doctrine_Card(d);
+        if (g_doc_has[side][d]) {
+            state = c_draftStateSelected;  tag = "PICKED";
+        } else if (affected == "") {
+            state = c_draftStateTaken;     tag = "N/A";  detail = "none of your units";
+        } else if (g_doc_count[side] >= limit) {
+            state = c_draftStateTaken;     tag = "LIMIT";
+        } else {
+            state = c_draftStateOpen;      tag = "";
+        }
+        DraftStyle_ApplyCard(g_doc_btn[d], viewer, state,
+            DraftStyle_Card(state, tag, Doctrine_Name(d), detail), canClick);
+        DraftStyle_SetTip(g_doc_btn[d], viewer, Doctrine_CardTip(side, d, affected));
+        d = d + 1;
+    }
+
+    DialogControlSetPropertyAsText(g_doc_lblPicks, c_triggerControlPropertyText, viewer,
+        StringToText("<c val=\"7FD0FF\">YOUR DOCTRINES</c>  <c val=\"AAAAAA\">("
+            + IntToString(g_doc_count[side]) + " of " + IntToString(limit) + ")</c>   "
+            + "<c val=\"FFFFFF\">" + Doctrine_NamesText(isP1) + "</c>"));
+    DialogControlSetVisible(g_doc_lblPicks, viewer, true);
+
+    // Lock in: greyed for the first c_docGrace seconds of a step, inert once locked.
+    DialogControlSetVisible(g_doc_btnLock, viewer, true);
+    if (locked) {
+        DialogControlSetPropertyAsText(g_doc_btnLock, c_triggerControlPropertyText, viewer,
+            StringToText("<c val=\"888888\">Locked in</c>"));
+        DialogControlSetEnabled(g_doc_btnLock, viewer, false);
+    } else if (g_doc_graceLocked) {
+        DialogControlSetPropertyAsText(g_doc_btnLock, c_triggerControlPropertyText, viewer,
+            StringToText("<c val=\"888888\">...</c>"));
+        DialogControlSetEnabled(g_doc_btnLock, viewer, false);
+    } else {
+        DialogControlSetPropertyAsText(g_doc_btnLock, c_triggerControlPropertyText, viewer,
+            StringToText("<c val=\"00FF88\">Lock in</c>"));
+        DialogControlSetEnabled(g_doc_btnLock, viewer, true);
+    }
+}
+
+void Doctrine_UpdateUI() {
+    string title;
+
+    title = "<c val=\"FFD700\">DOCTRINES</c>   -   trade-offs for your army: each one has a pro and a con"
+        + "   <c val=\"888888\">(on at " + CycleMod_ActivationClockText() + ", with the modifiers)</c>";
+    if (!g_doc_simul) {
+        if (g_doc_step == 1) { title = title + "      <c val=\"7FD0FF\">P1</c>"; }
+        else                 { title = title + "      <c val=\"FF9F7F\">P2</c>"; }
+    }
+    DialogControlSetPropertyAsText(g_doc_lblTitle, c_triggerControlPropertyText, Tardigrade_Viewers(),
+        StringToText(title));
+
+    if (g_draft_p1 == g_draft_p2) {
+        Doctrine_RenderSide(PlayerGroupSingle(g_draft_p1), Doctrine_UpIsP1(), true);
+    } else {
+        Doctrine_RenderSide(PlayerGroupSingle(g_draft_p1), true, false);
+        Doctrine_RenderSide(PlayerGroupSingle(g_draft_p2), false, false);
+    }
+
+    // Spectators: status only. Picks stay hidden until the summary.
+    if (Tardigrade_HasAudience()) {
+        Doctrine_HideBoard(Tardigrade_Audience());
+        DialogControlSetPropertyAsText(g_doc_lblSub, c_triggerControlPropertyText, Tardigrade_Audience(),
+            StringToText("<c val=\"888888\">Spectating  -  the players are picking their doctrines...</c>"));
+        DialogControlSetPropertyAsText(g_doc_lblInfo, c_triggerControlPropertyText, Tardigrade_Audience(),
+            StringToText(DraftStyle_Small("<c val=\"CCCCCC\">P1:  " + Doctrine_StateText(g_doc_locked[1])
+                + "      P2:  " + Doctrine_StateText(g_doc_locked[2]) + "</c>")));
+    }
+
+    CycleMod_YoloButtonUpdate(g_doc_btnYolo, c_stageDoctrine, Doctrine_UpIsP1());
+}
+
+//--------------------------------------------------------------------------------------------------
+// Stage: flow
+//--------------------------------------------------------------------------------------------------
+
+// Record both sides' picks for the scan, tear the stage down, run the callback.
+void Doctrine_Commit() {
+    int side;
+    int d;
+
+    side = 1;
+    while (side <= 2) {
+        d = 1;
+        while (d <= c_docCount) {
+            if (g_doc_has[side][d]) {
+                g_doc_ever[d] = true;
+                g_doc_anyEver = true;
+            }
+            d = d + 1;
+        }
+        Debug_Log("Doctrines P" + IntToString(side) + ": " + Doctrine_NamesText(side == 1));
+        side = side + 1;
+    }
+    g_doc_done = true;
+
+    DraftTimer_Disarm();
+    if (g_doc_trigger != null) { TriggerDestroy(g_doc_trigger); g_doc_trigger = null; }
+    if (g_doc_dialog != c_invalidDialogId) {
+        DialogDestroy(g_doc_dialog);
+        g_doc_dialog = c_invalidDialogId;
+    }
+    if (g_doc_callback != null) {
+        TriggerExecute(g_doc_callback, false, false);
+    }
+}
+
+void Doctrine_NextStep();
+
+bool Doctrine_Grace(bool testConds, bool runActions) {
+    int token;
+    token = g_doc_graceToken;
+    Wait(c_docGrace, c_timeReal);
+    if (token != g_doc_graceToken) { return true; }
+    if (g_doc_step < 1 || g_doc_step > g_doc_stepCount) { return true; }
+    g_doc_graceLocked = false;
+    Doctrine_UpdateUI();
+    return true;
+}
+
+void Doctrine_BeginStep() {
+    int side;
+
+    if (g_doc_step > g_doc_stepCount) {
+        Doctrine_Commit();
+        return;
+    }
+
+    // A side already YOLO for this stage is rolled and locked in on the spot.
+    side = 1;
+    while (side <= 2) {
+        if (Doctrine_StepHasSide(side == 1)) {
+            if (!g_doc_locked[side]) {
+                if (CycleMod_SideIsYolo(side == 1, c_stageDoctrine)) {
+                    Doctrine_RandomizeSide(side);
+                    Doctrine_LockSide(side);
+                }
+            }
+        }
+        side = side + 1;
+    }
+    if (Doctrine_StepDone()) {
+        DraftTimer_Disarm();
+        Doctrine_NextStep();
+        return;
+    }
+
+    g_doc_graceLocked = true;
+    g_doc_graceToken  = g_doc_graceToken + 1;
+    TriggerExecute(TriggerCreate("Doctrine_Grace"), false, false);
+
+    DraftStyle_TurnCuePlayer(g_draft_p1);
+    if (g_draft_p2 != g_draft_p1) { DraftStyle_TurnCuePlayer(g_draft_p2); }
+
+    Doctrine_UpdateUI();
+
+    DraftTimer_ArmFor(g_doc_autoTrig, c_docSeconds, "then your current picks are locked in");
+}
+
+void Doctrine_NextStep() {
+    g_doc_step = g_doc_step + 1;
+    Doctrine_BeginStep();
+}
+
+void Doctrine_AfterLock() {
+    if (Doctrine_StepDone()) {
+        Doctrine_NextStep();
+    } else {
+        Doctrine_UpdateUI();
+    }
+}
+
+// Tournament: the clock ran out - every unlocked side of the step locks as it stands.
+bool Doctrine_AutoAct(bool testConds, bool runActions) {
+    int side;
+
+    if (g_doc_step < 1 || g_doc_step > g_doc_stepCount) { return true; }
+    side = 1;
+    while (side <= 2) {
+        if (Doctrine_StepHasSide(side == 1)) {
+            if (!g_doc_locked[side]) { Doctrine_LockSide(side); }
+        }
+        side = side + 1;
+    }
+    Doctrine_NextStep();
+    return true;
+}
+
+bool Doctrine_OnClicked(bool testConds, bool runActions) {
+    int control;
+    int player;
+    int side;
+    int ySide;
+    int d;
+
+    if (g_doc_step < 1 || g_doc_step > g_doc_stepCount) { return true; }
+    control = EventDialogControl();
+    player  = EventPlayer();
+
+    // YOLO: random picks, locked in at once.
+    if (control == g_doc_btnYolo) {
+        ySide = CycleMod_YoloPress(player, c_stageDoctrine, Doctrine_UpIsP1());
+        if (ySide == 0) { return true; }
+        DraftStyle_ClickCue(PlayerGroupSingle(player));
+        if (!Doctrine_StepHasSide(ySide == 1)) { return true; }
+        Doctrine_RandomizeSide(ySide);
+        Doctrine_LockSide(ySide);
+        Doctrine_AfterLock();
+        return true;
+    }
+
+    side = Doctrine_SideOfPlayer(player);
+    if (side == 0) { return true; }
+    if (g_doc_locked[side]) { return true; }
+
+    if (control == g_doc_btnLock) {
+        if (g_doc_graceLocked) { return true; }
+        DraftStyle_ClickCue(PlayerGroupSingle(player));
+        Doctrine_LockSide(side);
+        Doctrine_AfterLock();
+        return true;
+    }
+
+    // A card: a picked one is dropped, an open one is picked if there is room.
+    d = 1;
+    while (d <= c_docCount) {
+        if (control == g_doc_btn[d]) {
+            if (g_doc_has[side][d]) {
+                Doctrine_SetPick(side, d, false);
+            } else {
+                if (g_doc_count[side] >= GameMode_DoctrinePicks()) { return true; }
+                if (!Doctrine_Affects(side, d)) { return true; }
+                Doctrine_SetPick(side, d, true);
+            }
+            DraftStyle_ClickCue(PlayerGroupSingle(player));
+            CycleMod_SideMarkActed(side == 1, c_stageDoctrine);   // ends its chance to go YOLO
+            Doctrine_UpdateUI();
+            return true;
+        }
+        d = d + 1;
+    }
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Debug auto-run: random picks for both sides, committed at once (no dialog, no clock).
+// Needs the roster globals, so run it after the rosters are dealt.
+//--------------------------------------------------------------------------------------------------
+void Doctrine_RandomizeAll() {
+    Doctrine_RandomizeSide(1);
+    Doctrine_RandomizeSide(2);
+    Doctrine_Commit();
+}
+
+//--------------------------------------------------------------------------------------------------
+// Start. Called once the unit stage is over (the roster globals are filled);
+// callback continues to the summary and the game.
+//
+// Dialog layout (1100 x 710), everything c_anchorTop, x is the control's centre
+// relative to the dialog's centre:
+//   title (y 16) / status (46) / info (68)
+//   4 column headings (y 96), x -398 / -133 / 132 / 397
+//   up to 9 cards per column, 255 x 48 at y 114 + (row - 1) * 52
+//   your picks line (1060 x 20) at y 590
+//   YOLO 270 x 48 at (-400, 630), Lock in 360 x 48 at (0, 630)
+//--------------------------------------------------------------------------------------------------
+void Doctrine_Start(trigger callback) {
+    int side;
+    int d;
+    int c;
+
+    g_doc_callback = callback;
+    g_doc_done     = false;
+    side = 1;
+    while (side <= 2) {
+        Doctrine_ClearPicks(side);
+        g_doc_locked[side] = false;
+        side = side + 1;
+    }
+
+    g_doc_simul = (g_draft_p1 != g_draft_p2);
+    if (g_doc_simul) { g_doc_stepCount = 1; } else { g_doc_stepCount = 2; }
+    g_doc_autoTrig = TriggerCreate("Doctrine_AutoAct");
+
+    g_doc_dialog = DialogCreate(1100, 710, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_doc_dialog);
+    DialogSetVisible(g_doc_dialog, Tardigrade_Viewers(), true);
+
+    g_doc_lblTitle = DialogControlCreate(g_doc_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_doc_lblTitle, Tardigrade_Viewers(), 1060, 28);
+    DialogControlSetPosition(g_doc_lblTitle, Tardigrade_Viewers(), c_anchorTop, 0, 16);
+
+    g_doc_lblSub = DialogControlCreate(g_doc_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_doc_lblSub, Tardigrade_Viewers(), 1060, 20);
+    DialogControlSetPosition(g_doc_lblSub, Tardigrade_Viewers(), c_anchorTop, 0, 46);
+
+    g_doc_lblInfo = DialogControlCreate(g_doc_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_doc_lblInfo, Tardigrade_Viewers(), 1060, 20);
+    DialogControlSetPosition(g_doc_lblInfo, Tardigrade_Viewers(), c_anchorTop, 0, 68);
+
+    g_doc_trigger = TriggerCreate("Doctrine_OnClicked");
+
+    c = 1;
+    while (c <= c_docColumns) {
+        g_doc_lblHead[c] = DialogControlCreate(g_doc_dialog, c_triggerControlTypeLabel);
+        DialogControlSetSize(g_doc_lblHead[c], Tardigrade_Viewers(), 255, 14);
+        DialogControlSetPosition(g_doc_lblHead[c], Tardigrade_Viewers(), c_anchorTop, -398 + (c - 1) * 265, 96);
+        DialogControlSetPropertyAsText(g_doc_lblHead[c], c_triggerControlPropertyText, Tardigrade_Viewers(),
+            StringToText(DraftStyle_Small("<c val=\"7FD0FF\">" + Doctrine_ColumnTitle(c) + "</c>")));
+        DialogControlSetVisible(g_doc_lblHead[c], Tardigrade_Viewers(), false);
+        c = c + 1;
+    }
+
+    d = 1;
+    while (d <= c_docCount) {
+        g_doc_btn[d] = DialogControlCreate(g_doc_dialog, c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_doc_btn[d], Tardigrade_Viewers());
+        DialogControlSetSize(g_doc_btn[d], Tardigrade_Viewers(), 255, 48);
+        DialogControlSetPosition(g_doc_btn[d], Tardigrade_Viewers(), c_anchorTop,
+            -398 + (Doctrine_Column(d) - 1) * 265, 114 + (Doctrine_Row(d) - 1) * 52);
+        DialogControlSetVisible(g_doc_btn[d], Tardigrade_Viewers(), false);
+        TriggerAddEventDialogControl(g_doc_trigger, c_playerAny, g_doc_btn[d],
+            c_triggerControlEventTypeClick);
+        d = d + 1;
+    }
+
+    g_doc_lblPicks = DialogControlCreate(g_doc_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_doc_lblPicks, Tardigrade_Viewers(), 1060, 20);
+    DialogControlSetPosition(g_doc_lblPicks, Tardigrade_Viewers(), c_anchorTop, 0, 590);
+    DialogControlSetVisible(g_doc_lblPicks, Tardigrade_Viewers(), false);
+
+    g_doc_btnYolo = DialogControlCreate(g_doc_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_doc_btnYolo, Tardigrade_Viewers());
+    DialogControlSetSize(g_doc_btnYolo, Tardigrade_Viewers(), 270, 48);
+    DialogControlSetPosition(g_doc_btnYolo, Tardigrade_Viewers(), c_anchorTop, -400, 630);
+    DialogControlSetVisible(g_doc_btnYolo, Tardigrade_Viewers(), false);
+    TriggerAddEventDialogControl(g_doc_trigger, c_playerAny, g_doc_btnYolo,
+        c_triggerControlEventTypeClick);
+
+    g_doc_btnLock = DialogControlCreate(g_doc_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_doc_btnLock, Tardigrade_Viewers());
+    DialogControlSetSize(g_doc_btnLock, Tardigrade_Viewers(), 360, 48);
+    DialogControlSetPosition(g_doc_btnLock, Tardigrade_Viewers(), c_anchorTop, 0, 630);
+    DialogControlSetVisible(g_doc_btnLock, Tardigrade_Viewers(), false);
+    TriggerAddEventDialogControl(g_doc_trigger, c_playerAny, g_doc_btnLock,
+        c_triggerControlEventTypeClick);
+
+    g_doc_step = 1;
+    Doctrine_BeginStep();
+}
+
+//--------------------------------------------------------------------------------------------------
+// Testing mode: a second panel, left of the modifier panel, one button per doctrine
+// in two columns of 17. A click switches it for the clicking player's whole side.
+// The scan does the rest (Testing has no activation delay), including taking a
+// switched-off doctrine back off every unit - g_doc_ever keeps it in the scan's list.
+//--------------------------------------------------------------------------------------------------
+const int c_docTestColWidth = 250;
+const int c_docTestPitch    = 28;
+const int c_docTestPerCol   = 17;
+const int c_docTestWidth    = 540;      // two columns of c_docTestColWidth + margins
+
+int Doctrine_TestHeight(bool expanded) {
+    if (!expanded) { return 40; }
+    return 48 + c_docTestPerCol * c_docTestPitch;
+}
+
+int Doctrine_TestSide(int player) {
+    return Doctrine_SideOfOwner(player);
+}
+
+string Doctrine_TestButtonText(int player, int d) {
+    int side;
+    side = Doctrine_TestSide(player);
+    if (side != 0) {
+        if (g_doc_has[side][d]) {
+            return "<c val=\"4ADB92\">[ON]</c>   <c val=\"FFFFFF\">" + Doctrine_Name(d) + "</c>";
+        }
+    }
+    return "<c val=\"888888\">[off]   " + Doctrine_Name(d) + "</c>";
+}
+
+void Doctrine_TestRefreshAll() {
+    int p;
+    int d;
+
+    p = 1;
+    while (p <= 15) {
+        if (g_doc_testBuilt[p]) {
+            d = 1;
+            while (d <= c_docCount) {
+                DialogControlSetPropertyAsText(g_doc_testBtn[p][d], c_triggerControlPropertyText,
+                    PlayerGroupSingle(p), StringToText(Doctrine_TestButtonText(p, d)));
+                d = d + 1;
+            }
+        }
+        p = p + 1;
+    }
+}
+
+void Doctrine_TestSetExpanded(int player, bool expanded) {
+    playergroup viewer;
+    int         d;
+
+    viewer = PlayerGroupSingle(player);
+    DialogSetSize(g_doc_testDialog[player], c_docTestWidth, Doctrine_TestHeight(expanded));
+    d = 1;
+    while (d <= c_docCount) {
+        DialogControlSetVisible(g_doc_testBtn[player][d], viewer, expanded);
+        d = d + 1;
+    }
+    if (expanded) {
+        DialogControlSetPropertyAsText(g_doc_testToggle[player], c_triggerControlPropertyText,
+            viewer, StringToText("Test Doctrines  [-]"));
+    } else {
+        DialogControlSetPropertyAsText(g_doc_testToggle[player], c_triggerControlPropertyText,
+            viewer, StringToText("Test Doctrines  [+]"));
+    }
+    g_doc_testExpanded[player] = expanded;
+}
+
+void Doctrine_TestToggle(int player, int d) {
+    int    side;
+    bool   on;
+    string sideName;
+
+    side = Doctrine_TestSide(player);
+    if (side == 0) { return; }
+    if (side == 1) { sideName = "P1"; } else { sideName = "P2"; }
+    on = !g_doc_has[side][d];
+    Doctrine_SetPick(side, d, on);
+    if (on) {
+        g_doc_ever[d] = true;
+        g_doc_anyEver = true;
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            sideName + " <c val=\"4ADB92\">DOCTRINE ON:</c> " + Doctrine_Name(d)
+            + "  <c val=\"AAAAAA\">- " + Doctrine_Desc(d) + " (" + Doctrine_ScopeText(Doctrine_Scope(d))
+            + ")</c>"));
+    } else {
+        UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+            sideName + " <c val=\"B07878\">DOCTRINE OFF:</c> " + Doctrine_Name(d)));
+    }
+    Doctrine_TestRefreshAll();
+}
+
+bool Doctrine_OnTestClicked(bool testConds, bool runActions) {
+    int player;
+    int control;
+    int d;
+
+    player  = EventPlayer();
+    control = EventDialogControl();
+    if (player < 1 || player > 15 || !g_doc_testBuilt[player]) { return true; }
+
+    if (control == g_doc_testToggle[player]) {
+        Doctrine_TestSetExpanded(player, !g_doc_testExpanded[player]);
+        return true;
+    }
+    d = 1;
+    while (d <= c_docCount) {
+        if (control == g_doc_testBtn[player][d]) {
+            Doctrine_TestToggle(player, d);
+            return true;
+        }
+        d = d + 1;
+    }
+    return true;
+}
+
+// x 348 from the right edge: just left of the 330-wide modifier panel at x 10.
+void Doctrine_InitTestPanel(int player) {
+    playergroup viewer;
+    int         d;
+    int         col;
+    int         row;
+
+    if (g_doc_testTrig == null) {
+        g_doc_testTrig = TriggerCreate("Doctrine_OnTestClicked");
+    }
+    viewer = PlayerGroupSingle(player);
+
+    g_doc_testDialog[player] = DialogCreate(c_docTestWidth, Doctrine_TestHeight(true),
+        c_anchorTopRight, 348, 60, false);
+    Tardigrade_ObservableDialog(g_doc_testDialog[player]);
+    DialogSetVisible(g_doc_testDialog[player], viewer, true);
+    DialogSetImageVisible(g_doc_testDialog[player], true);
+
+    g_doc_testToggle[player] = DialogControlCreate(g_doc_testDialog[player], c_triggerControlTypeButton);
+    DialogControlSetSize(g_doc_testToggle[player], viewer, 220, 28);
+    DialogControlSetPosition(g_doc_testToggle[player], viewer, c_anchorTop, 0, 6);
+    TriggerAddEventDialogControl(g_doc_testTrig, player, g_doc_testToggle[player],
+        c_triggerControlEventTypeClick);
+
+    d = 1;
+    while (d <= c_docCount) {
+        col = (d - 1) / c_docTestPerCol;
+        row = d - 1 - col * c_docTestPerCol;
+        g_doc_testBtn[player][d] = DialogControlCreate(g_doc_testDialog[player], c_triggerControlTypeButton);
+        DraftStyle_InitButton(g_doc_testBtn[player][d], viewer);
+        DialogControlSetSize(g_doc_testBtn[player][d], viewer, c_docTestColWidth, c_docTestPitch - 2);
+        DialogControlSetPosition(g_doc_testBtn[player][d], viewer, c_anchorTop,
+            -130 + col * 260, 40 + row * c_docTestPitch);
+        DialogControlSetPropertyAsText(g_doc_testBtn[player][d], c_triggerControlPropertyTooltip,
+            viewer, StringToText(Doctrine_Name(d) + "<n/>" + Doctrine_Desc(d)
+                + "<n/><c val=\"AAAAAA\">Affects " + Doctrine_ScopeText(Doctrine_Scope(d)) + ".</c>"));
+        TriggerAddEventDialogControl(g_doc_testTrig, player, g_doc_testBtn[player][d],
+            c_triggerControlEventTypeClick);
+        d = d + 1;
+    }
+
+    g_doc_testBuilt[player] = true;
+    Doctrine_TestSetExpanded(player, true);
+    Doctrine_TestRefreshAll();
+}

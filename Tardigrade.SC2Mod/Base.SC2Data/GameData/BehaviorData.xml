@@ -160,6 +160,8 @@
             <Kind index="Spell" value="0"/>
             <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
             <ExcludeEffectArray value="TardigradeMod_OpenSkiesSplash"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
         </DamageResponse>
     </CBehaviorBuff>
     <CBehaviorBuff id="TardigradeMod_OpenSkiesVsGround">
@@ -172,6 +174,8 @@
             <Kind index="Spell" value="0"/>
             <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
             <ExcludeEffectArray value="TardigradeMod_OpenSkiesSplash"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
         </DamageResponse>
     </CBehaviorBuff>
 
@@ -588,7 +592,7 @@
         <MaxStackCount value="1"/>
         <Modification MoveSpeedMultiplier="1.5"/>
     </CBehaviorBuff>
-    <!-- Photon Coating's window: damage taken x0.8 for 11.2 game seconds (8 real).
+    <!-- Photon Coating's window: damage taken x0.85 for 11.2 game seconds (8 real).
          A damage response with no Location acts on damage the unit TAKES, the
          same shape as Shared Damage's absorb below. Kill-flag effects are
          excluded so an expiring summon or a Baneling's own Suicide is not
@@ -599,7 +603,7 @@
         <TimeScaleSource Value="Global"/>
         <Duration value="11.2"/>
         <MaxStackCount value="1"/>
-        <DamageResponse ModifyFraction="0.8">
+        <DamageResponse ModifyFraction="0.85">
             <Chance value="1"/>
             <ExcludeEffectArray value="Suicide"/>
             <ExcludeEffectArray value="SuicideRemove"/>
@@ -711,6 +715,747 @@
             <RateMultiplierArray index="Queueable" value="10000"/>
             <RateMultiplierArray index="Morph" value="10000"/>
             <RateMultiplierArray index="Spawn" value="10000"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- =====================================================================
+         DOCTRINES (Doctrine.galaxy). One permanent buff per doctrine, kept on
+         exactly the units it covers by Doctrine_ApplyToUnit from the CycleMod
+         scan. No Duration: nothing re-adds them, and a unit hidden in a
+         transport (which the scan skips) keeps its doctrines. Visible, so a
+         player can see them on the unit; names/tooltips in GameStrings.txt.
+         Keep the numbers in step with Doctrine_Desc.
+
+         Conventions, and why:
+         - Damage dealt / taken is a DamageResponse ModifyFraction, a plain
+           multiplier (0.6 = 40% less, 1.5 = 50% more) - the same mechanism
+           Open Skies (Location="Attacker", damage the unit DEALS) and Photon
+           Coating (no Location, damage it TAKES) already use. Not
+           SModification DamageDealtFraction / DamageTakenFraction, whose
+           convention (multiplier or added fraction) the sources disagree on.
+           A buff has one DamageResponse, which is why no doctrine needs two.
+         - "Weapon damage" doctrines skip Spell kind, as Open Skies does.
+         - Responses on damage TAKEN exclude the Kill-flag effects (Photon
+           Coating's list), so a Baneling's own Suicide or an expiring summon is
+           never trimmed and left alive.
+         - Health (life AND shields) is VitalMaxFractionArray, written as an
+           ADDED fraction (0.25 = +25%, -0.2 = -20%): the SC2Mapster wiki says
+           it "adds an amount ... based on a % of the unit's vital". UNVERIFIED -
+           first thing to check in the editor: a Marine with Heavy Plating must
+           read 56 max life (45 x 1.25). If it reads 11, the field is a plain
+           multiplier and every value here should become 1 + value.
+           Doctrine_SetBuff restores the unit's health PERCENT after adding or
+           removing one of these, because a vital-max change can refill a unit.
+         - Attack and move speed are multipliers (Blizzard's Stimpack is 1.5).
+           Range, sight, armor and energy regen are flat bonuses.
+    ===================================================================== -->
+
+    <!-- 1 Loose Formation (army): -40% splash taken, -20% health. Splash is the
+         KindSplash part of an area attack (tank shell surround, Baneling,
+         Hellion, Widow Mine splash) - spells are Spell kind and not reduced. -->
+    <CBehaviorBuff id="TardigradeDoc_LooseFormation">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-explosiveshrapnelshells.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="-0.2"/>
+            <VitalMaxFractionArray index="Shields" value="-0.2"/>
+        </Modification>
+        <DamageResponse ModifyFraction="0.6">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <Kind index="Melee" value="0"/>
+            <Kind index="Ranged" value="0"/>
+            <ExcludeEffectArray value="Suicide"/>
+            <ExcludeEffectArray value="SuicideRemove"/>
+            <ExcludeEffectArray value="Kill"/>
+            <ExcludeEffectArray value="KillRemove"/>
+            <ExcludeEffectArray value="KillCaster"/>
+            <ExcludeEffectArray value="KillSource"/>
+            <ExcludeEffectArray value="KillTargetDeathNormal"/>
+            <ExcludeEffectArray value="Sacrifice"/>
+            <ExcludeEffectArray value="KillHallucination"/>
+            <ExcludeEffectArray value="MULEFate"/>
+            <ExcludeEffectArray value="AdeptPhaseShiftKillDummy"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 2 Spell Ward (army): -40% spell damage taken, -15% health. -->
+    <CBehaviorBuff id="TardigradeDoc_SpellWard">
+        <InfoIcon value="Assets\Textures\btn-ability-protoss-hardenedshields.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="-0.15"/>
+            <VitalMaxFractionArray index="Shields" value="-0.15"/>
+        </Modification>
+        <DamageResponse ModifyFraction="0.6">
+            <Chance value="1"/>
+            <Kind index="Melee" value="0"/>
+            <Kind index="Ranged" value="0"/>
+            <Kind index="Splash" value="0"/>
+            <ExcludeEffectArray value="Suicide"/>
+            <ExcludeEffectArray value="SuicideRemove"/>
+            <ExcludeEffectArray value="Kill"/>
+            <ExcludeEffectArray value="KillRemove"/>
+            <ExcludeEffectArray value="KillCaster"/>
+            <ExcludeEffectArray value="KillSource"/>
+            <ExcludeEffectArray value="KillTargetDeathNormal"/>
+            <ExcludeEffectArray value="Sacrifice"/>
+            <ExcludeEffectArray value="KillHallucination"/>
+            <ExcludeEffectArray value="MULEFate"/>
+            <ExcludeEffectArray value="AdeptPhaseShiftKillDummy"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 3 Deflector Plating (army): -20% ranged damage taken, -15% move speed.
+         Ranged is most of the game's damage, so the cut is smaller than the
+         other resistances and the cost is speed rather than health. -->
+    <CBehaviorBuff id="TardigradeDoc_DeflectorPlating">
+        <InfoIcon value="Assets\Textures\btn-techupgrade-terran-combatshield-color.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="0.85"/>
+        <DamageResponse ModifyFraction="0.8">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <Kind index="Melee" value="0"/>
+            <Kind index="Splash" value="0"/>
+            <ExcludeEffectArray value="Suicide"/>
+            <ExcludeEffectArray value="SuicideRemove"/>
+            <ExcludeEffectArray value="Kill"/>
+            <ExcludeEffectArray value="KillRemove"/>
+            <ExcludeEffectArray value="KillCaster"/>
+            <ExcludeEffectArray value="KillSource"/>
+            <ExcludeEffectArray value="KillTargetDeathNormal"/>
+            <ExcludeEffectArray value="Sacrifice"/>
+            <ExcludeEffectArray value="KillHallucination"/>
+            <ExcludeEffectArray value="MULEFate"/>
+            <ExcludeEffectArray value="AdeptPhaseShiftKillDummy"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 4 Riot Gear (army): -40% melee damage taken, -10% health. -->
+    <CBehaviorBuff id="TardigradeDoc_RiotGear">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-infantryarmorlevel1.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="-0.1"/>
+            <VitalMaxFractionArray index="Shields" value="-0.1"/>
+        </Modification>
+        <DamageResponse ModifyFraction="0.6">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <Kind index="Ranged" value="0"/>
+            <Kind index="Splash" value="0"/>
+            <ExcludeEffectArray value="Suicide"/>
+            <ExcludeEffectArray value="SuicideRemove"/>
+            <ExcludeEffectArray value="Kill"/>
+            <ExcludeEffectArray value="KillRemove"/>
+            <ExcludeEffectArray value="KillCaster"/>
+            <ExcludeEffectArray value="KillSource"/>
+            <ExcludeEffectArray value="KillTargetDeathNormal"/>
+            <ExcludeEffectArray value="Sacrifice"/>
+            <ExcludeEffectArray value="KillHallucination"/>
+            <ExcludeEffectArray value="MULEFate"/>
+            <ExcludeEffectArray value="AdeptPhaseShiftKillDummy"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 5 Phalanx (army): +3 armor on life and shields, -25% health. -->
+    <CBehaviorBuff id="TardigradeDoc_Phalanx">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-groundarmorlevel2.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification ShieldArmorBonus="3">
+            <LifeArmorBonus value="3"/>
+            <VitalMaxFractionArray index="Life" value="-0.25"/>
+            <VitalMaxFractionArray index="Shields" value="-0.25"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 6 Heavy Plating (army): +25% health, -15% move speed. -->
+    <CBehaviorBuff id="TardigradeDoc_HeavyPlating">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-vehicleplatinglevel3.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="0.85">
+            <VitalMaxFractionArray index="Life" value="0.25"/>
+            <VitalMaxFractionArray index="Shields" value="0.25"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 7 Stripped Down (army): +20% move speed, -2 armor on life and shields. -->
+    <CBehaviorBuff id="TardigradeDoc_StrippedDown">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-neosteelframe.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="1.2" ShieldArmorBonus="-2">
+            <LifeArmorBonus value="-2"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 8 Heavy Hitters (weapon): +50% weapon damage per hit, attacks 35% slower
+         (DPS x0.975 before armor; flat armor matters less). -->
+    <CBehaviorBuff id="TardigradeDoc_HeavyHitters">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-vehicleweaponslevel3.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="0.65"/>
+        <DamageResponse Location="Attacker" ModifyFraction="1.5">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 9 Hair Trigger (weapon): attacks 60% faster, -35% weapon damage per hit
+         (DPS x1.04 before armor; flat armor matters more). -->
+    <CBehaviorBuff id="TardigradeDoc_HairTrigger">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-infantryweaponslevel1.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="1.6"/>
+        <DamageResponse Location="Attacker" ModifyFraction="0.65">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 10 Armor-Piercing (weapon): +40% weapon damage vs Armored targets,
+         attacks 15% slower against everything. TargetFilters is read against
+         the victim (see TardigradeMod_OpenSkiesVsAir). -->
+    <CBehaviorBuff id="TardigradeDoc_ArmorPiercing">
+        <InfoIcon value="Assets\Textures\btn-ability-terran-ignorearmor.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="0.85"/>
+        <DamageResponse Location="Attacker" ModifyFraction="1.4">
+            <Chance value="1"/>
+            <TargetFilters value="Armored;-"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 11 Anti-Personnel (weapon): +40% weapon damage vs Light targets, attacks
+         15% slower against everything. -->
+    <CBehaviorBuff id="TardigradeDoc_AntiPersonnel">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-infernalpreigniter.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="0.85"/>
+        <DamageResponse Location="Attacker" ModifyFraction="1.4">
+            <Chance value="1"/>
+            <TargetFilters value="Light;-"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 12 Glass Cannon (weapon): +30% weapon damage, -25% health. -->
+    <CBehaviorBuff id="TardigradeDoc_GlassCannon">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-groundweaponslevel3.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="-0.25"/>
+            <VitalMaxFractionArray index="Shields" value="-0.25"/>
+        </Modification>
+        <DamageResponse Location="Attacker" ModifyFraction="1.3">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 13 Skirmishers (weapon): +25% move speed, -20% weapon damage. -->
+    <CBehaviorBuff id="TardigradeDoc_Skirmishers">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-fluxvanes.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="1.25"/>
+        <DamageResponse Location="Attacker" ModifyFraction="0.8">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+
+    <!-- 14 Last Stand (weapon): -15% health always; below 35% health (life +
+         shields, c_docLastStandAt) Doctrine_ApplyToUnit adds the Active buff
+         below, and takes it away again once the unit is back above. -->
+    <CBehaviorBuff id="TardigradeDoc_LastStand">
+        <InfoIcon value="Assets\Textures\btn-ability-zerg-frenzy.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="-0.15"/>
+            <VitalMaxFractionArray index="Shields" value="-0.15"/>
+        </Modification>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeDoc_LastStandActive">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-adrenalglands.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="1.5"/>
+    </CBehaviorBuff>
+
+    <!-- 15 Rapid Fire (ranged): +25% attack speed, -1 range. -->
+    <CBehaviorBuff id="TardigradeDoc_RapidFire">
+        <InfoIcon value="Assets\Textures\btn-ability-terran-stimpack.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="1.25" WeaponRange="-1" WeaponScanBonus="-1"/>
+    </CBehaviorBuff>
+
+    <!-- 16 Long Barrels (ranged): +1 range, attacks 20% slower. -->
+    <CBehaviorBuff id="TardigradeDoc_LongBarrels">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-cyclonerangeupgrade.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="0.8" WeaponRange="1" WeaponScanBonus="1"/>
+    </CBehaviorBuff>
+
+    <!-- 17 Sniper Scopes (ranged): +2 range, -4 sight. A unit can now outrange
+         what it sees, so the extra range needs a spotter. -->
+    <CBehaviorBuff id="TardigradeDoc_SniperScopes">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-phoenixrange.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification WeaponRange="2" WeaponScanBonus="2" SightBonus="-4"/>
+    </CBehaviorBuff>
+
+    <!-- 18 Bloodlust (melee): +35% attack speed, -2 armor on life and shields. -->
+    <CBehaviorBuff id="TardigradeDoc_Bloodlust">
+        <InfoIcon value="Assets\Textures\btn-ability-zerg-attackstructure-color.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="1.35" ShieldArmorBonus="-2">
+            <LifeArmorBonus value="-2"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 19 Overcharged Cells (energy): double energy regeneration, -35% max
+         energy. Flat +0.5625/s, the standard caster rate (CUnit EnergyRegenRate),
+         so it doubles every caster; stacks with Arcane Surge's catalog doubling.
+         The con is max energy, not health: a caster spends its energy in bursts,
+         so its health was never what it traded. Banks fewer spells, refills them
+         twice as fast. 200 max becomes 130 - still one 125 Parasitic Bomb. -->
+    <CBehaviorBuff id="TardigradeDoc_OverchargedCells">
+        <InfoIcon value="Assets\Textures\btn-ability-protoss-shieldbattery-color.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalRegenArray index="Energy" value="0.5625"/>
+            <VitalMaxFractionArray index="Energy" value="-0.35"/>
+        </Modification>
+    </CBehaviorBuff>
+
+    <!-- 20 Deep Reserves (energy): -40% energy regeneration (0.225 of the
+         standard 0.5625). The full-energy start is script:
+         Doctrine_FillEnergy, when this buff first reaches a new unit. -->
+    <CBehaviorBuff id="TardigradeDoc_DeepReserves">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-shieldslevel3.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalRegenArray index="Energy" value="-0.225"/>
+        </Modification>
+    </CBehaviorBuff>
+
+
+    <!-- =====================================================================
+         DOCTRINES, second set (21-34) and their helpers. Same conventions as
+         above. Every attacker-side response here excludes the bonus effects
+         (Overwatch's, and this file's Ricochet / Cull / Burn / Volatile hits,
+         EffectData.xml): each is computed from damage that already landed, or
+         is a unit damaging itself, and must not be multiplied again.
+    ===================================================================== -->
+
+    <!-- 21 Exposing Fire (weapon): -20% weapon damage. Doctrine_OnWeaponHit puts TardigradeDoc_Exposed on whatever a direct weapon hit lands on. -->
+    <CBehaviorBuff id="TardigradeDoc_ExposingFire">
+        <InfoIcon value="Assets\Textures\btn-ability-terran-snipe.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="0.8">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- Exposed: +25% damage taken from every source, 3s (4.2 game), refreshed by each hit. Kill-flag effects excluded like Photon Coating. -->
+    <CBehaviorBuff id="TardigradeDoc_Exposed">
+        <InfoIcon value="Assets\Textures\btn-ability-terran-snipe.dds"/>
+        <Alignment value="Negative"/>
+        <TimeScaleSource Value="Global"/>
+        <Duration value="4.2"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse ModifyFraction="1.25">
+            <Chance value="1"/>
+            <ExcludeEffectArray value="Suicide"/>
+            <ExcludeEffectArray value="SuicideRemove"/>
+            <ExcludeEffectArray value="Kill"/>
+            <ExcludeEffectArray value="KillRemove"/>
+            <ExcludeEffectArray value="KillCaster"/>
+            <ExcludeEffectArray value="KillSource"/>
+            <ExcludeEffectArray value="KillTargetDeathNormal"/>
+            <ExcludeEffectArray value="Sacrifice"/>
+            <ExcludeEffectArray value="KillHallucination"/>
+            <ExcludeEffectArray value="MULEFate"/>
+            <ExcludeEffectArray value="AdeptPhaseShiftKillDummy"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- 22 Frost Rounds (weapon): -20% weapon damage; hits chill (below). -->
+    <CBehaviorBuff id="TardigradeDoc_FrostRounds">
+        <InfoIcon value="Assets\Textures\btn-ability-terran-ignorearmor.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="0.8">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- Chilled: -35% move speed, 2s (2.8 game), refreshed by each hit. -->
+    <CBehaviorBuff id="TardigradeDoc_Chilled">
+        <InfoIcon value="Assets\Textures\btn-ability-terran-ignorearmor.dds"/>
+        <Alignment value="Negative"/>
+        <TimeScaleSource Value="Global"/>
+        <Duration value="2.8"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="0.65"/>
+    </CBehaviorBuff>
+    <!-- 23 Ricochet (weapon): -25% weapon damage; Doctrine_Ricochet bounces half of each direct hit. -->
+    <CBehaviorBuff id="TardigradeDoc_Ricochet">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-recalibratedexplosives.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="0.75">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- 24 Culling Rounds (weapon): -15% weapon damage; Doctrine_TryCull finishes targets under 15%. -->
+    <CBehaviorBuff id="TardigradeDoc_CullingRounds">
+        <InfoIcon value="Assets\Textures\btn-ability-terran-huntermissile-color.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="0.85">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- 25 Ignite (weapon): -25% weapon damage; hits set the target Burning (below). -->
+    <CBehaviorBuff id="TardigradeDoc_Ignite">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-infernalpreigniter.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="0.75">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- Burning: no regeneration of any vital for 3s (4.2 game), refreshed by each hit. The damage is Doctrine_BurnTick, from the scan. -->
+    <CBehaviorBuff id="TardigradeDoc_Burning">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-infernalpreigniter.dds"/>
+        <Alignment value="Negative"/>
+        <TimeScaleSource Value="Global"/>
+        <Duration value="4.2"/>
+        <MaxStackCount value="1"/>
+        <Modification VitalRegenMultiplier="0"/>
+    </CBehaviorBuff>
+    <!-- 26 Pack Tactics (weapon): -15% health. The damage is one of the five tier buffs below, set by Doctrine_ApplyPack. -->
+    <CBehaviorBuff id="TardigradeDoc_PackTactics">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-airattacks-level1.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="-0.15"/>
+            <VitalMaxFractionArray index="Shields" value="-0.15"/>
+        </Modification>
+    </CBehaviorBuff>
+    <!-- Pack Tactics tier 1: +5% weapon damage (1 of your units within 3). -->
+    <CBehaviorBuff id="TardigradeDoc_Pack1">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-airattacks-level1.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="1.05">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeDoc_Pack2">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-airattacks-level1.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="1.10">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeDoc_Pack3">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-airattacks-level1.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="1.15">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeDoc_Pack4">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-airattacks-level1.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="1.20">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <CBehaviorBuff id="TardigradeDoc_Pack5">
+        <InfoIcon value="Assets\Textures\btn-upgrade-zerg-airattacks-level1.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Location="Attacker" ModifyFraction="1.25">
+            <Chance value="1"/>
+            <Kind index="Spell" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- 27 Lone Wolves (weapon): marker; the effect is Alone or Crowded, set by Doctrine_ApplyLone. -->
+    <CBehaviorBuff id="TardigradeDoc_LoneWolves">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <!-- Lone Wolves, alone (none of your units within 4): +30% attack speed, +2 armor. -->
+    <CBehaviorBuff id="TardigradeDoc_LoneWolfAlone">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-airweaponslevel1.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="1.3" ShieldArmorBonus="2">
+            <LifeArmorBonus value="2"/>
+        </Modification>
+    </CBehaviorBuff>
+    <!-- Lone Wolves, next to your units: attacks 10% slower. -->
+    <CBehaviorBuff id="TardigradeDoc_LoneWolfCrowded">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-airweaponslevel0.dds"/>
+        <Alignment value="Negative"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="0.9"/>
+    </CBehaviorBuff>
+    <!-- 28 Battle Rhythm (army): marker; the effect is Surge or Lull, by Doctrine_RhythmPhase. -->
+    <CBehaviorBuff id="TardigradeDoc_BattleRhythm">
+        <InfoFlags index="Hidden" value="1"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <!-- Battle Rhythm, Surge: +25% attack and move speed. -->
+    <CBehaviorBuff id="TardigradeDoc_RhythmSurge">
+        <InfoIcon value="Assets\Textures\btn-ability-terran-stimpack-color.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="1.25" AttackSpeedMultiplier="1.25"/>
+    </CBehaviorBuff>
+    <!-- Battle Rhythm, Lull: -20% attack and move speed. -->
+    <CBehaviorBuff id="TardigradeDoc_RhythmLull">
+        <InfoIcon value="Assets\Textures\btn-ability-terran-stimpack.dds"/>
+        <Alignment value="Negative"/>
+        <MaxStackCount value="1"/>
+        <Modification MoveSpeedMultiplier="0.8" AttackSpeedMultiplier="0.8"/>
+    </CBehaviorBuff>
+    <!-- 29 Last Breath (army): -20% health, always. Kept apart from Ready so the health never changes when the save is used (a vital-max change can refill a unit). -->
+    <CBehaviorBuff id="TardigradeDoc_LastBreath">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-shieldslevel2.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="-0.2"/>
+            <VitalMaxFractionArray index="Shields" value="-0.2"/>
+        </Modification>
+    </CBehaviorBuff>
+    <!-- Last Breath, ready: a FATAL hit (Fatal=1, Blizzard's Lock On shape) is cancelled outright, and the Handled set removes this buff and adds Spent, both on the Caster - the unit itself, which the scan always names as caster (Blizzard's Immortal Barrier does the same). The scan re-adds Ready once Spent has run out. Kill-flag effects excluded, so a Baneling still dies to its own blast. -->
+    <CBehaviorBuff id="TardigradeDoc_LastBreathReady">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-shieldslevel3.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <DamageResponse Chance="1" Fatal="1" ModifyFraction="0" Handled="TardigradeDoc_LastBreathUse">
+            <ExcludeEffectArray value="Suicide"/>
+            <ExcludeEffectArray value="SuicideRemove"/>
+            <ExcludeEffectArray value="Kill"/>
+            <ExcludeEffectArray value="KillRemove"/>
+            <ExcludeEffectArray value="KillCaster"/>
+            <ExcludeEffectArray value="KillSource"/>
+            <ExcludeEffectArray value="KillTargetDeathNormal"/>
+            <ExcludeEffectArray value="Sacrifice"/>
+            <ExcludeEffectArray value="KillHallucination"/>
+            <ExcludeEffectArray value="MULEFate"/>
+            <ExcludeEffectArray value="AdeptPhaseShiftKillDummy"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- Last Breath, recharging: 45s (63 game). -->
+    <CBehaviorBuff id="TardigradeDoc_LastBreathSpent">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-shieldslevel1.dds"/>
+        <Alignment value="Neutral"/>
+        <TimeScaleSource Value="Global"/>
+        <Duration value="63"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <!-- 30 Champion (army core): -10% health on every covered unit but the Champion (Doctrine_ApplyChampion). -->
+    <CBehaviorBuff id="TardigradeDoc_ChampionRanks">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-infantryarmorlevel0.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="-0.1"/>
+            <VitalMaxFractionArray index="Shields" value="-0.1"/>
+        </Modification>
+    </CBehaviorBuff>
+    <!-- The Champion: +60% health, +30% damage of every kind (spells too). -->
+    <CBehaviorBuff id="TardigradeDoc_ChampionCrown">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-infantryarmorlevel3.dds"/>
+        <Alignment value="Positive"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="0.6"/>
+            <VitalMaxFractionArray index="Shields" value="0.6"/>
+        </Modification>
+        <DamageResponse Location="Attacker" ModifyFraction="1.3">
+            <Chance value="1"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- 31 Volatile Cores (army core): marker; the blast is Doctrine_TryVolatile, on death. -->
+    <CBehaviorBuff id="TardigradeDoc_VolatileCores">
+        <InfoIcon value="Assets\Textures\btn-upgrade-terran-explosiveshrapnelshells.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+    </CBehaviorBuff>
+    <!-- 32 Bounty Hunters (army): -10% health; the payout is Doctrine_PayBounty, on the victim's death. -->
+    <CBehaviorBuff id="TardigradeDoc_BountyHunters">
+        <InfoIcon value="Assets\Textures\btn-ability-zerg-attackstructure-color.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Life" value="-0.1"/>
+            <VitalMaxFractionArray index="Shields" value="-0.1"/>
+        </Modification>
+    </CBehaviorBuff>
+    <!-- 33 Spellweaver (energy): +35% spell damage (Spell kind only), -30% energy regen (0.16875 of the standard 0.5625). -->
+    <CBehaviorBuff id="TardigradeDoc_Spellweaver">
+        <InfoIcon value="Assets\Textures\btn-ability-protoss-hardenedshields-color.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalRegenArray index="Energy" value="-0.16875"/>
+        </Modification>
+        <DamageResponse Location="Attacker" ModifyFraction="1.35">
+            <Chance value="1"/>
+            <Kind index="Melee" value="0"/>
+            <Kind index="Ranged" value="0"/>
+            <Kind index="Splash" value="0"/>
+            <ExcludeEffectArray value="TardigradeMod_OverwatchBonus"/>
+            <ExcludeEffectArray value="TardigradeDoc_RicochetHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_CullHit"/>
+            <ExcludeEffectArray value="TardigradeDoc_BurnTick"/>
+            <ExcludeEffectArray value="TardigradeDoc_VolatileBlast"/>
+        </DamageResponse>
+    </CBehaviorBuff>
+    <!-- 34 War Banners (energy): -40% max energy; the aura is Doctrine_RaiseBanner, from the scan. -->
+    <CBehaviorBuff id="TardigradeDoc_WarBanners">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-structureovercharge.dds"/>
+        <Alignment value="Neutral"/>
+        <MaxStackCount value="1"/>
+        <Modification>
+            <VitalMaxFractionArray index="Energy" value="-0.4"/>
+        </Modification>
+    </CBehaviorBuff>
+    <!-- War Banners aura: +15% attack speed, +1 armor. 1.4 game seconds, refreshed every scan by each bearer nearby, so it fades soon after the bearer leaves. -->
+    <CBehaviorBuff id="TardigradeDoc_Bannered">
+        <InfoIcon value="Assets\Textures\btn-upgrade-protoss-groundarmorlevel1.dds"/>
+        <Alignment value="Positive"/>
+        <TimeScaleSource Value="Global"/>
+        <Duration value="1.4"/>
+        <MaxStackCount value="1"/>
+        <Modification AttackSpeedMultiplier="1.15" ShieldArmorBonus="1">
+            <LifeArmorBonus value="1"/>
         </Modification>
     </CBehaviorBuff>
 

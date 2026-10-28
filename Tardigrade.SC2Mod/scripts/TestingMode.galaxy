@@ -405,6 +405,7 @@ void TestingMode_SetupTeam(playergroup team) {
         RosterEnforce_UncapQueen(p);
         if (PlayerType(p) == c_playerTypeUser && p >= 1 && p <= 15) {
             TestingMode_InitPanel(p);
+            Doctrine_InitTestPanel(p);
         }
         i = i + 1;
     }
@@ -440,5 +441,5 @@ void TestingMode_Start() {
         "<c val=\"FFD54A\">TESTING MODE</c>  <c val=\"AAAAAA\">- "
         + IntToString(c_testingBank) + " minerals and gas, " + IntToString(c_testingSupply)
         + " supply, instant builds and larva, every unit allowed."
-        + " Switch modifiers for your side from the panel (top right).</c>"));
+        + " Switch modifiers and doctrines for your side from the two panels (top right).</c>"));
 }

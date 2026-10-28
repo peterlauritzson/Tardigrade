@@ -23,6 +23,10 @@
 //                      No Bans acts on step 3 (and is N/A with Full roster).
 //   3. Unit Draft    - opening picks, bans, final picks; each side ends with 6
 //                      units (7 for YOLO). Enforced in-game.
+//   4. Doctrines     - only with the setup's Doctrines box ticked, after whichever
+//                      unit stage ran (step 3, Full roster or the groups stage):
+//                      each side picks up to N trade-offs for its army at once,
+//                      blind and not exclusive (Doctrine.galaxy).
 //
 // Every draft stage has a YOLO button for each human side, until that side makes
 // its own first choice in the stage: from then on its turns in THAT stage are
@@ -49,6 +53,7 @@ include "scripts/RosterDraft"
 include "scripts/ProtectDraft"
 include "scripts/RosterEnforce"
 include "scripts/UnitGroups"
+include "scripts/Doctrine"
 include "scripts/TestingMode"
 
 //--------------------------------------------------------------------------------------------------
@@ -125,6 +130,9 @@ string Tardigrade_SummaryColumn(bool isP1) {
         i = i + 1;
     }
     if (count == 0) { s = s + "\n<c val=\"7A7A7A\">none</c>"; }
+
+    // "" unless the doctrine stage ran.
+    s = s + Doctrine_SummaryBlock(isP1);
 
     if (GameMode_IsUnitGroups()) {
         s = s + "\n\n<c val=\"FFD54A\">UNITS</c>  <c val=\"7A7A7A\">(all)</c>\nAll units  <c val=\"AAAAAA\">(split: "
@@ -267,6 +275,7 @@ bool Tardigrade_SummaryOnClicked(bool testConds, bool runActions) {
 // y 590; READY at y 648. With Unit groups every group pick also lists its units,
 // so everything below the columns' top (their height, the REROLL and READY rows
 // and the dialog) is pushed down by `extra` = 90 (780 x 800, columns 350 x 570).
+// Doctrines add their block's height to `extra` too (Doctrine_SummaryExtra).
 void Tardigrade_SummaryCountdown() {
     int lbl;
     int secs;
@@ -280,6 +289,7 @@ void Tardigrade_SummaryCountdown() {
 
     extra = 0;
     if (GameMode_IsUnitGroups()) { extra = 90; }
+    extra = extra + Doctrine_SummaryExtra();
 
     g_sum_dialog = DialogCreate(780, 710 + extra, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_sum_dialog);
@@ -576,23 +586,44 @@ bool Tardigrade_DebugAutoRun(bool testConds, bool runActions) {
     // (the roster globals above are already set).
     if (GameMode_IsUnitGroups()) { UnitGroups_RandomizeAll(); }
 
+    // Doctrines: random picks for both sides, from what touches their rosters.
+    if (GameMode_DoctrinesOn()) { Doctrine_RandomizeAll(); }
+
     Tardigrade_StartGame();
     return true;
 }
 
 //--------------------------------------------------------------------------------------------------
-// Callback: unit draft complete -> start the game.
+// Callback: doctrine stage committed -> start the game.
+//--------------------------------------------------------------------------------------------------
+bool Tardigrade_OnDoctrinesFinished(bool testConds, bool runActions) {
+    Tardigrade_StartGame();
+    return true;
+}
+
+// Every unit stage (the unit draft, Full roster's none, the groups stage) ends
+// here: the doctrine stage if the setup ticked it, then the summary and the game.
+void Tardigrade_AfterUnits() {
+    if (GameMode_DoctrinesOn()) {
+        Doctrine_Start(TriggerCreate("Tardigrade_OnDoctrinesFinished"));
+        return;
+    }
+    Tardigrade_StartGame();
+}
+
+//--------------------------------------------------------------------------------------------------
+// Callback: unit draft complete -> doctrines or the game.
 //--------------------------------------------------------------------------------------------------
 bool Tardigrade_OnRosterFinished(bool testConds, bool runActions) {
-    Tardigrade_StartGame();
+    Tardigrade_AfterUnits();
     return true;
 }
 
 //--------------------------------------------------------------------------------------------------
-// Callback: unit groups stage committed -> start the game.
+// Callback: unit groups stage committed -> doctrines or the game.
 //--------------------------------------------------------------------------------------------------
 bool Tardigrade_OnGroupsFinished(bool testConds, bool runActions) {
-    Tardigrade_StartGame();
+    Tardigrade_AfterUnits();
     return true;
 }
 
@@ -622,7 +653,7 @@ bool Tardigrade_OnCycleFinished(bool testConds, bool runActions) {
         g_roster_p2     = g_draft_p2;
         g_roster_p1Race = g_draft_p1Race;
         g_roster_p2Race = g_draft_p2Race;
-        Tardigrade_StartGame();
+        Tardigrade_AfterUnits();
         return true;
     }
     rosterCallback = TriggerCreate("Tardigrade_OnRosterFinished");

@@ -14,9 +14,9 @@ conditions.
 
 Before anything else, team 1's player (or the only human, in a game against
 the AI) sets the game up on one **setup screen**: a mode, how units are chosen,
-and how modifiers are chosen, then **Start**. Everyone else sees the same screen,
+how modifiers are chosen, and whether doctrines are in, then **Start**. Everyone else sees the same screen,
 disabled, updating as the choices are made. The defaults are Casual, Alternating
-draft and Free draft.
+draft and Free draft, with doctrines off.
 
 | Setup row | Options |
 |---|---|
@@ -24,8 +24,9 @@ draft and Free draft.
 | **Roster** | **Full roster:** every unit is allowed and there is no unit draft (the in-game roster panel is not shown, and No Bans is unavailable). **Unit groups:** every unit is allowed, and your modifiers each power one group of your units (see Unit groups below). **Alternating draft:** the unit draft below |
 | **Modifiers** | **Free draft:** the modifier draft below. **Buckets:** the bucket draft - one ban in each of four buckets, then four picks, one from each (see the Modifier Draft) |
 | **Free draft size** | **Bans each** (0-4, default 2) and **Picks each** (1-5, default 3) for the free draft. Each click steps the number up and wraps around. Casual only: unavailable in Tournament (always 2 / 3), with Buckets, and in Testing |
+| **Doctrines** | A tick box (default off) and **Up to N each** (1-3, default 2; each click steps up and wraps; unavailable while the box is off). With the box ticked, one more step follows the unit stage (see Doctrines below). Casual and Tournament |
 
-The Roster and Modifiers rows are greyed out in Testing, which has no draft.
+Every row below Mode is greyed out in Testing, which has no draft.
 Choosing Unit groups forces the Buckets draft: Buckets shows as chosen and Free
 draft is unavailable.
 
@@ -34,7 +35,7 @@ draft is unavailable.
 |---|---|
 | **Casual** | The drafts below with no time limits, then a normal game. |
 | **Tournament** | The same, but every draft step (each race ban/pick, modifier ban/pick, unit pick/ban) has a **15-second** limit, shown at the top of the screen. Clicking a card only selects it (marked **[>] SELECTED**, visible to you alone); the **Confirm** button next to the clock takes it. When the clock runs out, your selection is taken — or, if you selected nothing, a random legal option. |
-| **Testing** | No draft. Everyone keeps their lobby race's town hall and gets **one SCV, one Probe and one Drone** (so all three races can be built), **100,000 minerals and gas**, **200 supply**, **instant** build/train/research/morph times and larva and **every unit unlocked**. A panel at the top right switches any modifier on or off for your side at will, with no activation delay. |
+| **Testing** | No draft. Everyone keeps their lobby race's town hall and gets **one SCV, one Probe and one Drone** (so all three races can be built), **100,000 minerals and gas**, **200 supply**, **instant** build/train/research/morph times and larva and **every unit unlocked**. A panel at the top right switches any modifier on or off for your side at will, with no activation delay; a second panel to its left does the same for doctrines. |
 
 The Testing panel is a dialog rather than command-card buttons: a command card
 would need an ability per modifier placed on every unit, which is the kind of
@@ -53,19 +54,23 @@ both players. Draft progress is shown
 on the draft screens only; nothing is posted to chat.
 
 ```
-Setup → Race Draft → Modifier Draft → Unit Draft → Summary (30s) → Game
+Setup → Race Draft → Modifier Draft → Unit Draft → [Doctrines] → Summary (30s) → Game
 ```
+
+Doctrines are an optional extra step (see below); it is skipped unless the
+setup screen's Doctrines box is ticked.
 
 Throughout, **P1** is the player who bans first and **P2** is the player who
 picks first. Referees and spectators see every draft screen read-only.
 
 ### YOLO
 
-Every draft stage - race, modifiers and units - has a **YOLO** button for each
+Every draft stage - race, modifiers, units and doctrines - has a **YOLO** button for each
 human player. It stays there until you make your own first choice (a ban or a
 pick) in that stage, then disappears. Pressing it is announced to everyone, and
 from then on **your turns in that stage are random**. It is per stage: going
-YOLO on the race says nothing about your modifiers or units. If it is your turn
+YOLO on the race says nothing about your modifiers or units. YOLO on doctrines
+picks random doctrines for you and locks in at once. If it is your turn
 when you press, the random action happens at once. An AI side never goes YOLO.
 What YOLO means in each stage is described in the stage and under modifier 16.
 
@@ -152,7 +157,7 @@ data files store game seconds, which tick 1.4× quicker.
 | 20 | Quickstep | Your units (workers excepted) accelerate and brake instantly and turn twice as fast, standing turns included |
 | 21 | Reinforcements | Every unit you create gets +50% move speed for 30s (shown on the unit as "Reinforcements"). Not workers, buildings, hallucinations, larva, eggs or spawned units like Interceptors and Locusts |
 | 22 | Field Repair | A unit that has taken no damage for 5s regains 3% of its max health (life + shields) every second until full or hit again: life first, then shields once life is full, on top of their normal regeneration. Not buildings or workers |
-| 23 | Photon Coating | The first 8s of each fight, a unit takes 20% less damage (shown on the unit as "Photon Coating"). A fight starts when the unit deals or takes damage, or begins an attack; the coating re-arms after 20s with none of that. Not buildings or workers |
+| 23 | Photon Coating | The first 8s of each fight, a unit takes 15% less damage (shown on the unit as "Photon Coating"). A fight starts when the unit deals or takes damage, or begins an attack; the coating re-arms after 20s with none of that. Not buildings or workers |
 
 **No modifier grants a clickable ability.** Every pick is either always-on or
 fires itself off a condition. Battle Blink, Salvage and Medivac Boost all used
@@ -235,6 +240,74 @@ Special cases:
   - **Ravager / Lurker / Brood Lord / Baneling** train straight from larva, if
     you didn't draft their parent; with the parent drafted you morph as usual.
 
+### Doctrines
+
+An optional step after the units (tick **Doctrines** on the setup screen). Each
+side picks up to N doctrines (1-3, default 2; fewer, even none, is fine), then
+locks in. Both players choose at the same time and see each other's picks only
+on the summary screen. Picks are not exclusive: both sides may take the same
+doctrine, so there is nothing to ban. In Tournament the step has a 30-second
+clock, after which your current picks are locked in.
+
+A doctrine is a trade-off for your army. **Every doctrine has a pro and a con,
+and the con is always about your own units (or your own units caught in a
+blast), so it always bites.** (The pro may depend on who you face; the con never
+does, because rosters are known when you pick.) A caster's con hits its casting
+(energy, max energy, regeneration), not just its health, since a High Templar
+spends its energy at once. Like modifiers, doctrines switch on at the activation time, and they
+only touch their own side's units. They do not depend on Unit groups. A card is
+marked N/A if none of your units are covered. "Health" means life and shields.
+
+The board has four columns.
+
+**All army units** (casters and support included)
+- **Loose Formation** - -40% splash damage taken, -20% health
+- **Spell Ward** - -40% spell damage taken, -15% health
+- **Deflector Plating** - -20% ranged damage taken, -15% move speed
+- **Riot Gear** - -40% melee damage taken, -10% health
+- **Phalanx** - +3 armor (life and shields), -25% health
+- **Heavy Plating** - +25% health, -15% move speed
+- **Stripped Down** - +20% move speed, -2 armor
+- **Battle Rhythm** - every 20s your army alternates Surge (+25% attack and move speed) and Lull (-20%), Surge first; you get a message at each turn
+- **Last Breath** - once every 45s a hit that would kill a unit does nothing; -20% health
+
+**Units with a weapon** (casters such as High Templar and Sentry are exempt;
+weapon damage never includes spells)
+- **Heavy Hitters** - +50% weapon damage per hit, attacks 35% slower
+- **Hair Trigger** - attacks 60% faster, -35% weapon damage per hit
+- **Armor-Piercing** - +40% weapon damage vs Armored, attacks 15% slower
+- **Anti-Personnel** - +40% weapon damage vs Light, attacks 15% slower
+- **Glass Cannon** - +30% weapon damage, -25% health
+- **Skirmishers** - +25% move speed, -20% weapon damage
+- **Last Stand** - +50% attack speed below 35% health, -15% health always
+- **Pack Tactics** - +5% weapon damage per other unit of yours within 3 (up to +25%), -15% health
+- **Lone Wolves** - with none of your other units within 4: +30% attack speed and +2 armor; otherwise attacks 10% slower
+
+**On hit, ranged and melee** (on-hit effects trigger on direct weapon hits only,
+not splash or spells; each costs weapon damage)
+- **Exposing Fire** - hits make the target take +25% damage from everything for 3s; -20% weapon damage
+- **Frost Rounds** - hits slow the target's movement 35% for 2s; -20% weapon damage
+- **Ricochet** - half of each hit also strikes the closest other enemy within 2.5; -25% weapon damage
+- **Culling Rounds** - a hit that leaves the target below 15% health destroys it; -15% weapon damage
+- **Ignite** - hits set the target burning for 3s (about 3% of its max health per second, no regeneration); -25% weapon damage
+- **Rapid Fire** (ranged) - +25% attack speed, -1 range
+- **Long Barrels** (ranged) - +1 range, attacks 20% slower
+- **Sniper Scopes** (ranged) - +2 range, -4 sight (you need a spotter)
+- **Bloodlust** (melee) - +35% attack speed, -2 armor
+
+**Whole army and units with energy**
+- **Champion** - your most expensive unit gets +60% health and +30% damage of every kind (a new one is crowned if it dies); every other unit -10% health
+- **Volatile Cores** - units explode on death for 30% of their max health to everything within 2, your own units included
+- **Bounty Hunters** - each enemy army unit your units kill pays you 15% of its cost; -10% health
+- **Spellweaver** - +35% spell damage, energy regenerates 30% slower
+- **War Banners** - your units within 4 of a unit with energy get +15% attack speed and +1 armor; -40% max energy
+- **Overcharged Cells** - double energy regeneration, -35% max energy
+- **Deep Reserves** - new units start with full energy, -40% energy regeneration
+
+Workers, structures, Overlords / Overseers / Observers, Changelings, cocoons
+and eggs get no doctrine. The in-game modifier panel lists each side's doctrines
+under its modifiers.
+
 ---
 
 ## How to play
@@ -279,6 +352,7 @@ randomize races, rosters and modifiers.
 | `ProtectDraft.galaxy` | Protect and Ban: the points + bans screen that replaces a side's unit draft. Dormant: nothing reaches it any more (see IDEAS.md). |
 | `RosterEnforce.galaxy` | Disables every non-drafted combat unit; grants coupled units. |
 | `UnitGroups.galaxy` | Unit groups: the split + modifier assignment screen, and the "does this modifier reach this unit" lookup. |
+| `Doctrine.galaxy` | Doctrines: the pick screen, the 34 doctrines and their unit classes, in-game application, the Testing doctrine panel. |
 | `CycleMod.galaxy` | Modifier draft + per-player in-game modifiers (legacy rotating-phase system kept behind `c_cyclePhaseMode`). |
 | `Debug.galaxy` | Solo-test detection, auto-run, logging. |
 

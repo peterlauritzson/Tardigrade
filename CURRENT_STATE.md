@@ -32,11 +32,14 @@ Runs on map init while the game is paused. Wired in `TardigradeLogic.galaxy`
 via a callback chain:
 
 ```
-Setup screen → Race Draft → Modifier Draft → Unit (Roster) Draft → Summary + 30s countdown → Game
+Setup screen → Race Draft → Modifier Draft → Unit (Roster) Draft → [Doctrines] → Summary + 30s countdown → Game
             ↘ (Testing) TestingMode_Start → Game
                                            ↘ (Full roster) skips the Unit Draft
-                                           ↘ (Unit groups) Modifier Draft (buckets) → Unit groups stage → Summary
+                                           ↘ (Unit groups) Modifier Draft (buckets) → Unit groups stage → [Doctrines] → Summary
 ```
+
+`[Doctrines]` is the optional stage after whichever unit stage ran (the setup
+screen's tick box).
 
 - `Tardigrade_Init` → `RaceDraft_Setup` (teams, deciders, P1/P2 roles, pause,
   draft lock, melee workers removed, viewer groups; `false` = no human, skip
@@ -46,19 +49,28 @@ Setup screen → Race Draft → Modifier Draft → Unit (Roster) Draft → Summa
 - `Tardigrade_OnDraftFinished` → `CycleMod_StartDraft` (the Buckets hook sits
   there: `GameMode_IsBuckets()` switches it to the bucket draft)
 - `Tardigrade_OnCycleFinished` → `RosterDraft_Start`, or, with Full roster, fills
-  the `g_roster_*` race/player globals and goes straight to `Tardigrade_StartGame`.
+  the `g_roster_*` race/player globals and goes straight to `Tardigrade_AfterUnits`.
   With Unit groups (checked first - `GameMode_IsFullRoster()` is true there too)
   it fills the same globals and calls `UnitGroups_Start`, whose callback
-  `Tardigrade_OnGroupsFinished` runs `Tardigrade_StartGame`.
-- `Tardigrade_OnRosterFinished` → `Tardigrade_StartGame`
+  `Tardigrade_OnGroupsFinished` goes to `Tardigrade_AfterUnits`.
+- `Tardigrade_OnRosterFinished`, `Tardigrade_OnGroupsFinished` and the Full
+  roster branch all end in `Tardigrade_AfterUnits`. With `GameMode_DoctrinesOn()`
+  it runs `Doctrine_Start`, whose callback `Tardigrade_OnDoctrinesFinished` runs
+  `Tardigrade_StartGame`; without the box it goes straight to
+  `Tardigrade_StartGame`.
 
 `Tardigrade_StartGame` shuts the Tournament timer down, shows
 `Tardigrade_SummaryCountdown` (one dialog: both sides' race / YOLO / PROTECT
-tag, modifiers with descriptions, units; `c_tardigradeCountdown` = 30s real
+tag, modifiers with descriptions, doctrines, units; `c_tardigradeCountdown` = 30s real
 time, in 0.25s ticks of `g_sum_left`), **then** applies roster enforcement
 (moved after the summary because a YOLO roster can change there), starts the
 modifier scan loop, and unpauses (`GameSetMissionTimePaused(false)` +
 `Tardigrade_DraftLock_Stop()`).
+
+`Tardigrade_SummaryColumn` appends `Doctrine_SummaryBlock` (a DOCTRINES heading,
+each picked doctrine's name with its small description, or "none") after MODIFIERS
+and before UNITS; the dialog and its columns grow by `Doctrine_SummaryExtra()` =
+40 + 36 x the picks limit (`GameMode_DoctrinePicks()`).
 
 **Summary screen buttons** (`Tardigrade_SummaryOnClicked`): each decider
 (`g_draft_p1` / `g_draft_p2`) has a READY card that stays locked in once
@@ -88,18 +100,27 @@ card columns move left via `g_cycle_boardShift`; the legacy phase board keeps
 ### 0. Setup screen and game modes (`GameMode.galaxy`, `TestingMode.galaxy`)
 - **Setup screen** (`GameMode_Select`, replaces the old mode screen): one dialog
   for `g_draft_modeChooser` = team 1's human decider (the only human in a PvAI
-  game) with four rows and Start: **Mode** (Casual / Tournament / Testing),
+  game) with five rows and Start: **Mode** (Casual / Tournament / Testing),
   **Roster** (Full roster / Unit groups / Alternating draft, cards at x -190 / 0 /
   190, width 180), **Modifiers** (Buckets / Free draft) and **Free draft size**
-  (Bans each / Picks each, two 280-wide cards at y 400; dialog 600x600, Start
-  at y 490). Defaults Casual, Alternating draft, Free draft, 2 bans, 3 picks.
+  (Bans each / Picks each, two 280-wide cards at y 400) and **Doctrines**
+  ("DOCTRINES (trade-offs, picked after the units)" at y 478, two 280-wide cards
+  at y 498; dialog 600x700, Start at y 588). Defaults Casual, Alternating draft,
+  Free draft, 2 bans, 3 picks, doctrines off, 2 each.
   A click selects (the
   chosen card is drawn `c_draftStateSelected`, "CHOSEN"); Start commits and runs
   the callback. Everyone else sees the same dialog disabled and updating live
-  with "Player N is setting up..." Selecting Testing greys the Roster and
-  Modifiers rows (`c_draftStateTaken`). Selecting Unit groups forces the bucket
+  with "Player N is setting up..." Selecting Testing greys every row below Mode
+  (Roster, Modifiers, Free draft size, Doctrines; `c_draftStateTaken`). Selecting Unit groups forces the bucket
   draft: Buckets is drawn chosen, Free draft N/A (`c_draftStateTaken`), and
-  clicking Free draft does nothing. **Free draft size** is live only when
+  clicking Free draft does nothing. **Doctrines row:** the first card is a tick box ("[x] Doctrines" drawn chosen
+  with the CHOSEN chip, or "[ ] Doctrines"), the second is "Up to N each" (steps
+  1..`c_gameDocPicksMax` = 3 and wraps; N/A while the box is off). Defaults: off,
+  `c_gameDocPicksDefault` = 2. Kept in `g_game_doctrines` / `g_game_docPicks`,
+  read through `GameMode_DoctrinesOn()` (ticked and not Testing) and
+  `GameMode_DoctrinePicks()`. Available in Casual and Tournament. Cards are drawn
+  by `GameMode_SetupDrawCardTag` (`GameMode_SetupDrawCard` wraps it with
+  "CHOSEN"). See 3b. **Free draft size** is live only when
   `GameMode_FreeSizeLive()` (Casual and not `GameMode_IsBuckets()`), otherwise
   both cards are N/A and clicks do nothing. Each click steps the number up and
   wraps: bans 0..`c_gameModBansMax` (4), picks 1..`c_gameModPicksMax` (5), kept
@@ -181,6 +202,13 @@ card columns move left via `g_cycle_boardShift`; the legacy phase board keeps
     broodling magazine, whose 2.5s build paces the attack; rushing it made
     them fire as fast as the weapon cycled. Carrier interceptors are still
     rushed (a rebuild, not the attack rate).
+  - **Doctrine panel:** `Doctrine_InitTestPanel(p)`, called from
+    `TestingMode_SetupTeam` next to `TestingMode_InitPanel`: a second foldable
+    panel "Test Doctrines", 540 wide (two columns of 17, `c_docTestPerCol`), top
+    right at x offset 348 (left of the 330-wide modifier panel), one `[ON]` /
+    `[off]` button per doctrine (28px pitch). A click switches the doctrine for the clicker's whole side, posts a
+    chat line and sets `g_doc_ever` so the scan also removes it when switched
+    off. No activation delay in Testing.
   - **Supply:** `TestingMode_HoldSupply` sets Supplies Limit and Supplies
     Made to `c_testingSupply` = 200 for both teams on every scan tick, so
     building or losing a supply provider cannot move it. **Unverified** that
@@ -274,8 +302,10 @@ card columns move left via `g_cycle_boardShift`; the legacy phase board keeps
 ### 2. Modifier Draft (`CycleMod.galaxy`)
 The former "cycle" draft. **Per-player draft, no rotation.**
 - **YOLO is per stage.** Each side has a YOLO flag per stage
-  (`g_cycle_p1Yolo[3]` / `p2Yolo[3]`, stages `c_stageRace` / `c_stageMod` /
-  `c_stageRoster` in `GameMode.galaxy`; read with `CycleMod_SideIsYolo(isP1,
+  (`g_cycle_p1Yolo[4]` / `p2Yolo[4]`, and the `p1Acted` / `p2Acted` arrays;
+  stages `c_stageRace` / `c_stageMod` / `c_stageRoster` / `c_stageDoctrine` = 3
+  in `GameMode.galaxy`; `CycleMod_StageName` returns "doctrines" for the last
+  and `CycleMod_YoloStagesText` lists it; read with `CycleMod_SideIsYolo(isP1,
   stage)`) and an "acted" flag (`CycleMod_SideMarkActed`: the side's own first ban
   or pick in the stage). Each stage dialog has a YOLO button
   (`CycleMod_YoloButtonUpdate`) for the decider of a side that is human, not
@@ -618,6 +648,193 @@ before `Tardigrade_StartGame`.
   (`RosterHUD_InitAudience`, unaffected by this change) showing both P1 and
   P2 rosters side by side.
 
+### 3b. Doctrines (`Doctrine.galaxy`)
+Setup option **Doctrines** (`GameMode_DoctrinesOn()`): an optional stage after
+the unit stage (Unit draft, Full roster's none, or the Unit groups stage) and
+before the summary. Each side picks up to `GameMode_DoctrinePicks()` of 34
+**trade-offs** for its army, then locks in. Included from `TardigradeLogic` after
+`UnitGroups`, before `TestingMode`. Testing has no stage (see its doctrine panel);
+the legacy phase mode never uses it.
+
+**Design rule:** every doctrine has a pro and a con, and the CON is always a
+stat on the side's own units (health, speed, armor, attack speed, range, sight,
+energy, or its own units caught in a blast), so it always bites. The PRO may
+depend on the matchup. Reason: rosters are known when doctrines are picked, so a
+con that only applied against certain enemies (e.g. "+50% splash damage taken")
+would be free against a roster without them. A caster's con hits casting (energy,
+max energy, regen), never only its health, because a burst caster like a High
+Templar spends its energy at once; that is why Overcharged Cells costs max energy.
+Max energy changes do not keep the energy percent (clamping is intended). "Health" below is life and shields. "Weapon damage" never includes
+spells (Spell kind excluded).
+
+**Stage** (modelled on `UnitGroups`): both human deciders pick at once and cannot
+see each other's picks until the summary. Picks are **not** exclusive: both sides
+may take the same doctrine, so there is nothing to ban and no turn order. One
+human deciding both sides (`g_draft_p1 == g_draft_p2`) picks P1, then P2. Click a
+card to pick it, click a picked card to drop it; up to the picks limit, and fewer
+(even zero) is allowed. Lock in is greyed for `c_docGrace` = 2 real seconds at
+each step start. Tournament: `DraftTimer_ArmFor(Doctrine_AutoAct, c_docSeconds =
+30, "then your current picks are locked in")`; expiry locks every unlocked side as
+it stands. YOLO reuses `c_stageDoctrine`: the button picks random doctrines (only
+those that touch the side's units) and locks in at once, and a side already YOLO at
+step start is rolled and locked. A side's first card click or its Lock in marks it
+acted. Spectators get status lines only. The title notes that doctrines switch on
+at the activation time, with the modifiers.
+
+**Dialog** 1100 x 710: title y 16, status 46, info 68, four column headings at
+y 96, 4 columns x up to 9 rows of cards 255 x 48 at x -398 / -133 / 132 / 397,
+y 114 + (row-1) x 52 (`Doctrine_Column` / `Doctrine_Row`), picks line y 590, YOLO
+and Lock in at y 630. Columns: "ALL ARMY UNITS" (1-7, 28, 29), "UNITS WITH A WEAPON"
+(8-14, 26, 27), "ON HIT / RANGED / MELEE" (21-25, 15-18), "WHOLE ARMY / ENERGY UNITS"
+(30-34, 19, 20). Cards show a short line (`Doctrine_Card`); tooltips the full text
+(`Doctrine_Desc` + `Doctrine_Note`). **Card states:** PICKED (`c_draftStateSelected`), N/A ("none
+of your units": no unit the side can build is covered - checked against the
+drafted roster, or the race's whole pool with Full roster / Unit groups; a Swarm
+Host, Carrier or Brood Lord counts through its Locusts / Interceptors /
+Broodlings), LIMIT (the side is at its limit), open. Tooltip: name, effect, scope,
+fine print (`Doctrine_Note`) and a "Your units: ..." list.
+
+**Commit** (`Doctrine_Commit`): sets `g_doc_ever` / `g_doc_anyEver` for every
+picked doctrine, `g_doc_done` (`Doctrine_InPlay()`), logs "Doctrines P1: ...",
+disarms the timer, destroys the dialog and trigger, runs the callback.
+`Doctrine_RandomizeAll()` is the debug auto-run's random picks + commit.
+
+**The 34 doctrines** (index order; board placement is `Doctrine_Column` /
+`Doctrine_Row`, see the dialog above; buff ids in `BehaviorData.xml`):
+
+| # | Name | Scope | Effect | Buff |
+|---|---|---|---|---|
+| 1 | Loose Formation | Army | -40% splash damage taken, -20% health | `TardigradeDoc_LooseFormation` |
+| 2 | Spell Ward | Army | -40% spell damage taken, -15% health | `TardigradeDoc_SpellWard` |
+| 3 | Deflector Plating | Army | -20% ranged damage taken, -15% move speed | `TardigradeDoc_DeflectorPlating` |
+| 4 | Riot Gear | Army | -40% melee damage taken, -10% health | `TardigradeDoc_RiotGear` |
+| 5 | Phalanx | Army | +3 armor (life and shields), -25% health | `TardigradeDoc_Phalanx` |
+| 6 | Heavy Plating | Army | +25% health, -15% move speed | `TardigradeDoc_HeavyPlating` |
+| 7 | Stripped Down | Army | +20% move speed, -2 armor | `TardigradeDoc_StrippedDown` |
+| 8 | Heavy Hitters | Weapon | +50% weapon damage per hit, attacks 35% slower | `TardigradeDoc_HeavyHitters` |
+| 9 | Hair Trigger | Weapon | attacks 60% faster, -35% weapon damage per hit | `TardigradeDoc_HairTrigger` |
+| 10 | Armor-Piercing | Weapon | +40% weapon damage vs Armored, attacks 15% slower | `TardigradeDoc_ArmorPiercing` |
+| 11 | Anti-Personnel | Weapon | +40% weapon damage vs Light, attacks 15% slower | `TardigradeDoc_AntiPersonnel` |
+| 12 | Glass Cannon | Weapon | +30% weapon damage, -25% health | `TardigradeDoc_GlassCannon` |
+| 13 | Skirmishers | Weapon | +25% move speed, -20% weapon damage | `TardigradeDoc_Skirmishers` |
+| 14 | Last Stand | Weapon | +50% attack speed below 35% health (life + shields), -15% health always | `TardigradeDoc_LastStand` (+ `TardigradeDoc_LastStandActive`) |
+| 15 | Rapid Fire | Ranged | +25% attack speed, -1 range | `TardigradeDoc_RapidFire` |
+| 16 | Long Barrels | Ranged | +1 range, attacks 20% slower | `TardigradeDoc_LongBarrels` |
+| 17 | Sniper Scopes | Ranged | +2 range, -4 sight (needs a spotter) | `TardigradeDoc_SniperScopes` |
+| 18 | Bloodlust | Melee | +35% attack speed, -2 armor | `TardigradeDoc_Bloodlust` |
+| 19 | Overcharged Cells | Energy | double energy regeneration (+0.5625/s flat), -35% max energy | `TardigradeDoc_OverchargedCells` |
+| 20 | Deep Reserves | Energy | new units start with full energy, -40% energy regen (-0.225/s) | `TardigradeDoc_DeepReserves` |
+| 21 | Exposing Fire | Weapon | direct weapon hits make the target take +25% damage from every source for 3s (refreshed per hit); -20% weapon damage | `TardigradeDoc_ExposingFire` (target debuff `TardigradeDoc_Exposed`) |
+| 22 | Frost Rounds | Weapon | direct weapon hits slow the target's movement 35% for 2s; -20% weapon damage | `TardigradeDoc_FrostRounds` (`TardigradeDoc_Chilled`) |
+| 23 | Ricochet | Weapon | half of each direct weapon hit (of the damage that landed) also strikes the closest other enemy within 2.5 on the target's plane, no further bounces; -25% weapon damage | `TardigradeDoc_Ricochet` |
+| 24 | Culling Rounds | Weapon | a direct weapon hit that leaves the target below 15% health (life + shields) destroys it; -15% weapon damage | `TardigradeDoc_CullingRounds` |
+| 25 | Ignite | Weapon | direct weapon hits set the target burning for 3s: ~3% of its max health per real second (1% per 0.5s scan tick, self-inflicted, no kill credit) and no regeneration of life, shields or energy; -25% weapon damage | `TardigradeDoc_Ignite` (`TardigradeDoc_Burning`) |
+| 26 | Pack Tactics | Weapon | +5% weapon damage per other army unit of yours within 3 (not workers, Larva, eggs, Interceptors, Locusts or Broodlings), up to +25%; -15% health | `TardigradeDoc_PackTactics` (+ tiers `TardigradeDoc_Pack1`..`Pack5`) |
+| 27 | Lone Wolves | Weapon | with none of your other army units within 4 (same counting as Pack Tactics): +30% attack speed and +2 armor; otherwise attacks 10% slower | `TardigradeDoc_LoneWolves` (`TardigradeDoc_LoneWolfAlone` / `LoneWolfCrowded`) |
+| 28 | Battle Rhythm | Army | every 20 real seconds (28 game) the army alternates Surge (+25% attack and move speed) and Lull (-20% attack and move speed), Surge first, clock starts when doctrines go live; the owning team gets a subtitle message at each turn | `TardigradeDoc_BattleRhythm` (`TardigradeDoc_RhythmSurge` / `RhythmLull`) |
+| 29 | Last Breath | Army | once every 45s a hit that would kill the unit does nothing; -20% health always | `TardigradeDoc_LastBreath` (`TardigradeDoc_LastBreathReady` / `LastBreathSpent`) |
+| 30 | Champion | Army core | your most expensive unit (minerals + gas) becomes the Champion: +60% health, +30% damage of every kind incl. spells; every other covered unit -10% health | `TardigradeDoc_ChampionRanks` (everyone but the Champion), `TardigradeDoc_ChampionCrown` |
+| 31 | Volatile Cores | Army core | units explode on death for 30% of their max health (catalog floor) to every unit of either side within 2, yours included | `TardigradeDoc_VolatileCores` |
+| 32 | Bounty Hunters | Army | each enemy army unit killed by one of your units pays you 15% of its cost (minerals and gas); -10% health | `TardigradeDoc_BountyHunters` |
+| 33 | Spellweaver | Energy | +35% spell damage; energy regenerates 30% slower | `TardigradeDoc_Spellweaver` |
+| 34 | War Banners | Energy | each unit with energy gives your army units within 4 (itself included) +15% attack speed and +1 armor; -40% max energy | `TardigradeDoc_WarBanners` (aura buff `TardigradeDoc_Bannered`) |
+
+Scopes: **Army** = every army unit, casters and support included; **Weapon** =
+units with a real weapon, casters exempt; **Ranged** / **Melee** / **Energy** =
+that class (Energy is on top of the unit's other class); **Army core**
+(`c_docScopeArmyCore`) = Army minus the spawned attackers (class bit
+`c_docClsSpawned`: Interceptors, Locusts, Broodlings) and never hallucinations.
+The board's columns group them for the player rather than by scope (see Dialog).
+
+**Unit classes.** Explicit lists in `Doctrine.galaxy` (`c_docRangedTypes`,
+`c_docMeleeTypes`, `c_docSpawnedTypes`, `c_docSupportTypes`, `c_docEnergyTypes`),
+cached per type in the data table `"TgDocC_<type>"` by `Doctrine_ClassOf`
+(bits `c_docCls*`, including `c_docClsSpawned`; alternate forms carry the base unit's class,
+`Doctrine_ChildOf`). `Doctrine_Covers(d, cls)` maps a scope to those bits.
+- **Ranged:** Marine, Marauder, Reaper, Ghost, Hellion, Hellbat (HellionTank),
+  Cyclone, Siege Tank, Thor, Viking, Liberator, Banshee, Battlecruiser, Stalker,
+  Adept, Archon, Immortal, Colossus, Phoenix, Void Ray, Oracle, Tempest, Carrier,
+  Mothership, Queen, Roach, Ravager, Hydralisk, Lurker, Mutalisk, Corruptor,
+  Brood Lord.
+- **Melee:** Zealot, Dark Templar, Zergling, Ultralisk.
+- **Spawned attackers** (a weapon, neither melee nor ranged): Interceptor, Locust
+  (both forms), Broodling.
+- **Army only** (no real weapon): High Templar, Sentry, Medivac, Raven, Infestor,
+  Viper, Widow Mine, Warp Prism, Disruptor, Swarm Host, Baneling. High Templar and
+  Sentry have token attacks and are left out of the weapon doctrines on purpose.
+- **Energy** (on top of the class): Ghost, Banshee, Oracle, Queen, High Templar,
+  Sentry, Medivac, Raven, Infestor, Viper. Battlecruiser, Mothership and Thor have
+  no energy in ladder data.
+- **Never touched:** workers, structures (incl. Auto-Turret),
+  Overlord / Overseer / Observer / Changeling, cocoons / eggs / Larva, Adept
+  shades, Disruptor novas, MULE. All 47 pool units are classified.
+
+**In game.** `CycleMod_ScanTrigger` calls `Doctrine_ApplyToUnit(u)` for every unit
+(draft branch, after `CycleMod_UpdateOpeningVision`). It returns at once until any
+doctrine was ever picked (`g_doc_anyEver`), skips units of neither side, workers
+and structures, then for each doctrine with `g_doc_ever` set adds or removes its
+buff (want = `CycleMod_ModsLive()` and the side has it and `Doctrine_Covers`).
+Doctrines respect the activation delay like modifiers, only reach their own
+side's units, and are global in Unit groups mode (not group-scoped). The
+`TardigradeDoc_*` buffs are permanent (no Duration) and visible (InfoIcon +
+GameStrings name / tooltip).
+- `Doctrine_SetBuff` restores the life / shield PERCENT after adding or removing a
+  health-changing doctrine (`Doctrine_ChangesHealth`, see below), because
+  a vital-max change can refill a unit (SC2Mapster forum report).
+- **Last Stand** adds `TardigradeDoc_LastStandActive` (`AttackSpeedMultiplier` 1.5)
+  while `CycleMod_BlinkHealthFraction` < `c_docLastStandAt` 0.35.
+- **Deep Reserves:** `Doctrine_FillEnergy` sets energy to 100% when the buff first
+  reaches a unit, once per unit tag (data table `"TgDocF_<tag>"`, never cleared,
+  energy units only), and not during the first game second doctrines are live
+  (`g_doc_liveAt`), so units alive at activation are not refilled.
+- **Doctrine_ScanTick** runs once per scan pass (forward-declared in CycleMod,
+  called at the top of the scan loop, before the units): it crowns the Champion
+  when doctrines go live and again each time the Champion dies (from the
+  candidates the previous pass saw; floating "Champion" text) and announces Battle
+  Rhythm's phases to the owning team (subtitle).
+- **Hooks.** `Doctrine_InitHooks` (from `CycleMod_StartCycle`) registers
+  `Doctrine_OnWeaponHit` for `c_unitDamageTypeMelee` and `c_unitDamageTypeRanged`
+  only - direct weapon hits; splash victims, spells and the mod's own bonus effects
+  never reach it - and `Doctrine_OnUnitDied`. OnWeaponHit applies Exposing Fire,
+  Frost Rounds and Ignite to the target, bounces Ricochet and finishes Culling
+  Rounds; OnUnitDied pays Bounty Hunters (floating gold "+N" for the owner;
+  workers, buildings, hallucinations and self-inflicted deaths pay nothing) and sets
+  off Volatile Cores (floating "BOOM"; each victim deals the blast to itself, no
+  kill credit; chains up to 6 deep; not on morphs, merges, cocoons or
+  hallucinations).
+- **Bonus effects** (`EffectData.xml`, Amount 0, ArmorReduction 0):
+  `TardigradeDoc_RicochetHit` (Splash), `_CullHit` (Spell), `_BurnTick` (Spell),
+  `_VolatileBlast` (Splash). Every attacker-side damage response in the doctrine
+  buffs, and Open Skies' two, excludes these and `TardigradeMod_OverwatchBonus`, so
+  a bonus computed from landed damage is never multiplied again.
+- **On-hit debuffs** `TardigradeDoc_Exposed` / `_Chilled` / `_Burning` use the
+  target as their own caster, so re-adding refreshes them. Ignite's burn is 1% of
+  max health per 0.5s scan tick and stops life, shield and energy regeneration.
+- **Per-doctrine state** kept by `Doctrine_ApplyToUnit`: Pack Tactics' tier buff
+  (`Pack1`..`Pack5` by count of other non-workers within 3), Lone Wolves'
+  alone / crowded buff (radius 4), Battle Rhythm's Surge / Lull, War Banners'
+  `Bannered` aura (short, refreshed, non-stacking).
+- **Last Breath** is data-driven: `TardigradeDoc_LastBreathReady` carries a Fatal
+  damage response (`ModifyFraction` 0) whose Handled effect set removes Ready and
+  adds Spent (45s) on the Caster (the unit itself); the scan re-adds Ready when
+  Spent ends. Kill-flag effects are excluded, so Banelings still die to their own
+  blast.
+- `Doctrine_ChangesHealth` is now 1 2 4 5 6 12 14 26 29 30 32. Overcharged Cells,
+  Overcharged Cells and War Banners lower max energy through the Energy
+  `VitalMaxFractionArray` and do not keep the energy percent.
+- The in-game panel row, summary block and Testing panel are described under the
+  Modifier panel, Draft chain and Testing sections.
+
+**Data conventions** (header comment of `BehaviorData.xml`): damage dealt or taken
+uses `DamageResponse` `ModifyFraction` (a multiplier; `Location="Attacker"` for
+damage dealt, like Open Skies; none for damage taken, like Photon Coating), with
+Kind filters and, for damage taken, Photon Coating's Kill-flag
+`ExcludeEffectArray` list. A second DOCTRINES section holds the on-hit,
+aura, Last Breath and Champion buffs. Armor-Piercing / Anti-Personnel use `TargetFilters`
+`Armored;-` / `Light;-`. Health is `VitalMaxFractionArray` written as an ADDED
+fraction (0.25 = +25%) per the SC2Mapster wiki - **unverified**. Unverified items
+are in the Known TODO table.
+
 ---
 
 ## Modifier system (in-game) — `CycleMod.galaxy`
@@ -885,6 +1102,9 @@ catalog is far smaller than 2048).
 ### How effects reach units
 - `CycleMod_ScanTrigger` — 0.5s loop over all map units. In draft mode it applies
   each side's picked behaviors to that side's own units and clears the rest.
+- In the draft branch, after `CycleMod_UpdateOpeningVision`, the scan also calls
+  `Doctrine_ApplyToUnit(u)` for every unit (see 3b). It returns at once until any
+  doctrine was ever picked (`g_doc_anyEver`).
 - `CycleMod_UnitModActive` maps a unit's owner → side (via `g_draft_p1_is_team1`
   + team groups) → whether that side drafted the behavior.
 - Ownership helpers: `CycleMod_OwnerIsP1/P2`, `CycleMod_P1Team/P2Team`,
@@ -905,6 +1125,11 @@ catalog is far smaller than 2048).
   the same terms as players. Per-viewer
   **YOURS / OPPONENT** (spectators see PLAYER 1 / PLAYER 2), lists both sides'
   modifiers (`CycleMod_PicksEach()` rows each); title notes "(active at 3:00)".
+  When `Doctrine_InPlay()` each side gets one more row under its modifiers
+  ("Doctrines  name, name"; `Doctrine_PanelLine`, tooltip `Doctrine_PanelTip`
+  lists each with effect and scope): `CycleMod_PanelDocRow()` = 20,
+  `CycleMod_PanelHeight()` + 40, arrays `g_cycle_panelDocMine` /
+  `g_cycle_panelDocOpp` `[16]`.
 
 ### The 23 modifiers
 | # | Name | Effect | Implementation |
@@ -931,7 +1156,7 @@ catalog is far smaller than 2048).
 | 20 | Quickstep | Instant acceleration and double turn rate on everything but workers | **Unverified.** Per-player catalog change, `CycleMod_QuickstepForPlayer` (applied at 3:00, toggled by the testing panel): one cached sweep of the Unit catalog (`CycleMod_EnsureQuickstepCache`), then `Acceleration` / `Deceleration` set to 1000 (Blizzard's "instant") where they are 0 < x < 1000, and `TurningRate` / `StationaryTurningRate` ×2 where > 0. Shipped values live in `CycleMod_CatalogBase`, so toggling cannot compound. `LateralAcceleration` deliberately untouched. Debug log counts fields written. Unknown: whether units already on the map re-read the CUnit movement fields |
 | 21 | Reinforcements | New units: +50% move speed for 30s (42 game) | **Unverified.** `CycleMod_TryReinforcements`, from `CycleMod_OnUnitSpawned` (before its child-type bail) and from the scan's first-sighting branch. "New" = `c_cycleStateRegistered` still 0, which keeps a producer the event may name from being buffed. Gate is `CycleMod_UnitModActive` (reads the side's picks, so a unit with no markers yet works) plus `CycleMod_CanShareDamage` eligibility. Adds `TardigradeMod_ReinforcementsRush` (`MoveSpeedMultiplier` 1.5, `TimeScaleSource Global`, visible). Stat: units boosted. Units created before 3:00, and ones first seen late because they were hidden, miss it |
 | 22 | Field Repair | After 5s (7 game) without taking damage: regain 3% of max life + max shields per real second, life first, then shields once life is full | **Unverified.** Slot 4 `c_cycleStateLastDamaged`, stamped on the TARGET at the top of `CycleMod_OnUnitDamaged` (before the null-source bail) and at `CycleMod_RegisterUnit`. `CycleMod_TryFieldRepair` runs per unit in `CycleMod_UpdateConditionalBehaviors`: `(maxLife + maxShields) × 0.03 / 1.4 × 0.5` per 0.5s tick, capped to `CycleMod_MendRoom`, paid through `CycleMod_Mend` (life first, overflow into shields, on top of natural shield regen). In `CycleMod_ModSkipsStructures`. Stat: life + shields repaired |
-| 23 | Photon Coating | First 8s (11.2 game) of each fight: damage taken ×0.8; re-arms after 20s (28 game) with no combat | **Unverified.** Slot 7 `c_cycleStatePhotonLastCombat`. `CycleMod_TryPhotonCoating` on both ends of a hostile hit in `CycleMod_OnUnitDamaged` (plus the spawner root) and on `CycleMod_OnUnitStartedAttack` (needs an enemy near, so rocks and critters don't spend it): adds `TardigradeMod_PhotonCoatingActive` (`DamageResponse ModifyFraction=0.8`, no Location = damage taken, Kill-flag effects excluded, `TimeScaleSource Global`) if last combat was never or ≥ 28 game s ago, then always stamps. Stat: damage prevented, estimated as landed × 0.25 on coated targets. The hit that arms it lands in full. In `CycleMod_ModSkipsStructures` |
+| 23 | Photon Coating | First 8s (11.2 game) of each fight: damage taken ×0.85; re-arms after 20s (28 game) with no combat | **Unverified.** Slot 7 `c_cycleStatePhotonLastCombat`. `CycleMod_TryPhotonCoating` on both ends of a hostile hit in `CycleMod_OnUnitDamaged` (plus the spawner root) and on `CycleMod_OnUnitStartedAttack` (needs an enemy near, so rocks and critters don't spend it): adds `TardigradeMod_PhotonCoatingActive` (`DamageResponse ModifyFraction=0.85`, no Location = damage taken, Kill-flag effects excluded, `TimeScaleSource Global`) if last combat was never or ≥ 28 game s ago, then always stamps. Stat: damage prevented, estimated as landed × 0.25 on coated targets. The hit that arms it lands in full. In `CycleMod_ModSkipsStructures` |
 
 Notes:
 - **War Economy was removed** (it made no sense without phases) and replaced by
@@ -1070,7 +1295,10 @@ Notes:
 - `Tardigrade_DebugAutoRun` assigns **6 distinct random modifiers**, 3 per player
   (through `CycleMod_SetSideMod`; YOLO is never rolled, it is a meta pick),
   **then** the rosters. It never presses a YOLO button and uses the setup
-  defaults (alternating draft, free draft).
+  defaults (alternating draft, free draft, no doctrines stage). After rosters
+  and unit groups, right before `Tardigrade_StartGame`, it calls
+  `Doctrine_RandomizeAll()` (random picks per side from the doctrines that touch
+  its units, then commit).
 - `Debug_Log(...)` writes to the debug log; viewer-group counts are logged on
   refresh.
 
@@ -1079,7 +1307,7 @@ Notes:
 ## Data files
 | File | Contents |
 |---|---|
-| `BehaviorData.xml` | `TardigradeMod_*` modifier buffs + helper behaviors (`Entrenched`, `OverwatchReady`, `OverwatchFiring`, `VeteranStack`, `Salvaging`, etc.), the absorbing `TardigradeMod_SharedDamage`, and empty markers for modifiers 11–13 and 15–17. |
+| `BehaviorData.xml` | `TardigradeMod_*` modifier buffs + helper behaviors (`Entrenched`, `OverwatchReady`, `OverwatchFiring`, `VeteranStack`, `Salvaging`, etc.), the absorbing `TardigradeMod_SharedDamage`, and empty markers for modifiers 11–13 and 15–17. Also the `TardigradeDoc_*` doctrine buffs (permanent, visible; conventions in the file's header comment). |
 | `EffectData.xml` | `TardigradeAbil_Blink` (`CEffectTeleport`) — created directly by `CycleMod_TryBattleBlink`, no ability wraps it — `TardigradeMod_OverwatchBonus` (`CEffectDamage`), the payload `CycleMod_OnUnitDamaged` fires for Overwatch, and `TardigradeMod_SharedDamageHit` (one Shared Damage share). |
 | `AbilData.xml` | `LarvaTrain` / `GatewayTrain` / `WarpGateTrain` fallback InfoArray entries only. **No modifier abilities left** — Blink, Salvage and Medivac Boost were all removed in favour of conditions. |
 | `UnitData.xml` | `Larva` command-card layout for the larva-build fallbacks, and nothing else. The ~150 lines of `AbilArray` grants and `CardLayouts` cells (Blink + Medivac Boost on 49 combat units, Salvage on 64 structures) are all gone — no modifier puts a button on any command card. |
@@ -1100,6 +1328,7 @@ Notes:
 | `ProtectDraft.galaxy` | Protect and Ban points + bans screen; runs before the unit draft. Included after `RosterDraft`. |
 | `RosterEnforce.galaxy` | Disables non-drafted units; grants coupled units. |
 | `UnitGroups.galaxy` | Unit groups roster option: split + modifier-assignment stage, group data, `UnitGroups_Covers` lookup. Included after `RosterEnforce`, before `TestingMode`. |
+| `Doctrine.galaxy` | Doctrines stage, doctrine data and unit classes, in-game application, Testing doctrine panel. Included after `UnitGroups`, before `TestingMode`. |
 | `RequirementData.xml` | Un-gates the upgrade buttons Blizzard hid behind `CRequirementAllowUnit` (Protoss air weapons/armor, Stimpack) — see Roster enforcement. |
 | `CycleMod.galaxy` | Modifier draft + per-player in-game modifiers (+ gated legacy phase system). |
 | `Debug.galaxy` | Solo-test detection, auto-run, logging. |
@@ -1141,6 +1370,7 @@ Notes:
 | **This batch, unverified in-editor** (game modes, modifiers 15–17, Auto Refineries changes) | Nothing here has been compiled or played. Check, in order: **(1) compile** — five files changed plus two new ones. **(2) Minerals Only** — the debug log line "Cost paths: …" says which field-path spelling the probe picked, and "Minerals Only: N unit types, M ability cost slots" should be non-zero (dozens / ~80). In game: a Stalker should read and cost 200/0, Stimpack 250/0, Lair 300/0 from a Hatchery; mined gas should appear as minerals within half a second. **(3) Auto Refineries** — a Refinery costs 200 from 0:00 and self-mines from 0:00. **(4) Tournament** — the countdown shows during each step and a random pick lands at 0, including a YOLO side's auto-bans not waiting on the clock. **(5) YOLO** — the YOLO? screen appears before the bans, hides each choice until both lock in, a YOLO side's modifier bans happen by themselves and its picks are skipped, both YOLO skips the board, 7 random units dealt, the other side drafts 6 with no bans against YOLO, the 7th row renders on the draft panel and HUD. **(6) Testing** — `UnitSetProgressComplete` really finishes construction/training/research/morphs (slot numbering is the unknown), the panel toggles, and switching a catalog modifier off restores prices/ranges. **(7) Factory Lines** — the "Factory Lines: … time fields" log line is non-zero (hundreds); a Marine (18s) takes ~15.7s, a Supply Depot (21s) ~18.3s, an SCV still 12s; Siege Mode is unchanged. |
 | **Setup screen / per-stage YOLO / Full roster, unverified in-editor** | Nothing compiled or played. Check: **(1) compile** (GameMode, CycleMod, RaceDraft, RosterDraft, RosterEnforce, TardigradeLogic). **(2) Setup screen** - three rows plus Start, others see it disabled and live, Testing greys Roster/Modifiers. **(3) YOLO button** on each stage: appears only for a human side before its first choice, vanishes after, announces in chat, immediate random action on the side's own turn, race/modifier/unit behaviour as described; lone human deciding both sides gets it for the side that is up; both-YOLO on modifiers skips the board; both-YOLO on units deals both rosters. **(4) Roster mid-stage rebuild** (`RosterDraft_YoloPressed`) - P2 pressing during P1's first pick, and P1 pressing at step 1. **(5) Full roster** - no unit restrictions, Archon/Ravager/Lurker/Brood Lord/Baneling fallbacks hidden, Queen uncapped, no roster HUD, No Bans card N/A and never rolled. |
 | **Unit groups, unverified in-editor** | Nothing compiled or played. Check first: **(1) compile** (GameMode, UnitGroups, TardigradeLogic, CycleMod). **(2) Setup screen** - the three roster cards fit 180px (descriptions may clip when chosen), Unit groups shows Buckets chosen / Free draft N/A. **(3) Groups stage** - the dialog lays out (1100 × 676; unit lists fit the 212px columns at 8 units), split and modifier buttons swap correctly, Lock in grace, both humans choose at once and see only choosing / locked in, lone human gets P1 then P2, YOLO rolls and locks, Tournament expiry locks the current choice, spectators see the status line. **(4) `DataTableGetInt` of a missing key reads 0** and `UnitGroups_Covers` is cheap in the 0.5s scan. **(5) In game** - a group modifier touches only its group (alternate forms and spawned units follow their base unit), the Command pick is global, the panel shows the group label, Open Skies / Quickstep / Arcane Surge / Overwatch catalog edits honour the groups. **(6) Summary** - taller dialog fits, no REROLL, group lists read right. |
+| **Doctrines, unverified in-editor** | Nothing compiled or played. Check, in order: **(1) compile** - `Doctrine.galaxy` (new), GameMode, CycleMod, TardigradeLogic, TestingMode, BehaviorData, GameStrings. **(2) `VitalMaxFractionArray` convention** - a Marine with Heavy Plating must read 56 max life (45 x 1.25); 11 means the field is a multiplier and every value becomes 1 + value. **(3) Health percent kept** - a half-health unit stays at half when a health doctrine switches on at activation (no refill). **(4) Attacker `DamageResponse` with `ModifyFraction` > 1** - a Heavy Hitters Marine hits a Zergling for 9 instead of 6. **(5) `TargetFilters` `Armored;-` / `Light;-`** fire on the right targets. **(6) Kind filters** - Loose Formation cuts a Siege Tank's splash on neighbours (not the main target, which takes Ranged); Spell Ward cuts Psionic Storm. **(7) Negative `WeaponRange` / `SightBonus` / armor** work (Rapid Fire Marine range 4, Sniper Scopes sight -4). **(8) Deep Reserves** - a High Templar warped in after activation arrives with 200 energy, one alive at activation doesn't, burrowing an Infestor doesn't refill. **(9) Last Stand's active buff** comes and goes around 35%. **(10) Layout** - setup dialog 600x700, stage 1100x710 and its 255px card text, summary with 3 doctrines, panel rows, the Testing doctrine panel next to the modifier panel. **(11) Buffs survive siege / land / burrow morphs**, or the scan re-adds them within 0.5s. **(12) Icons render.** **(13)** The Melee / Ranged damage-type filter fires for direct hits only - a Frost Rounds Siege Tank chills only the shell's main target. **(14) Last Breath** - a nearly dead Marine survives one lethal shot, the Ready icon goes and Spent shows for 45s, a Baneling still dies; if Ready never goes away the unit is immortal - the Handled set's Caster resolution is wrong. **(15)** Self-inflicted `UnitDamage` (Ignite burn, Volatile blast) lands and can kill. **(16) Ricochet** hits a second enemy on the same plane, never the first target, no chains. **(17) Champion** is crowned within a second of activation with its text, and a new one after it dies. **(18) Battle Rhythm** subtitle every 20s to the owning team, buffs swap. **(19) Bounty** pays on kills with gold text. **(20) War Banners** aura appears around casters and fades after they leave. **(21) Volatile chains** stay cheap in big fights. **(22)** `VitalMaxFractionArray` Energy lowers max energy (Overcharged Cells High Templar 130/130). **(23)** The 4x9 board and the 255px card text fit. |
 | Economy modifier balance | Auto Refineries' 200-mineral gas buildings and Minerals Only's 1.5× are first-pass. Factory Lines waits for 3:00 like every other in-game modifier (only Auto Refineries and Minerals Only were asked to be live from 0:00) — add it to `CycleMod_ModActiveFromStart` if it should be too. |
 | Activation delay | 3:00 is a starting value (`c_cycleActivationDelay`). |
 | Battle Blink has no visual/audio feedback | `TardigradeAbil_Blink` teleports silently — the Stalker's Blink flash/sound actors are keyed to effect id `Blink`, not reusable under our separate id without duplicating those actor entries too. Not attempted blind (unverifiable without the SC2 Editor); functional but silent. |

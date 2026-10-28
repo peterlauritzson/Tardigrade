@@ -3,24 +3,30 @@
 Ideas that were discussed and liked but deliberately not scheduled. Nothing here
 is implemented. Move an entry into CURRENT_STATE.md when it gets built.
 
-## Doctrine bucket (trade-off modifiers)
+## Doctrines: built
 
-Inspired by Mechabellum's most common unit techs, which are trade-offs rather
-than straight buffs (Launcher Overload, Armor-Piercing, High-Explosive Ammo).
-Intended as a fifth bucket for the pick-one-per-bucket mode. The appeal for SC2
-is that flat armor, upgrades and splash make each one good for some units and
-bad for others, so picking is a real decision rather than "bigger numbers".
+Shipped as a separate optional stage after the units (non-exclusive, up to N
+picks each, not a fifth bucket); see CURRENT_STATE.md section 3b. Rapid Fire,
+Long Barrels and Heavy Plating shipped with changed numbers, Heavy Rounds became
+Heavy Hitters, and High-Explosive is parked below.
 
-| Card | Effect | Notes |
-|---|---|---|
-| Rapid Fire | +40% attack speed, -1 range | Melee units get the speed only |
-| Heavy Rounds | +60% damage per hit, -30% attack speed | DPS roughly even; flat armor makes it strong vs armored, weak vs small fast units |
-| High-Explosive | Attacks gain a small splash (0.5 radius), -30% damage | Great on balled-up mass units, bad on single-target units |
-| Long Barrels | +1 range, -15% attack speed | |
-| Heavy Plating | +25% life, -10% move speed | Conflicts with Maneuver picks by design |
+## Doctrine ideas, not built
 
-All five are per-player catalog or behavior edits, the same kind of work as
-Factory Lines and Open Skies.
+Same rule as the built ones: a pro, and a con on the side's own stats.
+
+- **High-Explosive:** attacks gain a small splash, -30% damage. Needs script splash on every hit.
+- **Evasive:** 25% chance to dodge a hit, -25% health. Rejected for now: on average no trade-off, only variance.
+- **Hardened:** no hit deals more than X, -30% health. Rejected: a flat cap favours big units far more than small ones.
+- **Flak Rounds / Ground Pounders:** +30% vs air / -25% vs ground, and the reverse. Only meaningful on units that hit both planes; `CycleMod_UnitOriginalPlanes` could scope it.
+- **Elite Training / Conscripts:** +20% stats but builds 25% slower / -20% stats but 20% cheaper. Catalog cost and time edits; interacts with Minerals Only and Factory Lines.
+- **Replicate:** enemies you kill come back as your units. Ownership, supply and roster rules.
+- **Split on death:** units leave smaller copies behind (Legion TD 2's Hydra). Supply and roster rules.
+- **Thorns:** reflect part of melee damage (Legion Banana Bunk). Overlaps Riot Gear.
+- **Momentum:** each hit gives attack speed for a few seconds, stacking. Stack timers unclear.
+- **Kinetic Charge:** range grows with distance moved (Mechabellum Steel Ball). Needs movement tracking.
+- **Stun chance:** hits sometimes stun (Legion Pulverizer). SC2 stun data unproven, very swingy.
+- **Tech disable:** disable enemy abilities on hit (Mechabellum EM shot). No SC2 equivalent beyond silence effects.
+- **Field Medicine:** +50% healing received, -15% health. Only matters with healers.
 
 ## Other modifier ideas, not picked
 
