@@ -699,8 +699,15 @@ string Doctrine_NamesText(bool isP1) {
     return s;
 }
 
-// One row of the in-game modifier panel, under the side's modifiers.
+// One row of the in-game modifier panel, under the side's modifiers. More than a
+// draft allows (only a custom game) won't fit the row: it counts them instead.
 string Doctrine_PanelLine(bool isP1) {
+    int n;
+    n = g_doc_count[Doctrine_SideIdx(isP1)];
+    if (n > c_gameDocPicksMax) {
+        return "<c val=\"FFD54A\">  Doctrines</c>  <c val=\"FFFFFF\">" + IntToString(n)
+            + " picked</c>  <c val=\"AAAAAA\">(hover)</c>";
+    }
     return "<c val=\"FFD54A\">  Doctrines</c>  <c val=\"FFFFFF\">" + Doctrine_NamesText(isP1) + "</c>";
 }
 
@@ -723,20 +730,33 @@ string Doctrine_PanelTip(bool isP1) {
     return s;
 }
 
+// Past the draft's cap (only a custom game gets there) the summary names the
+// doctrines, two to a line, instead of a name and a description each.
+bool Doctrine_SummaryCompact() {
+    return GameMode_DoctrinePicks() > c_gameDocPicksMax;
+}
+
 // The summary column's DOCTRINES block, "" when doctrines are not in play.
 string Doctrine_SummaryBlock(bool isP1) {
     string s;
     int    d;
     int    side;
+    int    n;
 
     if (!g_doc_done) { return ""; }
     side = Doctrine_SideIdx(isP1);
     s = "\n\n<c val=\"FFD54A\">DOCTRINES</c>";
+    n = 0;
     d = 1;
     while (d <= c_docCount) {
         if (g_doc_has[side][d]) {
-            s = s + "\n" + Doctrine_Name(d)
-                + "\n" + DraftStyle_Small("<c val=\"AAAAAA\">" + Doctrine_Desc(d) + "</c>");
+            n = n + 1;
+            if (!Doctrine_SummaryCompact()) {
+                s = s + "\n" + Doctrine_Name(d)
+                    + "\n" + DraftStyle_Small("<c val=\"AAAAAA\">" + Doctrine_Desc(d) + "</c>");
+            }
+            else if (n % 2 == 1) { s = s + "\n" + Doctrine_Name(d); }
+            else                 { s = s + ", " + Doctrine_Name(d); }
         }
         d = d + 1;
     }
@@ -744,9 +764,11 @@ string Doctrine_SummaryBlock(bool isP1) {
     return s;
 }
 
-// Extra summary-dialog height for that block: heading plus two lines per pick.
+// Extra summary-dialog height for that block: heading plus two lines per pick,
+// or one line per two picks when compact.
 int Doctrine_SummaryExtra() {
     if (!g_doc_done) { return 0; }
+    if (Doctrine_SummaryCompact()) { return 40 + 20 * ((GameMode_DoctrinePicks() + 1) / 2); }
     return 40 + 36 * GameMode_DoctrinePicks();
 }
 

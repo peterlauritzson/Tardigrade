@@ -108,6 +108,18 @@ int GameMode_DoctrinePicks() {
     return g_game_docPicks;
 }
 
+// Custom game: the setup screen's Custom game button skips the whole draft. Both
+// sides are set on the custom game screen (CustomSetup.galaxy), typed in or loaded
+// from a match code (MatchCode.galaxy), and MatchCode_Apply writes the result into
+// the draft globals - including g_game_roster / g_game_doctrines - so every reader
+// above works unchanged. Only the shape readers that size things by the draft
+// (CycleMod_PicksEach, the summary) ask this. Always Casual, never Testing.
+bool g_game_custom = false;
+
+bool GameMode_IsCustom() {
+    return g_game_custom;
+}
+
 // The stages a side can go YOLO in, each separately (CycleMod_SideIsYolo). The
 // flag arrays in CycleMod are sized 4 - keep them above the last stage.
 const int c_stageRace     = 0;
@@ -149,7 +161,8 @@ string GameMode_Desc(int mode) {
 // Start commits. Everyone else sees the same dialog disabled and updating live.
 // Testing has no draft, so every row but Mode is greyed out while it is selected.
 // Unit groups forces the bucket draft: the Modifiers row shows Buckets chosen and
-// Free draft N/A.
+// Free draft N/A. Under Start, Custom game skips the draft for the custom game
+// screen (g_game_custom; the rows above don't apply to it).
 //
 // The choices live in g_game_mode / g_game_roster / g_game_buckets /
 // g_game_modBans / g_game_modPicks / g_game_doctrines / g_game_docPicks and are
@@ -165,6 +178,7 @@ int[2]  g_gmode_modBtn;              // [0] Buckets, [1] Free draft
 int[2]  g_gmode_sizeBtn;             // [0] Bans each, [1] Picks each (free draft size)
 int[2]  g_gmode_docBtn;              // [0] the Doctrines tick box, [1] Up to N each
 int     g_gmode_start    = c_invalidDialogControlId;
+int     g_gmode_custom   = c_invalidDialogControlId;
 int     g_gmode_chooser  = 0;
 trigger g_gmode_trigger  = null;
 trigger g_gmode_callback = null;
@@ -294,8 +308,11 @@ bool GameMode_OnClicked(bool testConds, bool runActions) {
     if (EventPlayer() != g_gmode_chooser) { return true; }
     control = EventDialogControl();
 
-    if (control == g_gmode_start) {
+    if (control == g_gmode_start || control == g_gmode_custom) {
         DraftStyle_ClickCue(PlayerGroupSingle(EventPlayer()));
+        // Custom game: the Mode row stays as it is, so Back finds it unchanged;
+        // MatchCode_Apply sets Casual (no clocks, no sandbox) when it starts.
+        if (control == g_gmode_custom) { g_game_custom = true; }
         if (g_gmode_trigger != null) { TriggerDestroy(g_gmode_trigger); g_gmode_trigger = null; }
         DialogDestroy(g_gmode_dialog);
         g_gmode_dialog = c_invalidDialogId;
@@ -391,12 +408,13 @@ void GameMode_Select(int chooser, trigger callback) {
 
     g_gmode_chooser  = chooser;
     g_gmode_callback = callback;
+    g_game_custom    = false;    // back from the custom game screen
     all    = PlayerGroupAll();
     mine   = PlayerGroupSingle(chooser);
     others = PlayerGroupCopy(PlayerGroupAll());
     PlayerGroupRemove(others, chooser);
 
-    g_gmode_dialog = DialogCreate(600, 700, c_anchorCenter, 0, 0, true);
+    g_gmode_dialog = DialogCreate(600, 760, c_anchorCenter, 0, 0, true);
     DialogSetObservedType(g_gmode_dialog, c_triggerObservedTypeObservedOrSelectedPlayerId);
     DialogSetTitle(g_gmode_dialog, StringToText("Tardigrade  -  Setup"));
     DialogSetVisible(g_gmode_dialog, all, true);
@@ -443,6 +461,16 @@ void GameMode_Select(int chooser, trigger callback) {
     DraftStyle_ApplyCard(g_gmode_start, others, c_draftStateOpen,
         DraftStyle_Card(c_draftStateOpen, "", "Start", "waiting for the host..."), false);
 
+    g_gmode_custom = DialogControlCreate(g_gmode_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(g_gmode_custom, all);
+    DialogControlSetSize(g_gmode_custom, all, 300, 52);
+    DialogControlSetPosition(g_gmode_custom, all, c_anchorTop, 0, 656);
+    DraftStyle_ApplyCard(g_gmode_custom, mine, c_draftStateOpen,
+        DraftStyle_Card(c_draftStateOpen, "", "Custom game / rematch",
+            "no draft: set both sides, or load a code"), true);
+    DraftStyle_ApplyCard(g_gmode_custom, others, c_draftStateOpen,
+        DraftStyle_Card(c_draftStateOpen, "", "Custom game / rematch", "waiting for the host..."), false);
+
     GameMode_SetupRefresh();
 
     g_gmode_trigger = TriggerCreate("GameMode_OnClicked");
@@ -469,6 +497,8 @@ void GameMode_Select(int chooser, trigger callback) {
         i = i + 1;
     }
     TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_start,
+        c_triggerControlEventTypeClick);
+    TriggerAddEventDialogControl(g_gmode_trigger, c_playerAny, g_gmode_custom,
         c_triggerControlEventTypeClick);
     DraftStyle_TurnCuePlayer(chooser);
 }

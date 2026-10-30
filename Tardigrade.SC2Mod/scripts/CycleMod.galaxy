@@ -390,10 +390,6 @@ int[16] g_cycle_panelHdrMine;
 int[16] g_cycle_panelHdrOpp;
 int[16][6] g_cycle_panelRowMine;   // [player][1..CycleMod_PicksEach()], up to 5
 int[16][6] g_cycle_panelRowOpp;
-// The modifier index each row shows, so the stat refresh can look its number
-// up (see CycleMod_PanelStatsTick).
-int[16][6] g_cycle_panelModMine;
-int[16][6] g_cycle_panelModOpp;
 // One doctrine row under each side's modifiers, only built when doctrines are in
 // play (Doctrine_InPlay) - see CycleMod_PanelDocRow.
 int[16] g_cycle_panelDocMine;
@@ -662,8 +658,19 @@ int CycleMod_Bucket(int idx) {
 // setup's Free draft size (1-5, Casual) or the standard 3 (GameMode_FreePicksEach).
 // Everything that means "how many mods does a side hold" asks this, not the
 // constant - the in-game panel, the stats tooltip, the picks panel, YOLO rolls.
+// A custom game has no draft shape and the sides can hold different counts: as
+// many rows as the side with the most, 1-5 (what the panel arrays hold). A side
+// holding more gets a "+N more" last row (CycleMod_SetPanelRow).
 const int c_cycleBucketCount = 4;
 int CycleMod_PicksEach() {
+    int most;
+    if (GameMode_IsCustom()) {
+        most = g_cycle_p1Count;
+        if (g_cycle_p2Count > most) { most = g_cycle_p2Count; }
+        if (most < 1) { most = 1; }
+        if (most > c_gameModPicksMax) { most = c_gameModPicksMax; }
+        return most;
+    }
     if (GameMode_IsBuckets()) { return c_cycleBucketCount; }
     return GameMode_FreePicksEach();
 }
@@ -1139,6 +1146,17 @@ int CycleMod_Team2Mod(int i) {
     return CycleMod_P1Mod(i);
 }
 
+// The same by lobby team (1 / 2): how many it holds, and the i-th.
+int CycleMod_TeamModCount(int team) {
+    if ((team == 1) == g_draft_p1_is_team1) { return g_cycle_p1Count; }
+    return g_cycle_p2Count;
+}
+
+int CycleMod_TeamMod(int team, int i) {
+    if (team == 1) { return CycleMod_Team1Mod(i); }
+    return CycleMod_Team2Mod(i);
+}
+
 // One row of the in-game panel. isP1 is the side the row belongs to, for the
 // Unit groups label: "Forced March  (Fast)  - ..." ("" outside that mode).
 string CycleMod_ModLine(int modIdx, bool isP1) {
@@ -1149,6 +1167,36 @@ string CycleMod_ModLine(int modIdx, bool isP1) {
     if (label != "") { label = "  <c val=\"AAAAAA\">(" + label + ")</c>"; }
     return "<c val=\"FFFFFF\">  " + CycleMod_Name(modIdx) + "</c>" + label + "  <c val=\"9FB4C7\">- "
         + CycleMod_Desc(modIdx) + "</c>";
+}
+
+// The panel's row i for a team. Only a custom game can hold more modifiers than
+// the panel has rows (5): then the last row counts the rest and its tooltip
+// lists them, each with what it does.
+void CycleMod_SetPanelRow(int ctrl, playergroup viewer, int team, int i, bool isP1) {
+    string tip;
+    string label;
+    int    n;
+    int    idx;
+
+    if (i < CycleMod_PicksEach() || CycleMod_TeamModCount(team) <= i) {
+        DialogControlSetPropertyAsText(ctrl, c_triggerControlPropertyText, viewer,
+            StringToText(CycleMod_ModLine(CycleMod_TeamMod(team, i), isP1)));
+        return;
+    }
+    tip = "";
+    n = i;
+    while (n <= CycleMod_TeamModCount(team)) {
+        idx = CycleMod_TeamMod(team, n);
+        label = UnitGroups_ModLabel(isP1, idx);
+        if (label != "") { label = "  (" + label + ")"; }
+        if (tip != "") { tip = tip + "<n/>"; }
+        tip = tip + CycleMod_Name(idx) + label + "  <c val=\"AAAAAA\">" + CycleMod_Desc(idx) + "</c>";
+        n = n + 1;
+    }
+    DialogControlSetPropertyAsText(ctrl, c_triggerControlPropertyText, viewer,
+        StringToText("<c val=\"FFD54A\">  + " + IntToString(CycleMod_TeamModCount(team) - i + 1)
+            + " more</c>  <c val=\"AAAAAA\">(hover)</c>"));
+    DialogControlSetPropertyAsText(ctrl, c_triggerControlPropertyTooltip, viewer, StringToText(tip));
 }
 
 // Comma-joined names of a player's picked modifiers (for reference strips). A
@@ -6529,9 +6577,9 @@ void CycleMod_PanelFoldTick() {
     }
 }
 
-// One side's block of the stats tooltip: "Name  <stat>" per modifier that has
-// something to show, or a single "nothing yet" line.
-string CycleMod_StatTipBlock(int key, bool mine, int team) {
+// One team's block of the stats tooltip: "Name  <stat>" per modifier it holds
+// that has something to show, or a single "nothing yet" line.
+string CycleMod_StatTipBlock(int team) {
     string out;
     string stat;
     int    i;
@@ -6539,9 +6587,8 @@ string CycleMod_StatTipBlock(int key, bool mine, int team) {
 
     out = "";
     i = 1;
-    while (i <= CycleMod_PicksEach()) {
-        if (mine) { mod = g_cycle_panelModMine[key][i]; }
-        else      { mod = g_cycle_panelModOpp[key][i]; }
+    while (i <= CycleMod_TeamModCount(team)) {
+        mod = CycleMod_TeamMod(team, i);
         if (mod > 0) {
             stat = CycleMod_StatText(mod, g_cycle_stat[team][mod]);
             if (stat != "") {
@@ -6625,11 +6672,11 @@ void CycleMod_PanelStatsTick() {
         if (g_cycle_panelDlg[key] != c_invalidDialogId && g_cycle_panelDlg[key] != 0) {
             role = CycleMod_PanelRole(key);
             if (role == 0) {
-                tip = "<c val=\"7FD0FF\">PLAYER 1</c>" + CycleMod_StatTipBlock(key, true, 1)
-                    + "<n/><n/><c val=\"FF9F7F\">PLAYER 2</c>" + CycleMod_StatTipBlock(key, false, 2);
+                tip = "<c val=\"7FD0FF\">PLAYER 1</c>" + CycleMod_StatTipBlock(1)
+                    + "<n/><n/><c val=\"FF9F7F\">PLAYER 2</c>" + CycleMod_StatTipBlock(2);
             } else {
                 mineTeam = role;
-                tip = "<c val=\"7FD0FF\">Your modifiers so far</c>" + CycleMod_StatTipBlock(key, true, mineTeam);
+                tip = "<c val=\"7FD0FF\">Your modifiers so far</c>" + CycleMod_StatTipBlock(mineTeam);
             }
             DialogControlSetPropertyAsText(g_cycle_panelBtn[key], c_triggerControlPropertyTooltip,
                 CycleMod_PanelViewers(key), StringToText(tip));
@@ -6642,16 +6689,16 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
     playergroup viewer;
     int         role;
     int         i;
-    int         mineMod;
-    int         oppMod;
+    int         mineTeam;
     int         docRow;
     bool        mineIsP1;
 
     viewer = CycleMod_PanelViewers(player);
     role   = CycleMod_PanelRole(player);   // key 0 is on no team -> spectator view
-    // Which draft side the "mine" block (team 2 for role 2, else team 1) belongs to.
-    if (role == 2) { mineIsP1 = !g_draft_p1_is_team1; }
-    else           { mineIsP1 = g_draft_p1_is_team1; }
+    // The "mine" block is team 2 for role 2, else team 1; which draft side is that.
+    mineTeam = 1;
+    if (role == 2) { mineTeam = 2; }
+    mineIsP1 = (mineTeam == 1) == g_draft_p1_is_team1;
 
     g_cycle_panelDlg[player] = DialogCreate(470, CycleMod_PanelHeight(), c_anchorTop, 0, 22, false);
     Tardigrade_ObservableDialog(g_cycle_panelDlg[player]);
@@ -6682,14 +6729,10 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
 
     i = 1;
     while (i <= CycleMod_PicksEach()) {
-        if (role == 2) { mineMod = CycleMod_Team2Mod(i); }
-        else           { mineMod = CycleMod_Team1Mod(i); }
         g_cycle_panelRowMine[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
         DialogControlSetSize(g_cycle_panelRowMine[player][i], viewer, 450, 18);
         DialogControlSetPosition(g_cycle_panelRowMine[player][i], viewer, c_anchorTop, 8, 76 + (i - 1) * 20);
-        DialogControlSetPropertyAsText(g_cycle_panelRowMine[player][i], c_triggerControlPropertyText,
-            viewer, StringToText(CycleMod_ModLine(mineMod, mineIsP1)));
-        g_cycle_panelModMine[player][i] = mineMod;
+        CycleMod_SetPanelRow(g_cycle_panelRowMine[player][i], viewer, mineTeam, i, mineIsP1);
         i = i + 1;
     }
     // Doctrines: names on the row, what each does on its tooltip.
@@ -6717,14 +6760,10 @@ void CycleMod_InitPanelForPlayer(int player, trigger t) {
 
     i = 1;
     while (i <= CycleMod_PicksEach()) {
-        if (role == 2) { oppMod = CycleMod_Team1Mod(i); }
-        else           { oppMod = CycleMod_Team2Mod(i); }
         g_cycle_panelRowOpp[player][i] = DialogControlCreate(g_cycle_panelDlg[player], c_triggerControlTypeLabel);
         DialogControlSetSize(g_cycle_panelRowOpp[player][i], viewer, 450, 18);
         DialogControlSetPosition(g_cycle_panelRowOpp[player][i], viewer, c_anchorTop, 8, 102 + CycleMod_PicksEach() * 20 + docRow + (i - 1) * 20);
-        DialogControlSetPropertyAsText(g_cycle_panelRowOpp[player][i], c_triggerControlPropertyText,
-            viewer, StringToText(CycleMod_ModLine(oppMod, !mineIsP1)));
-        g_cycle_panelModOpp[player][i] = oppMod;
+        CycleMod_SetPanelRow(g_cycle_panelRowOpp[player][i], viewer, 3 - mineTeam, i, !mineIsP1);
         i = i + 1;
     }
     if (docRow > 0) {

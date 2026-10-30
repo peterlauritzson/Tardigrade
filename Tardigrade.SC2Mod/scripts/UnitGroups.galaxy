@@ -395,7 +395,10 @@ bool UnitGroups_Covers(bool isP1, int modIdx, string unitType) {
     side = 2;
     if (isP1) { side = 1; }
     grp = g_ug_modGroup[side][modIdx];
-    if (grp == 0) { return false; }
+    // No group: a modifier the side holds covers all units (only a custom game,
+    // MatchCode.galaxy, has one - the draft gives every non-Command pick a group);
+    // one it doesn't hold covers nothing, as callers asking with a fixed index rely on.
+    if (grp == 0) { return CycleMod_SideHasModIdx(isP1, modIdx); }
     return DataTableGetInt(true, UnitGroups_Key(side, unitType)) == grp;
 }
 

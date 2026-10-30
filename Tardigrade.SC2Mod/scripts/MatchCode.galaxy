@@ -1,0 +1,1005 @@
+//--------------------------------------------------------------------------------------------------
+// Match Codes  (rematches and custom games)
+//
+// A match code is a whole game setup written as text a person can read and edit:
+//
+//   p1-z-m041119-uzlrohyluinvi+p2-t-m020713-umamdmvtkvkth
+//
+// "+" joins the two sides, "-" separates a side's sections, a section's first
+// letter says what it is, and dots and spaces are ignored (m04.11.19 works).
+// p1 / p2 are LOBBY TEAMS 1 and 2, not the draft's P1 / P2 roles - those can
+// land differently next game (g_draft_p1_is_team1), so swapping armies is just
+// swapping p1 and p2 by hand.
+//
+//   t / p / z    the side's race
+//   m0411        modifiers on all the side's units, 2 digits each (CycleMod index)
+//   uzlro        units, 2 letters each (c_mcUnitTable); present = an Alternating
+//                draft style roster, absent = Full roster
+//   gs071142     Unit groups: the split (t tech, r role, s speed, c cost), then
+//                3-digit blocks of modifier + group (07 in group 1, 14 in group 2)
+//   d0526        doctrines, 2 digits each (Doctrine index)
+//
+// The code holds the RESULT of a draft, so anything goes that the in-game code can
+// run: the same modifier on both sides, a mirror match, any number of units, two
+// modifiers in one group, any number of modifiers and doctrines (past a draft's
+// caps the panel and summary list them compactly). There is no version field: modifier and doctrine numbers are
+// never reused (a new one takes the next number), and the custom game screen
+// shows names, so a code from an older build reads as what it now means.
+//
+// The state lives in g_mc_* slots 1 and 2 (lobby teams); MatchCode_Parse fills
+// slots 3 and 4 and copies them over only when the whole code is valid, so a bad
+// code never half-loads. The custom game screen (CustomSetup.galaxy) edits slots
+// 1 and 2 directly; MatchCode_Apply writes them into the draft globals.
+//
+// Bank file: every human's Tardigrade.SC2Bank holds the last game's code ("last",
+// written at GO) and a slot for a code to load ("load", edited by hand). Online,
+// SC2 only syncs a bank that the map preloads (BankList.xml, written by the
+// editor from a "Preload Bank" action in the map-init trigger).
+//--------------------------------------------------------------------------------------------------
+
+
+const string c_mcBankName    = "Tardigrade";
+const string c_mcBankSection = "codes";
+
+// Unit tokens: two letters, unique across all three races, so a code can say
+// "Marine (ma) is not a Zerg unit". Every roster pool unit needs one.
+const string c_mcUnitTable = "ma=Marine md=Marauder re=Reaper gh=Ghost mv=Medivac he=Hellion hb=HellionTank wm=WidowMine cy=Cyclone tk=SiegeTank th=Thor vk=VikingFighter li=Liberator ra=Raven bs=Banshee bc=Battlecruiser ze=Zealot st=Stalker se=Sentry ad=Adept ht=HighTemplar dt=DarkTemplar ar=Archon im=Immortal co=Colossus di=Disruptor wp=WarpPrism ph=Phoenix vr=VoidRay or=Oracle ca=Carrier te=Tempest ms=Mothership zl=Zergling qu=Queen bn=Baneling ro=Roach rv=Ravager hy=Hydralisk lu=LurkerMP in=Infestor sh=SwarmHostMP ul=Ultralisk mu=Mutalisk cr=Corruptor bl=BroodLord vi=Viper";
+
+// Slots: 1 / 2 = lobby team 1 / 2 (the live setup), 3 / 4 = parse scratch.
+int[5]       g_mc_race;            // c_tardigrade_race*, 0 = none
+bool[5][24]  g_mc_modOn;           // by CycleMod index
+int[5][24]   g_mc_modGrp;          // 0 = all units, 1..3 = that unit group (Unit groups only)
+bool[5][19]  g_mc_unit;            // by roster pool slot of the side's race
+int[5]       g_mc_split;           // UnitGroups preset 1..4 (Unit groups only)
+bool[5][35]  g_mc_doc;             // by Doctrine index
+bool[5]      g_mc_hasU;            // parse only: the side had a u section
+bool[5]      g_mc_hasG;            // parse only: the side had a g section
+int          g_mc_roster = c_gameRosterFull;   // c_gameRoster*, one for both sides
+string       g_mc_error  = "";     // why the last MatchCode_Parse failed
+
+bank[16]     g_mc_bank;
+bool[16]     g_mc_bankOk;
+string[16]   g_mc_last;            // each human's "last" code ("" if none)
+string[16]   g_mc_load;            // each human's "load" code ("" if none)
+
+//--------------------------------------------------------------------------------------------------
+// Small helpers
+//--------------------------------------------------------------------------------------------------
+string MatchCode_Two(int n) {
+    if (n < 10) { return "0" + IntToString(n); }
+    return IntToString(n);
+}
+
+// 0-9, or -1 when the character is not a digit.
+int MatchCode_Digit(string ch) {
+    int d;
+    d = 0;
+    while (d <= 9) {
+        if (ch == IntToString(d)) { return d; }
+        d = d + 1;
+    }
+    return -1;
+}
+
+// The number in s (all digits), or -1.
+int MatchCode_Num(string s) {
+    int i;
+    int d;
+    int n;
+    if (StringLength(s) == 0) { return -1; }
+    n = 0;
+    i = 1;
+    while (i <= StringLength(s)) {
+        d = MatchCode_Digit(StringSub(s, i, i));
+        if (d < 0) { return -1; }
+        n = n * 10 + d;
+        i = i + 1;
+    }
+    return n;
+}
+
+// Lower case, no spaces or dots.
+string MatchCode_Clean(string code) {
+    string low;
+    string out;
+    string ch;
+    int    i;
+    low = StringCase(code, false);
+    out = "";
+    i = 1;
+    while (i <= StringLength(low)) {
+        ch = StringSub(low, i, i);
+        if (ch != " " && ch != ".") { out = out + ch; }
+        i = i + 1;
+    }
+    return out;
+}
+
+int MatchCode_PieceCount(string s, string sep) {
+    int i;
+    int n;
+    n = 1;
+    i = 1;
+    while (i <= StringLength(s)) {
+        if (StringSub(s, i, i) == sep) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// The n-th piece of s between sep characters (1-based); "" past the end.
+string MatchCode_Piece(string s, string sep, int n) {
+    int    i;
+    int    k;
+    string out;
+    string ch;
+    k = 1;
+    out = "";
+    i = 1;
+    while (i <= StringLength(s)) {
+        ch = StringSub(s, i, i);
+        if (ch == sep) {
+            if (k == n) { return out; }
+            k = k + 1;
+            out = "";
+        } else {
+            out = out + ch;
+        }
+        i = i + 1;
+    }
+    if (k == n) { return out; }
+    return "";
+}
+
+string MatchCode_RaceLetter(int race) {
+    if (race == c_tardigrade_raceProtoss) { return "p"; }
+    if (race == c_tardigrade_raceZerg)    { return "z"; }
+    return "t";
+}
+
+int MatchCode_LetterRace(string ch) {
+    if (ch == "t") { return c_tardigrade_raceTerran; }
+    if (ch == "p") { return c_tardigrade_raceProtoss; }
+    if (ch == "z") { return c_tardigrade_raceZerg; }
+    return 0;
+}
+
+// UnitGroups presets: 1 Tech, 2 Role, 3 Speed, 4 Cost.
+string MatchCode_SplitLetter(int preset) {
+    if (preset == 2) { return "r"; }
+    if (preset == 3) { return "s"; }
+    if (preset == 4) { return "c"; }
+    return "t";
+}
+
+int MatchCode_LetterSplit(string ch) {
+    if (ch == "t") { return 1; }
+    if (ch == "r") { return 2; }
+    if (ch == "s") { return 3; }
+    if (ch == "c") { return 4; }
+    return 0;
+}
+
+string MatchCode_UnitToken(string unitType) {
+    int    n;
+    string w;
+    n = 1;
+    w = StringWord(c_mcUnitTable, n);
+    while (w != "") {
+        if (StringSub(w, 4, StringLength(w)) == unitType) { return StringSub(w, 1, 2); }
+        n = n + 1;
+        w = StringWord(c_mcUnitTable, n);
+    }
+    return "";
+}
+
+string MatchCode_TokenUnit(string tok) {
+    int    n;
+    string w;
+    n = 1;
+    w = StringWord(c_mcUnitTable, n);
+    while (w != "") {
+        if (StringSub(w, 1, 2) == tok) { return StringSub(w, 4, StringLength(w)); }
+        n = n + 1;
+        w = StringWord(c_mcUnitTable, n);
+    }
+    return "";
+}
+
+// The unit's slot in race's roster pool, or 0.
+int MatchCode_PoolSlot(int race, string unitType) {
+    int i;
+    i = 1;
+    while (i <= GetRosterPoolCount(race)) {
+        if (GetRosterPoolUnit(race, i) == unitType) { return i; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+// Which race's pool holds the unit (for the "not a Zerg unit" message), or 0.
+int MatchCode_UnitRace(string unitType) {
+    int race;
+    race = c_tardigrade_raceTerran;
+    while (race <= c_tardigrade_raceZerg) {
+        if (MatchCode_PoolSlot(race, unitType) > 0) { return race; }
+        race = race + 1;
+    }
+    return 0;
+}
+
+// Lobby team t (1 / 2) is the draft's P1 side?
+bool MatchCode_TeamIsP1(int t) {
+    return (t == 1) == g_draft_p1_is_team1;
+}
+
+// The human who decides for lobby team t.
+int MatchCode_TeamDecider(int t) {
+    if (MatchCode_TeamIsP1(t)) { return g_draft_p1; }
+    return g_draft_p2;
+}
+
+// Lobby race of team t's first player. An editor test can leave a team empty
+// (PlayerGroupPlayer then gives -1), so fall back to its decider.
+int MatchCode_TeamLobbyRace(int t) {
+    playergroup g = g_draft_team2;
+    if (t == 1) { g = g_draft_team1; }
+    if (PlayerGroupCount(g) >= 1) { return TestingMode_LobbyRace(PlayerGroupPlayer(g, 1)); }
+    return TestingMode_LobbyRace(MatchCode_TeamDecider(t));
+}
+
+//--------------------------------------------------------------------------------------------------
+// The state
+//--------------------------------------------------------------------------------------------------
+void MatchCode_ClearSlot(int s) {
+    int i;
+    g_mc_race[s]  = 0;
+    g_mc_split[s] = 1;
+    g_mc_hasU[s]  = false;
+    g_mc_hasG[s]  = false;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        g_mc_modOn[s][i]  = false;
+        g_mc_modGrp[s][i] = 0;
+        i = i + 1;
+    }
+    i = 1;
+    while (i <= c_rosterPoolMax) {
+        g_mc_unit[s][i] = false;
+        i = i + 1;
+    }
+    i = 1;
+    while (i <= c_docCount) {
+        g_mc_doc[s][i] = false;
+        i = i + 1;
+    }
+}
+
+void MatchCode_CopySlot(int from, int to) {
+    int i;
+    g_mc_race[to]  = g_mc_race[from];
+    g_mc_split[to] = g_mc_split[from];
+    g_mc_hasU[to]  = g_mc_hasU[from];
+    g_mc_hasG[to]  = g_mc_hasG[from];
+    i = 1;
+    while (i <= c_cycleModCount) {
+        g_mc_modOn[to][i]  = g_mc_modOn[from][i];
+        g_mc_modGrp[to][i] = g_mc_modGrp[from][i];
+        i = i + 1;
+    }
+    i = 1;
+    while (i <= c_rosterPoolMax) {
+        g_mc_unit[to][i] = g_mc_unit[from][i];
+        i = i + 1;
+    }
+    i = 1;
+    while (i <= c_docCount) {
+        g_mc_doc[to][i] = g_mc_doc[from][i];
+        i = i + 1;
+    }
+}
+
+int MatchCode_ModCount(int s) {
+    int i;
+    int n;
+    n = 0;
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (g_mc_modOn[s][i]) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+int MatchCode_UnitCount(int s) {
+    int i;
+    int n;
+    n = 0;
+    i = 1;
+    while (i <= c_rosterPoolMax) {
+        if (g_mc_unit[s][i]) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+int MatchCode_DocCount(int s) {
+    int i;
+    int n;
+    n = 0;
+    i = 1;
+    while (i <= c_docCount) {
+        if (g_mc_doc[s][i]) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// Blank setup: lobby races, no modifiers, Full roster, no doctrines.
+void MatchCode_Reset() {
+    MatchCode_ClearSlot(1);
+    MatchCode_ClearSlot(2);
+    g_mc_race[1] = MatchCode_TeamLobbyRace(1);
+    g_mc_race[2] = MatchCode_TeamLobbyRace(2);
+    g_mc_roster = c_gameRosterFull;
+}
+
+// What stops the current setup from starting, or "" when it can start.
+string MatchCode_Problem() {
+    int t;
+    t = 1;
+    while (t <= 2) {
+        if (g_mc_race[t] == 0) { return "p" + IntToString(t) + " has no race"; }
+        if (g_mc_roster == c_gameRosterDraft && MatchCode_UnitCount(t) == 0) {
+            return "p" + IntToString(t) + " has no units (pick some, or use Full roster)";
+        }
+        t = t + 1;
+    }
+    return "";
+}
+
+//--------------------------------------------------------------------------------------------------
+// Editing (the custom game screen). Each returns false when nothing changed.
+//--------------------------------------------------------------------------------------------------
+// A new race has a different pool, so the unit list starts over.
+bool MatchCode_SetRace(int t, int race) {
+    int i;
+    if (g_mc_race[t] == race) { return false; }
+    g_mc_race[t] = race;
+    i = 1;
+    while (i <= c_rosterPoolMax) {
+        g_mc_unit[t][i] = false;
+        i = i + 1;
+    }
+    return true;
+}
+
+// Off -> on. With Unit groups a non-Command modifier steps on (all units) ->
+// group 1 -> 2 -> 3 -> off; Command modifiers always cover all units.
+bool MatchCode_StepMod(int t, int idx) {
+    bool grouped;
+    if (!g_mc_modOn[t][idx]) {
+        g_mc_modOn[t][idx]  = true;
+        g_mc_modGrp[t][idx] = 0;
+        return true;
+    }
+    grouped = (g_mc_roster == c_gameRosterGroups) && CycleMod_Bucket(idx) != c_cycleBucketCommand;
+    if (grouped && g_mc_modGrp[t][idx] < 3) {
+        g_mc_modGrp[t][idx] = g_mc_modGrp[t][idx] + 1;
+        return true;
+    }
+    g_mc_modOn[t][idx]  = false;
+    g_mc_modGrp[t][idx] = 0;
+    return true;
+}
+
+bool MatchCode_ToggleUnit(int t, int poolSlot) {
+    g_mc_unit[t][poolSlot] = !g_mc_unit[t][poolSlot];
+    return true;
+}
+
+bool MatchCode_ToggleDoc(int t, int d) {
+    g_mc_doc[t][d] = !g_mc_doc[t][d];
+    return true;
+}
+
+// Leaving Unit groups puts every modifier back on all units.
+bool MatchCode_SetRoster(int roster) {
+    int t;
+    int i;
+    if (g_mc_roster == roster) { return false; }
+    g_mc_roster = roster;
+    if (roster != c_gameRosterGroups) {
+        t = 1;
+        while (t <= 2) {
+            i = 1;
+            while (i <= c_cycleModCount) {
+                g_mc_modGrp[t][i] = 0;
+                i = i + 1;
+            }
+            t = t + 1;
+        }
+    }
+    return true;
+}
+
+bool MatchCode_SetSplit(int t, int preset) {
+    if (g_mc_split[t] == preset) { return false; }
+    g_mc_split[t] = preset;
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Text
+//--------------------------------------------------------------------------------------------------
+string MatchCode_EncodeSide(int t) {
+    string s;
+    string part;
+    int    i;
+
+    s = "p" + IntToString(t) + "-" + MatchCode_RaceLetter(g_mc_race[t]);
+
+    part = "";
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (g_mc_modOn[t][i] && g_mc_modGrp[t][i] == 0) { part = part + MatchCode_Two(i); }
+        i = i + 1;
+    }
+    if (part != "") { s = s + "-m" + part; }
+
+    if (g_mc_roster == c_gameRosterDraft) {
+        part = "";
+        i = 1;
+        while (i <= GetRosterPoolCount(g_mc_race[t])) {
+            if (g_mc_unit[t][i]) { part = part + MatchCode_UnitToken(GetRosterPoolUnit(g_mc_race[t], i)); }
+            i = i + 1;
+        }
+        s = s + "-u" + part;
+    }
+
+    if (g_mc_roster == c_gameRosterGroups) {
+        part = MatchCode_SplitLetter(g_mc_split[t]);
+        i = 1;
+        while (i <= c_cycleModCount) {
+            if (g_mc_modOn[t][i] && g_mc_modGrp[t][i] > 0) {
+                part = part + MatchCode_Two(i) + IntToString(g_mc_modGrp[t][i]);
+            }
+            i = i + 1;
+        }
+        s = s + "-g" + part;
+    }
+
+    part = "";
+    i = 1;
+    while (i <= c_docCount) {
+        if (g_mc_doc[t][i]) { part = part + MatchCode_Two(i); }
+        i = i + 1;
+    }
+    if (part != "") { s = s + "-d" + part; }
+    return s;
+}
+
+string MatchCode_Encode() {
+    return MatchCode_EncodeSide(1) + "+" + MatchCode_EncodeSide(2);
+}
+
+// "p1 modifiers: ..." - every parse error names the side and the section.
+bool MatchCode_Fail(string msg) {
+    g_mc_error = msg;
+    return false;
+}
+
+// One 2-digit modifier number; grp 0 = the m section (all units).
+bool MatchCode_TakeMod(int s, string label, string block, int grp) {
+    int n;
+    n = MatchCode_Num(block);
+    if (n < 0) { return MatchCode_Fail(label + ": \"" + block + "\" is not a number"); }
+    if (n < 1) { return MatchCode_Fail(label + ": 00 is not a modifier"); }
+    if (n > c_cycleModCount) {
+        return MatchCode_Fail(label + ": " + block + " is too large (max " + IntToString(c_cycleModCount) + ")");
+    }
+    if (CycleMod_ModIsDraftOnly(n)) {
+        return MatchCode_Fail(label + ": " + block + " is " + CycleMod_Name(n) + ", which only works in the draft");
+    }
+    if (g_mc_modOn[s][n]) {
+        return MatchCode_Fail(label + ": " + block + " " + CycleMod_Name(n) + " is listed twice");
+    }
+    if (grp > 0 && CycleMod_Bucket(n) == c_cycleBucketCommand) {
+        return MatchCode_Fail(label + ": " + block + " " + CycleMod_Name(n)
+            + " is a Command modifier, it always covers all units (put it in m)");
+    }
+    g_mc_modOn[s][n]  = true;
+    g_mc_modGrp[s][n] = grp;
+    return true;
+}
+
+bool MatchCode_ParseMods(int s, string side, string body) {
+    int i;
+    if (ModI(StringLength(body), 2) != 0) {
+        return MatchCode_Fail(side + " modifiers: numbers are 2 digits each, like m0412");
+    }
+    i = 1;
+    while (i < StringLength(body)) {
+        if (!MatchCode_TakeMod(s, side + " modifiers", StringSub(body, i, i + 1), 0)) { return false; }
+        i = i + 2;
+    }
+    return true;
+}
+
+bool MatchCode_ParseGroups(int s, string side, string body) {
+    int    i;
+    int    grp;
+    string ch;
+    if (body == "") { return MatchCode_Fail(side + " groups: the split letter is missing (t, r, s or c)"); }
+    ch = StringSub(body, 1, 1);
+    g_mc_split[s] = MatchCode_LetterSplit(ch);
+    if (g_mc_split[s] == 0) {
+        return MatchCode_Fail(side + " groups: \"" + ch + "\" is not a split (t tech, r role, s speed, c cost)");
+    }
+    if (ModI(StringLength(body) - 1, 3) != 0) {
+        return MatchCode_Fail(side + " groups: after the split letter come 3-digit blocks, modifier then group, like gs071142");
+    }
+    i = 2;
+    while (i < StringLength(body)) {
+        grp = MatchCode_Digit(StringSub(body, i + 2, i + 2));
+        if (grp < 1 || grp > 3) {
+            return MatchCode_Fail(side + " groups: \"" + StringSub(body, i, i + 2)
+                + "\" - the last digit is the group, 1 to 3");
+        }
+        if (!MatchCode_TakeMod(s, side + " groups", StringSub(body, i, i + 1), grp)) { return false; }
+        i = i + 3;
+    }
+    return true;
+}
+
+bool MatchCode_ParseUnits(int s, string side, string body) {
+    int    i;
+    int    slot;
+    int    home;
+    string tok;
+    string unitType;
+    if (ModI(StringLength(body), 2) != 0) {
+        return MatchCode_Fail(side + " units: 2 letters each, like umamd");
+    }
+    i = 1;
+    while (i < StringLength(body)) {
+        tok = StringSub(body, i, i + 1);
+        unitType = MatchCode_TokenUnit(tok);
+        if (unitType == "") { return MatchCode_Fail(side + " units: \"" + tok + "\" is not a unit"); }
+        slot = MatchCode_PoolSlot(g_mc_race[s], unitType);
+        if (slot == 0) {
+            home = MatchCode_UnitRace(unitType);
+            if (home == 0) {
+                return MatchCode_Fail(side + " units: " + RosterUnitDisplayName(unitType) + " (" + tok
+                    + ") is in no unit pool");
+            }
+            return MatchCode_Fail(side + " units: " + RosterUnitDisplayName(unitType) + " (" + tok
+                + ") is not a " + RaceName(g_mc_race[s]) + " unit");
+        }
+        if (g_mc_unit[s][slot]) {
+            return MatchCode_Fail(side + " units: " + RosterUnitDisplayName(unitType) + " is listed twice");
+        }
+        g_mc_unit[s][slot] = true;
+        i = i + 2;
+    }
+    // An empty list parses (every encoded code must), and MatchCode_Problem then
+    // keeps the game from starting until the side has units.
+    return true;
+}
+
+bool MatchCode_ParseDocs(int s, string side, string body) {
+    int    i;
+    int    n;
+    string block;
+    if (ModI(StringLength(body), 2) != 0) {
+        return MatchCode_Fail(side + " doctrines: numbers are 2 digits each, like d0526");
+    }
+    i = 1;
+    while (i < StringLength(body)) {
+        block = StringSub(body, i, i + 1);
+        n = MatchCode_Num(block);
+        if (n < 0) { return MatchCode_Fail(side + " doctrines: \"" + block + "\" is not a number"); }
+        if (n < 1) { return MatchCode_Fail(side + " doctrines: 00 is not a doctrine"); }
+        if (n > c_docCount) {
+            return MatchCode_Fail(side + " doctrines: " + block + " is too large (max " + IntToString(c_docCount) + ")");
+        }
+        if (g_mc_doc[s][n]) {
+            return MatchCode_Fail(side + " doctrines: " + block + " " + Doctrine_Name(n) + " is listed twice");
+        }
+        g_mc_doc[s][n] = true;
+        i = i + 2;
+    }
+    return true;
+}
+
+// One side ("p1-z-m04-..."), into scratch slot s.
+bool MatchCode_ParseSide(int s, string side, string text1) {
+    int    n;
+    int    k;
+    int    race;
+    string piece;
+    string key;
+    string body;
+    bool   seenM;
+    bool   seenD;
+
+    n = MatchCode_PieceCount(text1, "-");
+    // Race first: the unit section needs it, wherever it sits.
+    k = 2;
+    while (k <= n) {
+        piece = MatchCode_Piece(text1, "-", k);
+        if (StringLength(piece) == 1) {
+            race = MatchCode_LetterRace(piece);
+            if (race != 0) {
+                if (g_mc_race[s] != 0) { return MatchCode_Fail(side + ": two races"); }
+                g_mc_race[s] = race;
+            }
+        }
+        k = k + 1;
+    }
+    if (g_mc_race[s] == 0) { return MatchCode_Fail(side + ": no race (t, p or z)"); }
+
+    seenM = false;
+    seenD = false;
+    k = 2;
+    while (k <= n) {
+        piece = MatchCode_Piece(text1, "-", k);
+        if (piece == "") { return MatchCode_Fail(side + ": an empty section (two dashes in a row?)"); }
+        key  = StringSub(piece, 1, 1);
+        body = "";
+        if (StringLength(piece) > 1) { body = StringSub(piece, 2, StringLength(piece)); }
+        if (StringLength(piece) == 1 && MatchCode_LetterRace(piece) != 0) {
+            // the race, read above
+        } else if (key == "m") {
+            if (seenM) { return MatchCode_Fail(side + ": two m sections"); }
+            seenM = true;
+            if (!MatchCode_ParseMods(s, side, body)) { return false; }
+        } else if (key == "u") {
+            if (g_mc_hasU[s]) { return MatchCode_Fail(side + ": two u sections"); }
+            g_mc_hasU[s] = true;
+            if (!MatchCode_ParseUnits(s, side, body)) { return false; }
+        } else if (key == "g") {
+            if (g_mc_hasG[s]) { return MatchCode_Fail(side + ": two g sections"); }
+            g_mc_hasG[s] = true;
+            if (!MatchCode_ParseGroups(s, side, body)) { return false; }
+        } else if (key == "d") {
+            if (seenD) { return MatchCode_Fail(side + ": two d sections"); }
+            seenD = true;
+            if (!MatchCode_ParseDocs(s, side, body)) { return false; }
+        } else {
+            return MatchCode_Fail(side + ": unknown section \"" + piece
+                + "\" (a race t/p/z, then m, u, g, d)");
+        }
+        k = k + 1;
+    }
+    if (g_mc_hasU[s] && g_mc_hasG[s]) {
+        return MatchCode_Fail(side + ": u and g don't go together (unit groups use every unit)");
+    }
+    return true;
+}
+
+// Read a whole code. On success it replaces the setup in slots 1 / 2; on failure
+// nothing changes and g_mc_error says why.
+bool MatchCode_Parse(string code) {
+    string clean;
+    string half;
+    string tag;
+    int    part;
+    int    t;
+    bool   seen1;
+    bool   seen2;
+
+    g_mc_error = "";
+    clean = MatchCode_Clean(code);
+    if (MatchCode_PieceCount(clean, "+") != 2) {
+        return MatchCode_Fail("a code is two sides joined by +, like p1-z-m04+p2-t-m07");
+    }
+    seen1 = false;
+    seen2 = false;
+    part = 1;
+    while (part <= 2) {
+        half = MatchCode_Piece(clean, "+", part);
+        tag  = MatchCode_Piece(half, "-", 1);
+        if (tag == "p1")      { t = 1; }
+        else if (tag == "p2") { t = 2; }
+        else { return MatchCode_Fail("each side starts with p1- or p2- (found \"" + tag + "\")"); }
+        if (t == 1) {
+            if (seen1) { return MatchCode_Fail("p1 appears twice"); }
+            seen1 = true;
+        } else {
+            if (seen2) { return MatchCode_Fail("p2 appears twice"); }
+            seen2 = true;
+        }
+        MatchCode_ClearSlot(t + 2);
+        if (!MatchCode_ParseSide(t + 2, tag, half)) { return false; }
+        part = part + 1;
+    }
+    if (g_mc_hasU[3] != g_mc_hasU[4]) {
+        return MatchCode_Fail("both sides need a unit list (u), or neither");
+    }
+    if (g_mc_hasG[3] != g_mc_hasG[4]) {
+        return MatchCode_Fail("both sides need unit groups (g), or neither");
+    }
+    MatchCode_CopySlot(3, 1);
+    MatchCode_CopySlot(4, 2);
+    if (g_mc_hasU[1])      { g_mc_roster = c_gameRosterDraft; }
+    else if (g_mc_hasG[1]) { g_mc_roster = c_gameRosterGroups; }
+    else                   { g_mc_roster = c_gameRosterFull; }
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Live game <-> state
+//--------------------------------------------------------------------------------------------------
+// Read the setup the draft (or a custom game) produced into slots 1 / 2. Call
+// once every stage has finished.
+void MatchCode_FromLive() {
+    int  t;
+    int  i;
+    int  idx;
+    int  count;
+    int  side;
+    int  slot;
+    bool isP1;
+
+    MatchCode_ClearSlot(1);
+    MatchCode_ClearSlot(2);
+    g_mc_roster = g_game_roster;
+    t = 1;
+    while (t <= 2) {
+        isP1 = MatchCode_TeamIsP1(t);
+        side = 2;
+        if (isP1) { side = 1; }
+        if (isP1) { g_mc_race[t] = g_draft_p1Race; count = g_cycle_p1Count; }
+        else      { g_mc_race[t] = g_draft_p2Race; count = g_cycle_p2Count; }
+
+        i = 1;
+        while (i <= count) {
+            if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
+            if (idx >= 1 && idx <= c_cycleModCount && !CycleMod_ModIsDraftOnly(idx)) {
+                g_mc_modOn[t][idx] = true;
+                if (UnitGroups_Active() && CycleMod_Bucket(idx) != c_cycleBucketCommand) {
+                    g_mc_modGrp[t][idx] = g_ug_modGroup[side][idx];
+                }
+            }
+            i = i + 1;
+        }
+
+        if (g_mc_roster == c_gameRosterDraft) {
+            i = 1;
+            while (i <= c_rosterMaxSize) {
+                if (isP1) { slot = MatchCode_PoolSlot(g_mc_race[t], g_roster_p1Units[i]); }
+                else      { slot = MatchCode_PoolSlot(g_mc_race[t], g_roster_p2Units[i]); }
+                if (slot > 0) { g_mc_unit[t][slot] = true; }
+                i = i + 1;
+            }
+        }
+        if (g_mc_roster == c_gameRosterGroups) { g_mc_split[t] = g_ug_preset[side]; }
+
+        if (Doctrine_InPlay()) {
+            i = 1;
+            while (i <= c_docCount) {
+                if (Doctrine_SideHas(isP1, i)) { g_mc_doc[t][i] = true; }
+                i = i + 1;
+            }
+        }
+        t = t + 1;
+    }
+}
+
+// The code of the game as it now stands.
+string MatchCode_LiveCode() {
+    MatchCode_FromLive();
+    return MatchCode_Encode();
+}
+
+// Write slots 1 / 2 into the draft globals - what the race, modifier, unit,
+// groups and doctrine stages would have left behind - ready for
+// Tardigrade_StartGame. Mirrors Tardigrade_DebugAutoRun, without the dice.
+void MatchCode_Apply() {
+    int  t;
+    int  i;
+    int  n;
+    int  side;
+    int  most;
+    bool isP1;
+    bool anyDoc;
+
+    // Setup flags first: every reader below branches on them. Never Tournament
+    // (no clocks) or Testing (no draft globals).
+    g_game_mode    = c_gameModeCasual;
+    g_game_roster  = g_mc_roster;
+    g_game_buckets = false;
+    most = MatchCode_DocCount(1);
+    if (MatchCode_DocCount(2) > most) { most = MatchCode_DocCount(2); }
+    anyDoc = (most > 0);
+    g_game_doctrines = anyDoc;
+    if (most < 1) { most = 1; }
+    g_game_docPicks = most;
+
+    // Races. The same race on both sides is fine (SetPlayerRace per player).
+    SetTeamRace(g_draft_team1, g_mc_race[1]);
+    SetTeamRace(g_draft_team2, g_mc_race[2]);
+    if (g_draft_p1_is_team1) { g_draft_p1Race = g_mc_race[1]; g_draft_p2Race = g_mc_race[2]; }
+    else                     { g_draft_p1Race = g_mc_race[2]; g_draft_p2Race = g_mc_race[1]; }
+
+    // Roster globals - read in every mode (summary, doctrines, groups, enforcement).
+    g_roster_p1     = g_draft_p1;
+    g_roster_p2     = g_draft_p2;
+    g_roster_p1Race = g_draft_p1Race;
+    g_roster_p2Race = g_draft_p2Race;
+    i = 1;
+    while (i <= c_rosterPoolMax) {
+        g_roster_p1Picked[i] = false;  g_roster_p2Picked[i] = false;
+        g_roster_p1Banned[i] = false;  g_roster_p2Banned[i] = false;
+        i = i + 1;
+    }
+    i = 1;
+    while (i <= c_rosterMaxSize) {
+        g_roster_p1Units[i] = "";
+        g_roster_p2Units[i] = "";
+        i = i + 1;
+    }
+    g_roster_p1PickCount = 0;
+    g_roster_p2PickCount = 0;
+
+    // Modifiers.
+    g_cycle_p1      = g_draft_p1;
+    g_cycle_p2      = g_draft_p2;
+    g_cycle_p1Count = 0;
+    g_cycle_p2Count = 0;
+
+    Doctrine_ClearPicks(1);
+    Doctrine_ClearPicks(2);
+
+    t = 1;
+    while (t <= 2) {
+        isP1 = MatchCode_TeamIsP1(t);
+        side = 2;
+        if (isP1) { side = 1; }
+
+        i = 1;
+        while (i <= c_cycleModCount) {
+            if (g_mc_modOn[t][i]) { CycleMod_SetSideMod(isP1, i, true); }
+            i = i + 1;
+        }
+
+        if (g_mc_roster == c_gameRosterDraft) {
+            n = 0;
+            i = 1;
+            while (i <= GetRosterPoolCount(g_mc_race[t])) {
+                if (g_mc_unit[t][i]) {
+                    n = n + 1;
+                    if (isP1) { g_roster_p1Units[n] = GetRosterPoolUnit(g_mc_race[t], i); }
+                    else      { g_roster_p2Units[n] = GetRosterPoolUnit(g_mc_race[t], i); }
+                }
+                i = i + 1;
+            }
+            if (isP1) { g_roster_p1PickCount = n; } else { g_roster_p2PickCount = n; }
+        }
+
+        i = 1;
+        while (i <= c_docCount) {
+            if (g_mc_doc[t][i]) { Doctrine_SetPick(side, i, true); }
+            i = i + 1;
+        }
+        t = t + 1;
+    }
+
+    // Unit groups: the split's data-table keys come from RegisterSide (no slots,
+    // so it registers no modifiers), then each modifier's group directly - any
+    // number per group. Group 0 means all units (UnitGroups_Covers).
+    if (g_mc_roster == c_gameRosterGroups) {
+        t = 1;
+        while (t <= 2) {
+            side = 2;
+            if (MatchCode_TeamIsP1(t)) { side = 1; }
+            g_ug_preset[side]   = g_mc_split[t];
+            g_ug_modCount[side] = 0;
+            UnitGroups_RegisterSide(side);
+            i = 1;
+            while (i <= c_cycleModCount) {
+                if (g_mc_modOn[t][i]) { g_ug_modGroup[side][i] = g_mc_modGrp[t][i]; }
+                i = i + 1;
+            }
+            t = t + 1;
+        }
+        g_ug_done = true;
+    }
+
+    // Doctrines: commit only when there are any, so a game without them has no
+    // summary block and no panel row.
+    if (anyDoc) { Doctrine_Commit(); }
+
+    Debug_Log("Custom game: " + MatchCode_Encode());
+}
+
+// Past a draft's cap (only a custom game gets there) the summary names a side's
+// modifiers, two to a line (one with its group in Unit groups), instead of a
+// name and a description each.
+bool MatchCode_CompactMods() {
+    return g_cycle_p1Count > c_gameModPicksMax || g_cycle_p2Count > c_gameModPicksMax;
+}
+
+// Summary dialog height a custom game needs beyond the draft's own sizing: more
+// modifiers than a draft gives (3 free, 4 in groups), more than 7 units.
+int MatchCode_SummaryExtra() {
+    int most;
+    int units;
+    int base;
+    int each;
+    int extra;
+    int lines;
+
+    if (!GameMode_IsCustom()) { return 0; }
+    most = g_cycle_p1Count;
+    if (g_cycle_p2Count > most) { most = g_cycle_p2Count; }
+    base = 3;
+    each = 36;
+    if (GameMode_IsUnitGroups()) { base = 4; each = 56; }
+    extra = 0;
+    if (MatchCode_CompactMods()) {
+        lines = (most + 1) / 2;
+        if (GameMode_IsUnitGroups()) { lines = most; }
+        if (lines * 20 > base * each) { extra = lines * 20 - base * each; }
+    }
+    else if (most > base) { extra = extra + (most - base) * each; }
+    units = g_roster_p1PickCount;
+    if (g_roster_p2PickCount > units) { units = g_roster_p2PickCount; }
+    if (units > 7) { extra = extra + (units - 7) * 20; }
+    return extra;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Bank file
+//--------------------------------------------------------------------------------------------------
+bool MatchCode_IsHuman(int p) {
+    return PlayerType(p) == c_playerTypeUser && PlayerStatus(p) == c_playerStatusActive;
+}
+
+string MatchCode_BankString(int p, string key) {
+    if (!BankKeyExists(g_mc_bank[p], c_mcBankSection, key)) { return ""; }
+    return StringCase(BankValueGetAsString(g_mc_bank[p], c_mcBankSection, key), false);
+}
+
+// Every human's bank, once, at map init (online, only preloaded banks sync).
+void MatchCode_LoadBanks() {
+    int p;
+    p = 1;
+    while (p <= 15) {
+        g_mc_bankOk[p] = false;
+        g_mc_last[p]   = "";
+        g_mc_load[p]   = "";
+        if (MatchCode_IsHuman(p)) {
+            g_mc_bank[p]   = BankLoad(c_mcBankName, p);
+            // Unsigned, so a code pasted into the file by hand is accepted.
+            BankOptionSet(g_mc_bank[p], c_bankOptionSignature, false);
+            g_mc_bankOk[p] = true;
+            g_mc_last[p]   = MatchCode_BankString(p, "last");
+            g_mc_load[p]   = MatchCode_BankString(p, "load");
+        }
+        p = p + 1;
+    }
+}
+
+// At GO: the game's code into every human's "last". "load" is created empty the
+// first time so the file shows where a code goes; it is never cleared after.
+void MatchCode_SaveLast(string code) {
+    int  p;
+    bank b;
+    p = 1;
+    while (p <= 15) {
+        if (g_mc_bankOk[p]) {
+            b = g_mc_bank[p];
+            BankValueSetFromString(b, c_mcBankSection, "last", code);
+            if (!BankKeyExists(b, c_mcBankSection, "load")) {
+                BankValueSetFromString(b, c_mcBankSection, "load", "");
+            }
+            BankValueSetFromString(b, c_mcBankSection, "help",
+                "last = the code of your last game (written at GO). To play a code someone sent you, paste it into load, between the quotes, before you start the game.");
+            BankSave(b);
+            g_mc_last[p] = code;
+        }
+        p = p + 1;
+    }
+}

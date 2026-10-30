@@ -1,3 +1,32 @@
+# Handover: Custom game and match codes (2026-10-30)
+
+**Not committed. Not compiled. Not playtested.**
+
+A rematch in one click, or any setup by hand. Every game now has a readable **match code**, e.g. `p1-z-m041119-uzlrohyluinvi+p2-t-m020713-umamdmvtkvkth`. The setup screen's new **Custom game / rematch** button opens a screen where both players edit both sides or load a code, then both Accept. Format and rules: CURRENT_STATE section 0b.
+
+- **Why a bank file:** SC2 won't paste into chat or dialogs. So at GO the code goes into every human's `Tardigrade.SC2Bank` as `last`. A code from someone else goes into `load` by hand, before the game. Typing a code in chat also works.
+- **Code:**
+  - New `scripts/MatchCode.galaxy`: the state, parse with per-section errors, encode, `MatchCode_FromLive` / `MatchCode_Apply`, and the bank.
+  - New `scripts/CustomSetup.galaxy`: the screen.
+  - GameMode: `g_game_custom` and the button. The dialog is now 600x760.
+  - CycleMod: `CycleMod_PicksEach` uses the larger side's count in a custom game.
+  - UnitGroups: in `UnitGroups_Covers`, group 0 now means all units, but only for a modifier the side holds. An unheld one still covers nothing, which some CycleMod callers rely on. A drafted game never has a held modifier without a group.
+- **Review:** a read-only review found no compile errors. Fixed from it:
+  - The Covers regression above.
+  - Bank signing is now explicitly off.
+  - An empty `u` parses, so every code round-trips.
+  - Custom game no longer overwrites the Mode row.
+  - Limits are counted once per redraw.
+  - Open doubt: the `bank[16]` array. The GUI makes bank arrays, so it should compile.
+  - TardigradeLogic: includes, the custom branch and callbacks, `MatchCode_LoadBanks` in init, the code on the summary, the chat line and bank save at GO, the pre-readied summary.
+- **First editor run (2026-10-30):** opening the screen with no last game threw "Could not get 'player' from parameter in 'PlayerRace' (value: -1)". An editor test can leave a lobby team empty, and Reset read that team's first player. Fixed: `MatchCode_TeamLobbyRace` falls back to the team's decider.
+- **No caps (2026-10-30):** the custom game screen and codes take any number of modifiers and doctrines. Display past a draft's counts: the panel keeps 5 rows a side and the last reads "+N more" (tooltip lists the rest); the doctrine row reads "N picked"; the summary lists names only and is capped at 1150 tall. The stats tooltip now reads each team's held modifiers rather than the panel rows (`g_cycle_panelModMine/Opp` removed).
+- **Docs:** CURRENT_STATE (0b, chain, setup, Covers, scripts, Gotchas: never renumber modifiers/doctrines; every pool unit needs a token), README (Custom game / rematch), public page version 23 (new sections, "#NN" chips on every modifier and doctrine).
+- **Online needs one editor step:** in the trigger editor, add "Bank - Preload Bank" actions to a map-initialization trigger: name `Tardigrade`, one action per player slot (they can't loop). The editor then writes `BankList.xml`. Editor test runs work without it.
+- **Check first:** the Known TODO row "Custom game / match codes". The fastest test is: play one drafted game against the AI, check the bank file and the chat line, then restart and use Custom game / rematch.
+
+---
+
 # Handover: Doctrines, second set (2026-10-28)
 
 **Not committed. Not compiled. Not playtested.** Wave 1 below was playtested and works as intended.

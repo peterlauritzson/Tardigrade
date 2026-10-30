@@ -14,7 +14,8 @@ conditions.
 
 Before anything else, team 1's player (or the only human, in a game against
 the AI) sets the game up on one **setup screen**: a mode, how units are chosen,
-how modifiers are chosen, and whether doctrines are in, then **Start**. Everyone else sees the same screen,
+how modifiers are chosen, and whether doctrines are in, then **Start** (or
+**Custom game / rematch**, below). Everyone else sees the same screen,
 disabled, updating as the choices are made. The defaults are Casual, Alternating
 draft and Free draft, with doctrines off.
 
@@ -41,6 +42,46 @@ The Testing panel is a dialog rather than command-card buttons: a command card
 would need an ability per modifier placed on every unit, which is the kind of
 data the mod deliberately dropped (see "No modifier grants a clickable ability"
 below).
+
+### Custom game / rematch
+
+The setup screen's second button, **Custom game / rematch**, skips the draft.
+On the custom game screen both players edit both sides directly: race, any
+number of modifiers, units (a unit list, Full roster or Unit groups with each
+side's split and which modifier powers which group) and any number of
+doctrines. Past a draft's counts (5 modifiers, 3 doctrines) the in-game panel's
+last row reads "+N more" with the rest on its tooltip, and the summary lists
+names only. It opens
+with the last game's setup when there is one, and can load a code from a
+player's bank file or from a code typed into chat (SC2 does not paste into
+chat). Any change clears both players' **Accept**; once both accept, the game
+starts. Anything goes: the same modifier on both sides, a mirror match, any
+number of units, two modifiers in one group.
+
+Every game shows its **match code** on the summary screen, posts it to chat at
+GO and saves it to each player's bank file, `Tardigrade.SC2Bank` (in the
+StarCraft II `Banks` folder). In that file, `last` is the code of your last game
+and `load` is where you paste a code someone sent you, before starting the game.
+
+```
+p1-z-m041119-uzlrohyluinvi+p2-t-m020713-umamdmvtkvkth
+```
+
+`+` joins the two sides (`p1` / `p2` = lobby team 1 / 2, so swapping them
+trades armies), `-` separates sections, and dots and spaces are ignored:
+
+| Section | Meaning |
+|---|---|
+| `t` / `p` / `z` | the race |
+| `m0411` | modifiers on all your units, 2-digit numbers |
+| `uzlro` | units, 2 letters each; leave it out for Full roster |
+| `gs071142` | Unit groups: split (`t` tech, `r` role, `s` speed, `c` cost), then modifier + group (07 in group 1, 14 in group 2). Command modifiers always cover all units, so they go in `m` |
+| `d0526` | doctrines, 2-digit numbers |
+
+Modifier and doctrine numbers are their numbers on the modifier page and the
+custom game screen. The unit tokens are listed in `scripts/MatchCode.galaxy`
+(`c_mcUnitTable`): `ma` Marine, `tk` Siege Tank, `zl` Zergling and so on. A bad
+code is rejected with the reason, e.g. "p1 modifiers: 27 is too large (max 23)".
 
 ## The three drafts
 
@@ -353,6 +394,8 @@ randomize races, rosters and modifiers.
 | `RosterEnforce.galaxy` | Disables every non-drafted combat unit; grants coupled units. |
 | `UnitGroups.galaxy` | Unit groups: the split + modifier assignment screen, and the "does this modifier reach this unit" lookup. |
 | `Doctrine.galaxy` | Doctrines: the pick screen, the 34 doctrines and their unit classes, in-game application, the Testing doctrine panel. |
+| `MatchCode.galaxy` | Match codes: the setup as text (parse, encode), writing a code into the draft globals, the bank file. |
+| `CustomSetup.galaxy` | The custom game screen: edit both sides or load a code, both Accept. |
 | `CycleMod.galaxy` | Modifier draft + per-player in-game modifiers (legacy rotating-phase system kept behind `c_cyclePhaseMode`). |
 | `Debug.galaxy` | Solo-test detection, auto-run, logging. |
 

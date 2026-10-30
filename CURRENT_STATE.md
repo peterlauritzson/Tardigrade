@@ -34,9 +34,13 @@ via a callback chain:
 ```
 Setup screen → Race Draft → Modifier Draft → Unit (Roster) Draft → [Doctrines] → Summary + 30s countdown → Game
             ↘ (Testing) TestingMode_Start → Game
+            ↘ (Custom game) Custom game screen → both Accept → MatchCode_Apply → Summary (pre-readied, 3s) → Game
                                            ↘ (Full roster) skips the Unit Draft
                                            ↘ (Unit groups) Modifier Draft (buckets) → Unit groups stage → [Doctrines] → Summary
 ```
+
+Every path through `Tardigrade_StartGame` ends the summary by posting the game's
+match code to chat and saving it to every human's bank file (see 0b).
 
 `[Doctrines]` is the optional stage after whichever unit stage ran (the setup
 screen's tick box).
@@ -105,7 +109,10 @@ card columns move left via `g_cycle_boardShift`; the legacy phase board keeps
   190, width 180), **Modifiers** (Buckets / Free draft) and **Free draft size**
   (Bans each / Picks each, two 280-wide cards at y 400) and **Doctrines**
   ("DOCTRINES (trade-offs, picked after the units)" at y 478, two 280-wide cards
-  at y 498; dialog 600x700, Start at y 588). Defaults Casual, Alternating draft,
+  at y 498; dialog 600x760, Start at y 588, **Custom game / rematch** 300x52 at
+  y 656 - sets `g_game_custom` and runs the same callback, see 0b; the Mode row is
+  left as it is, and `MatchCode_Apply` sets Casual).
+  Defaults Casual, Alternating draft,
   Free draft, 2 bans, 3 picks, doctrines off, 2 each.
   A click selects (the
   chosen card is drawn `c_draftStateSelected`, "CHOSEN"); Start commits and runs
@@ -225,6 +232,105 @@ card columns move left via `g_cycle_boardShift`; the legacy phase board keeps
     (`TestingMode_RestoreRefinery`, unverified). It is a dialog, not a
     command card: a card needs an ability per modifier in a free cell on every
     unit — the approach the mod dropped (see Notes below).
+
+### 0b. Custom game and match codes (`MatchCode.galaxy`, `CustomSetup.galaxy`)
+For friends who want a rematch or a hand-made setup quickly. No rules beyond what
+the screens can show, and nothing here is meant for tournament play.
+
+**Match code.** The result of a draft as readable text, by **lobby team** (`p1` =
+team 1, mapped to the draft's P1/P2 through `MatchCode_TeamIsP1` /
+`g_draft_p1_is_team1`):
+`p1-z-m041119-uzlrohyluinvi+p2-t-m020713-umamdmvtkvkth`. `+` joins the sides, `-`
+separates sections, dots and spaces are ignored, lower-cased on read
+(`MatchCode_Clean`). Sections: race `t`/`p`/`z`; `m` = modifiers on all units
+(2-digit CycleMod index); `u` = units (2-letter tokens, `c_mcUnitTable`; present =
+unit list, absent = Full roster); `g` = Unit groups: split letter (`t`/`r`/`s`/`c` =
+preset 1-4) then 3-digit blocks modifier + group 1-3; `d` = doctrines (2-digit
+index). The roster mode follows from the sections: `u` → `c_gameRosterDraft`, `g` →
+`c_gameRosterGroups`, neither → Full; both sides must agree. There is no version
+field: indices are never reused (see Gotchas), and the custom game screen shows
+names.
+- **Parse** (`MatchCode_Parse`) fills scratch slots 3/4 and copies them to slots 1/2
+  only when the whole code is valid; `g_mc_error` names the side and section on
+  failure ("p1 modifiers: 27 is too large (max 23)", "p2 units: Marine (ma) is not a
+  Zerg unit"). Rejected: No Bans (12) and YOLO (16) (`CycleMod_ModIsDraftOnly`), a
+  modifier twice on one side (on/off per side, it would not stack), a Command
+  modifier in `g`, `u` with `g`. Allowed: the same modifier on both sides, a
+  mirror match, any number of units, modifiers and doctrines, several modifiers in
+  one group. An empty `u` parses, so every encoded code round-trips; `MatchCode_Problem`
+  then blocks Accept. Draft-only modifiers are left out of `MatchCode_FromLive`
+  (No Bans only acts in the draft).
+- **State** `g_mc_*`, slots 1/2 = lobby team 1/2: race, `modOn` / `modGrp` (0 = all
+  units) per CycleMod index, `unit` per pool slot of the side's race, `split`,
+  `doc`; `g_mc_roster` is shared. Edited by the screen only through
+  `MatchCode_SetRace` (clears the unit list), `_StepMod` (off → on → with Unit groups
+  and a non-Command mod, group 1 → 2 → 3 → off), `_ToggleUnit`, `_ToggleDoc`,
+  `_SetRoster` (leaving Unit groups ungroups every
+  mod), `_SetSplit`, `_Reset` (lobby races, Full roster, nothing picked);
+  `MatchCode_Problem()` is what blocks Accept (no units in unit-list mode, ...).
+- **Apply** (`MatchCode_Apply`, mirrors `Tardigrade_DebugAutoRun` without dice):
+  Casual, `g_game_roster` from the code, `g_game_buckets` false,
+  `g_game_doctrines` / `g_game_docPicks` from the larger doctrine count;
+  `SetTeamRace` per team (same race on both sides is fine); `g_draft_p1Race` /
+  `p2Race`; the roster globals (unit lists and pick counts in unit-list mode);
+  `CycleMod_SetSideMod` per mod; doctrines through `Doctrine_SetPick`. Unit groups:
+  `g_ug_preset`, `g_ug_modCount` 0 and `UnitGroups_RegisterSide` for the split's
+  data-table keys, then `g_ug_modGroup` written directly (any number per group,
+  0 = all units), `g_ug_done`. `Doctrine_Commit` only when a side has doctrines.
+- **Live → code** (`MatchCode_FromLive` / `MatchCode_LiveCode`): reads the draft
+  globals back. The summary shows it (`g_sum_lblCode`, under READY at y 704 + extra,
+  dialog +28, redrawn with a YOLO reroll), and `Tardigrade_StartGame` posts it to
+  chat and calls `MatchCode_SaveLast` right after the summary.
+- **Shape readers in a custom game** (`GameMode_IsCustom()`, `g_game_custom`):
+  `CycleMod_PicksEach` = the larger side's modifier count, 1-5 (the panel
+  arrays). A side holding more gets a last panel row "+N more" whose tooltip lists
+  the rest (`CycleMod_SetPanelRow`); the stats tooltip goes by each team's held
+  modifiers (`CycleMod_StatTipBlock(team)`), not the rows. A doctrine row with more
+  than 3 reads "N picked" (names on its tooltip). The summary adds
+  `MatchCode_SummaryExtra` (36 px per mod past 3, 56 past 4 in Unit groups, 20 per
+  unit past 7), reads "CUSTOM GAME", and opens readied with the 3s countdown
+  (`g_sum_preReady`). Past 5 modifiers (`MatchCode_CompactMods`) or 3 doctrines
+  (`Doctrine_SummaryCompact`) the summary lists names only, two to a line (a
+  modifier with its group, one a line, in Unit groups). A long code adds 16 px a
+  line; the dialog is capped at 1150 tall (the columns are cut short past that).
+  Every modifier without a group reads "all units" in the Unit groups summary.
+
+**Bank file** `Tardigrade.SC2Bank`, section `codes`: `last` (written at GO for every
+human, `MatchCode_SaveLast`), `load` (created empty, edited by hand, never
+cleared), `help` (one sentence). Loaded once per human in `Tardigrade_Init`
+(`MatchCode_LoadBanks`, before the setup screen) into `g_mc_last` / `g_mc_load`.
+Unsigned (`BankOptionSet(..., c_bankOptionSignature, false)` right after the load),
+so hand edits are accepted. **Online, SC2
+only syncs a bank that the map preloads**: the editor writes `BankList.xml` from a
+GUI "Preload Bank" action (Ntve `BankPreload`, name and player as literals, one
+action per player slot, in a map-initialization trigger). Not added yet; editor
+test runs don't need it.
+
+**Custom game screen** (`CustomSetup_Start`, 1240 x 860, layout numbers in the
+file header): status line (y 50); load row (y 84): Last game (the deciders' `last`
+first, then anyone's), File: Player N x2 (humans with a `load` code), Reset; side
+headers (y 146, "p1 team 1 · Player N · counts"); race cards (y 174); tabs
+Modifiers / Units / Doctrines (y 228), **per viewer** (`g_cs_tab`, anyone may
+switch their own); the boards from y 284 - Modifiers 3 x 7 per side (draft-only 12
+/ 16 have no card; picked = SELECTED "ALL UNITS" / "GROUP n", no limit,
+"#NN" in the detail), Units (roster row Unit list / Full roster / Unit groups, then
+the pool 3 x 6, "Every X unit is allowed.", or 4 split cards and three group
+labels listing their modifiers and units), Doctrines 3 x 12 per side; the live
+code (y 770, the `MatchCode_Problem` in red under it); Accept per decider and Back
+(y 800). Opens prefilled with the last game when it parses, else
+`MatchCode_Reset`. A chat message from a decider that starts with `p1-` / `p2-`
+(after `MatchCode_Clean`) loads like a card; a bad code changes nothing, shows the
+error in the status line and posts "Code not loaded: ..." to chat. Every redraw
+draws each card for the deciders (clickable) and everyone else, then runs a
+per-viewer visibility pass (`DraftStyle_ApplyCard` makes a card visible). The
+summary labels its columns "p1 (team 1)" / "p2 (team 2)" in a custom game.
+
+**Flow.** Setup screen → Custom game / rematch → `Tardigrade_OnModeChosen` →
+`CustomSetup_Start(onAccept, onBack)`. Both deciders (`MatchCode_TeamDecider`) edit
+both sides; any change clears both Accepts; both accepted →
+`Tardigrade_OnCustomAccepted` (`MatchCode_Apply`, `g_sum_preReady`,
+`Tardigrade_StartGame`). Back (mode chooser only) → `Tardigrade_OnCustomBack` →
+`GameMode_Select` again (which resets `g_game_custom`).
 
 ### 1. Race Draft (`RaceDraft.galaxy`)
 - P1 (the "banner") bans one race, P2 picks from the remaining two, P1 gets the
@@ -519,9 +625,12 @@ timer, destroys the dialog and trigger, runs the callback. `UnitGroups_Randomize
 
 **Interface** (CycleMod forward-declares these): `bool UnitGroups_Active()` (true
 once committed); `bool UnitGroups_Covers(bool isP1, int modIdx, string unitType)` -
-true when not active or when the mod's bucket is Command/None, else the side's
-group for the mod is non-zero and equals the side's group for the type (one bool,
-one array read, one data-table read); `string UnitGroups_ModLabel(bool isP1, int
+true when not active or when the mod's bucket is Command/None; with group 0 it is
+whether the side holds the mod (a held mod with no group covers all units - only
+a custom game has one, the draft gives every non-Command pick a group - and an
+unheld one covers nothing, which the CycleMod callers that pass a fixed index rely
+on); else the side's group for the mod equals the side's group for the type (one
+bool, one array read, one data-table read); `string UnitGroups_ModLabel(bool isP1, int
 modIdx)` - group name or "". Also used by the summary: `UnitGroups_ModUnits`,
 `UnitGroups_SidePresetName`.
 
@@ -1329,6 +1438,8 @@ Notes:
 | `RosterEnforce.galaxy` | Disables non-drafted units; grants coupled units. |
 | `UnitGroups.galaxy` | Unit groups roster option: split + modifier-assignment stage, group data, `UnitGroups_Covers` lookup. Included after `RosterEnforce`, before `TestingMode`. |
 | `Doctrine.galaxy` | Doctrines stage, doctrine data and unit classes, in-game application, Testing doctrine panel. Included after `UnitGroups`, before `TestingMode`. |
+| `MatchCode.galaxy` | Match codes (see 0b): setup state, parse / encode, `MatchCode_FromLive` / `MatchCode_Apply`, the bank file. Included after `TestingMode` (uses `TestingMode_LobbyRace`). |
+| `CustomSetup.galaxy` | The custom game screen (see 0b). Included after `MatchCode`, last. |
 | `RequirementData.xml` | Un-gates the upgrade buttons Blizzard hid behind `CRequirementAllowUnit` (Protoss air weapons/armor, Stimpack) — see Roster enforcement. |
 | `CycleMod.galaxy` | Modifier draft + per-player in-game modifiers (+ gated legacy phase system). |
 | `Debug.galaxy` | Solo-test detection, auto-run, logging. |
@@ -1359,6 +1470,11 @@ Notes:
   point, text, unit, timer, etc.).
 - Verify all changes by **recompiling in the SC2 editor**; the linter passes on
   errors it can't see.
+- **Match codes store numbers.** A modifier's or doctrine's index is its number
+  in every code players have saved. Never renumber: a new one takes the next
+  free index, and a removed one's index stays unused. A new roster pool unit
+  needs a 2-letter token in `c_mcUnitTable` (`MatchCode.galaxy`), unique across
+  all three races, or codes skip it.
 
 ---
 
@@ -1371,6 +1487,7 @@ Notes:
 | **Setup screen / per-stage YOLO / Full roster, unverified in-editor** | Nothing compiled or played. Check: **(1) compile** (GameMode, CycleMod, RaceDraft, RosterDraft, RosterEnforce, TardigradeLogic). **(2) Setup screen** - three rows plus Start, others see it disabled and live, Testing greys Roster/Modifiers. **(3) YOLO button** on each stage: appears only for a human side before its first choice, vanishes after, announces in chat, immediate random action on the side's own turn, race/modifier/unit behaviour as described; lone human deciding both sides gets it for the side that is up; both-YOLO on modifiers skips the board; both-YOLO on units deals both rosters. **(4) Roster mid-stage rebuild** (`RosterDraft_YoloPressed`) - P2 pressing during P1's first pick, and P1 pressing at step 1. **(5) Full roster** - no unit restrictions, Archon/Ravager/Lurker/Brood Lord/Baneling fallbacks hidden, Queen uncapped, no roster HUD, No Bans card N/A and never rolled. |
 | **Unit groups, unverified in-editor** | Nothing compiled or played. Check first: **(1) compile** (GameMode, UnitGroups, TardigradeLogic, CycleMod). **(2) Setup screen** - the three roster cards fit 180px (descriptions may clip when chosen), Unit groups shows Buckets chosen / Free draft N/A. **(3) Groups stage** - the dialog lays out (1100 × 676; unit lists fit the 212px columns at 8 units), split and modifier buttons swap correctly, Lock in grace, both humans choose at once and see only choosing / locked in, lone human gets P1 then P2, YOLO rolls and locks, Tournament expiry locks the current choice, spectators see the status line. **(4) `DataTableGetInt` of a missing key reads 0** and `UnitGroups_Covers` is cheap in the 0.5s scan. **(5) In game** - a group modifier touches only its group (alternate forms and spawned units follow their base unit), the Command pick is global, the panel shows the group label, Open Skies / Quickstep / Arcane Surge / Overwatch catalog edits honour the groups. **(6) Summary** - taller dialog fits, no REROLL, group lists read right. |
 | **Doctrines, unverified in-editor** | Nothing compiled or played. Check, in order: **(1) compile** - `Doctrine.galaxy` (new), GameMode, CycleMod, TardigradeLogic, TestingMode, BehaviorData, GameStrings. **(2) `VitalMaxFractionArray` convention** - a Marine with Heavy Plating must read 56 max life (45 x 1.25); 11 means the field is a multiplier and every value becomes 1 + value. **(3) Health percent kept** - a half-health unit stays at half when a health doctrine switches on at activation (no refill). **(4) Attacker `DamageResponse` with `ModifyFraction` > 1** - a Heavy Hitters Marine hits a Zergling for 9 instead of 6. **(5) `TargetFilters` `Armored;-` / `Light;-`** fire on the right targets. **(6) Kind filters** - Loose Formation cuts a Siege Tank's splash on neighbours (not the main target, which takes Ranged); Spell Ward cuts Psionic Storm. **(7) Negative `WeaponRange` / `SightBonus` / armor** work (Rapid Fire Marine range 4, Sniper Scopes sight -4). **(8) Deep Reserves** - a High Templar warped in after activation arrives with 200 energy, one alive at activation doesn't, burrowing an Infestor doesn't refill. **(9) Last Stand's active buff** comes and goes around 35%. **(10) Layout** - setup dialog 600x700, stage 1100x710 and its 255px card text, summary with 3 doctrines, panel rows, the Testing doctrine panel next to the modifier panel. **(11) Buffs survive siege / land / burrow morphs**, or the scan re-adds them within 0.5s. **(12) Icons render.** **(13)** The Melee / Ranged damage-type filter fires for direct hits only - a Frost Rounds Siege Tank chills only the shell's main target. **(14) Last Breath** - a nearly dead Marine survives one lethal shot, the Ready icon goes and Spent shows for 45s, a Baneling still dies; if Ready never goes away the unit is immortal - the Handled set's Caster resolution is wrong. **(15)** Self-inflicted `UnitDamage` (Ignite burn, Volatile blast) lands and can kill. **(16) Ricochet** hits a second enemy on the same plane, never the first target, no chains. **(17) Champion** is crowned within a second of activation with its text, and a new one after it dies. **(18) Battle Rhythm** subtitle every 20s to the owning team, buffs swap. **(19) Bounty** pays on kills with gold text. **(20) War Banners** aura appears around casters and fades after they leave. **(21) Volatile chains** stay cheap in big fights. **(22)** `VitalMaxFractionArray` Energy lowers max energy (Overcharged Cells High Templar 130/130). **(23)** The 4x9 board and the 255px card text fit. |
+| **Custom game / match codes, unverified in-editor** | Nothing compiled or played. Check, in order: **(1) compile** - `MatchCode.galaxy` and `CustomSetup.galaxy` (new), GameMode, CycleMod, UnitGroups, TardigradeLogic. **(2) Bank file** - after one drafted game the file exists (expected `Documents\StarCraft II\Accounts\<id>\<toon>\Banks\Tardigrade.SC2Bank` for an editor test run, under a publisher folder once published) with `last`, an empty `load` and `help`; the chat line and the summary's code match it. **(3) Rematch** - next game, Custom game / rematch opens prefilled with that setup; Accept starts it with the same races, modifiers, units, groups and doctrines as the summary shows. **(4) Hand edits** - a code pasted into `load` shows up as a File card; a bad one is refused with its reason in the status line and chat. **(5) Chat** - `TriggerAddEventChatMessage(..., "", false)` fires on every message and `EventChatMessage(false)` returns the whole line. **(6) Screen** - the 1240 x 860 dialog fits, tabs switch per viewer, no limit on modifiers / doctrines, the group step on a second click, any edit clears both Accepts, Back returns to the setup screen. **(7) In game** - the same modifier on both sides works, a mirror match spawns both town halls, the panel shows every modifier when the sides have different counts (past 5, "+N more" with the rest on its tooltip; the summary goes names-only and stays on screen with everything picked), an ungrouped non-Command modifier in Unit groups covers every unit. **(8) Online** - a "Preload Bank" action (name "Tardigrade", one per player slot) in a map-initialization trigger, so `BankList.xml` lists the bank; without it, loading banks in a multiplayer game is not expected to work. **Known quirk, not new:** `RosterEnforce_ApplyAll` skips P2's team when one human decides both sides, so an AI's custom unit list is not enforced. |
 | Economy modifier balance | Auto Refineries' 200-mineral gas buildings and Minerals Only's 1.5× are first-pass. Factory Lines waits for 3:00 like every other in-game modifier (only Auto Refineries and Minerals Only were asked to be live from 0:00) — add it to `CycleMod_ModActiveFromStart` if it should be too. |
 | Activation delay | 3:00 is a starting value (`c_cycleActivationDelay`). |
 | Battle Blink has no visual/audio feedback | `TardigradeAbil_Blink` teleports silently — the Stalker's Blink flash/sound actors are keyed to effect id `Blink`, not reusable under our separate id without duplicating those actor entries too. Not attempted blind (unverifiable without the SC2 Editor); functional but silent. |

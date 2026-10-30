@@ -41,7 +41,14 @@
 // Then a summary screen (both rosters and modifier sets) counts down 30s -
 // 3s once both players click Ready; a YOLO side may reroll its units there, one
 // fewer each time, which restarts the 30s. Workers spawn and start mining, and
-// the game begins with rosters enforced and the modifiers running.
+// the game begins with rosters enforced and the modifiers running. At GO the
+// game's match code is posted to chat and saved to every human's bank file
+// (MatchCode.galaxy), for a rematch.
+//
+// Custom game (the setup screen's other button) skips steps 1-4: both sides are
+// set on the custom game screen (CustomSetup.galaxy), from a match code or by
+// hand, both players Accept, MatchCode_Apply fills the draft globals and the
+// summary opens already readied.
 //--------------------------------------------------------------------------------------------------
 
 include "scripts/Debug"
@@ -55,6 +62,8 @@ include "scripts/RosterEnforce"
 include "scripts/UnitGroups"
 include "scripts/Doctrine"
 include "scripts/TestingMode"
+include "scripts/MatchCode"
+include "scripts/CustomSetup"
 
 //--------------------------------------------------------------------------------------------------
 // Draft summary + countdown, shown between the draft and the game (real time,
@@ -79,7 +88,9 @@ int     g_sum_lblP2      = c_invalidDialogControlId;
 int     g_sum_btnReady   = c_invalidDialogControlId;
 int     g_sum_btnRerollP1 = c_invalidDialogControlId;
 int     g_sum_btnRerollP2 = c_invalidDialogControlId;
+int     g_sum_lblCode    = c_invalidDialogControlId;
 trigger g_sum_trigger    = null;
+bool    g_sum_preReady   = false;  // a custom game: both already accepted, so start ready
 fixed   g_sum_left       = 0.0;
 bool    g_sum_readyP1    = false;
 bool    g_sum_readyP2    = false;
@@ -100,6 +111,10 @@ string Tardigrade_SummaryColumn(bool isP1) {
 
     if (isP1) { col = "7FD0FF"; tag = "P1"; race = g_roster_p1Race; count = g_cycle_p1Count; rerolls = g_sum_rerollsP1; }
     else      { col = "FF9F7F"; tag = "P2"; race = g_roster_p2Race; count = g_cycle_p2Count; rerolls = g_sum_rerollsP2; }
+    // A custom game names its sides by lobby team, as its screen and the code do.
+    if (GameMode_IsCustom()) {
+        if (isP1 == g_draft_p1_is_team1) { tag = "p1 (team 1)"; } else { tag = "p2 (team 2)"; }
+    }
 
     s = "<c val=\"" + col + "\">" + tag + "  " + c_draftDot + "  " + RaceName(race) + "</c>";
     if (CycleMod_YoloStagesText(isP1) != "") {
@@ -114,15 +129,29 @@ string Tardigrade_SummaryColumn(bool isP1) {
     i = 1;
     while (i <= count) {
         if (isP1) { idx = CycleMod_P1Mod(i); } else { idx = CycleMod_P2Mod(i); }
+        // A custom game past a draft's cap: names only (MatchCode_CompactMods).
+        if (MatchCode_CompactMods()) {
+            if (GameMode_IsUnitGroups()) {
+                groupLabel = UnitGroups_ModLabel(isP1, idx);
+                if (groupLabel == "") { groupLabel = "all units"; }
+                s = s + "\n" + CycleMod_Name(idx) + "  <c val=\"FFD54A\">" + groupLabel + "</c>";
+            }
+            else if (i % 2 == 1) { s = s + "\n" + CycleMod_Name(idx); }
+            else                 { s = s + ", " + CycleMod_Name(idx); }
+            i = i + 1;
+            continue;
+        }
         s = s + "\n" + CycleMod_Name(idx);
         // Unit groups: a group pick names its group and lists that group's units;
         // the Command pick says it is global.
         if (GameMode_IsUnitGroups()) {
+            // A modifier with no group covers every unit: the Command pick, or a
+            // custom game's ungrouped one (UnitGroups_Covers).
             groupLabel = UnitGroups_ModLabel(isP1, idx);
             if (groupLabel != "") {
                 s = s + "  <c val=\"FFD54A\">" + groupLabel + "</c>"
                     + "\n" + DraftStyle_Small("<c val=\"999999\">" + UnitGroups_ModUnits(isP1, idx) + "</c>");
-            } else if (CycleMod_Bucket(idx) == c_cycleBucketCommand) {
+            } else {
                 s = s + "  <c val=\"FFD54A\">all units</c>";
             }
         }
@@ -229,6 +258,11 @@ void Tardigrade_SummaryRefresh() {
 
     Tardigrade_SummaryRerollButton(g_sum_btnRerollP1, true);
     Tardigrade_SummaryRerollButton(g_sum_btnRerollP2, false);
+
+    // Redrawn with the rest, so a YOLO reroll shows in the code at once.
+    DialogControlSetPropertyAsText(g_sum_lblCode, c_triggerControlPropertyText, Tardigrade_Viewers(),
+        StringToText(DraftStyle_Small("<c val=\"7A7A7A\">Match code (saved to your bank file at GO):</c>  "
+            + "<c val=\"FFFFFF\">" + MatchCode_LiveCode() + "</c>")));
 }
 
 bool Tardigrade_SummaryOnClicked(bool testConds, bool runActions) {
@@ -275,12 +309,15 @@ bool Tardigrade_SummaryOnClicked(bool testConds, bool runActions) {
 // y 590; READY at y 648. With Unit groups every group pick also lists its units,
 // so everything below the columns' top (their height, the REROLL and READY rows
 // and the dialog) is pushed down by `extra` = 90 (780 x 800, columns 350 x 570).
-// Doctrines add their block's height to `extra` too (Doctrine_SummaryExtra).
+// Doctrines add their block's height to `extra` too (Doctrine_SummaryExtra), and
+// a custom game what its longer lists need (MatchCode_SummaryExtra). The match
+// code sits under READY at y 704 (+28 on the dialog, +16 a line when it wraps).
 void Tardigrade_SummaryCountdown() {
     int lbl;
     int secs;
     int lastCue;
     int extra;
+    int codeExtra;
 
     g_sum_readyP1   = false;
     g_sum_readyP2   = false;
@@ -289,17 +326,27 @@ void Tardigrade_SummaryCountdown() {
 
     extra = 0;
     if (GameMode_IsUnitGroups()) { extra = 90; }
-    extra = extra + Doctrine_SummaryExtra();
+    extra = extra + Doctrine_SummaryExtra() + MatchCode_SummaryExtra();
+    // A long code (a custom game's long lists) wraps: about 120 characters a line
+    // with its caption. And a custom game with everything picked must still fit
+    // the screen: past 1150 the columns are cut short instead.
+    codeExtra = 16 * ((StringLength(MatchCode_LiveCode()) + 45) / 120);
+    if (738 + extra + codeExtra > 1150) { extra = 1150 - 738 - codeExtra; }
 
-    g_sum_dialog = DialogCreate(780, 710 + extra, c_anchorCenter, 0, 0, true);
+    g_sum_dialog = DialogCreate(780, 738 + extra + codeExtra, c_anchorCenter, 0, 0, true);
     Tardigrade_ObservableDialog(g_sum_dialog);
     DialogSetVisible(g_sum_dialog, Tardigrade_Viewers(), true);
 
     lbl = DialogControlCreate(g_sum_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(lbl, Tardigrade_Viewers(), 740, 26);
     DialogControlSetPosition(lbl, Tardigrade_Viewers(), c_anchorTop, 0, 18);
-    DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
-        StringToText("<c val=\"FFD54A\">DRAFT COMPLETE</c>"));
+    if (GameMode_IsCustom()) {
+        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
+            StringToText("<c val=\"FFD54A\">CUSTOM GAME</c>"));
+    } else {
+        DialogControlSetPropertyAsText(lbl, c_triggerControlPropertyText, Tardigrade_Viewers(),
+            StringToText("<c val=\"FFD54A\">DRAFT COMPLETE</c>"));
+    }
 
     g_sum_lblClock = DialogControlCreate(g_sum_dialog, c_triggerControlTypeLabel);
     DialogControlSetSize(g_sum_lblClock, Tardigrade_Viewers(), 740, 26);
@@ -332,6 +379,10 @@ void Tardigrade_SummaryCountdown() {
     DialogControlSetSize(g_sum_btnReady, Tardigrade_Viewers(), 320, 48);
     DialogControlSetPosition(g_sum_btnReady, Tardigrade_Viewers(), c_anchorTop, 0, 648 + extra);
 
+    g_sum_lblCode = DialogControlCreate(g_sum_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(g_sum_lblCode, Tardigrade_Viewers(), 740, 20 + codeExtra);
+    DialogControlSetPosition(g_sum_lblCode, Tardigrade_Viewers(), c_anchorTop, 0, 704 + extra);
+
     g_sum_trigger = TriggerCreate("Tardigrade_SummaryOnClicked");
     TriggerAddEventDialogControl(g_sum_trigger, c_playerAny, g_sum_btnReady, c_triggerControlEventTypeClick);
     TriggerAddEventDialogControl(g_sum_trigger, c_playerAny, g_sum_btnRerollP1, c_triggerControlEventTypeClick);
@@ -343,6 +394,13 @@ void Tardigrade_SummaryCountdown() {
     // g_sum_left from the click trigger) take effect within a quarter second.
     lastCue = 99;
     g_sum_left = IntToFixed(c_tardigradeCountdown);
+    // A custom game was accepted on its own screen: a last look, then go.
+    if (g_sum_preReady) {
+        g_sum_readyP1 = true;
+        g_sum_readyP2 = true;
+        g_sum_left    = IntToFixed(c_tardigradeReadyCountdown);
+        Tardigrade_SummaryRefresh();
+    }
     while (g_sum_left > 0.0) {
         secs = FixedToInt(g_sum_left + 0.99);
         // Beep once as each of the last 3 whole seconds is reached; a reroll that
@@ -380,6 +438,8 @@ void Tardigrade_SummaryCountdown() {
 // Core game-start logic - shared by the normal draft chain and the debug auto-run.
 //--------------------------------------------------------------------------------------------------
 void Tardigrade_StartGame() {
+    string code;
+
     // The draft is over: no Tournament clock past this point.
     DraftTimer_Shutdown();
 
@@ -390,6 +450,13 @@ void Tardigrade_StartGame() {
     // the town hall has been on the map (unselectable) since the race draft
     // finished - see RaceDraft.galaxy SetPlayerRace / Tardigrade_DraftLock_Start.
     Tardigrade_SummaryCountdown();
+
+    // The final setup, rerolls included, for a rematch: one chat line (so it is
+    // in the replay) and every human's bank file.
+    code = MatchCode_LiveCode();
+    MatchCode_SaveLast(code);
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat, StringToText(
+        "<c val=\"7A7A7A\">Match code:</c> " + code));
 
     // Enforced after the summary, not before: a YOLO side can reroll its
     // roster there.
@@ -674,10 +741,32 @@ bool Tardigrade_OnDraftFinished(bool testConds, bool runActions) {
 }
 
 //--------------------------------------------------------------------------------------------------
-// Callback: setup done (Start pressed) -> the race draft, or straight into
-// Testing mode.
+// Callbacks: the custom game screen. Accepted -> its setup into the draft
+// globals, then the summary (already readied) and the game. Back -> the setup
+// screen again.
+//--------------------------------------------------------------------------------------------------
+bool Tardigrade_OnCustomAccepted(bool testConds, bool runActions) {
+    MatchCode_Apply();
+    g_sum_preReady = true;
+    Tardigrade_StartGame();
+    return true;
+}
+
+bool Tardigrade_OnCustomBack(bool testConds, bool runActions) {
+    GameMode_Select(g_draft_modeChooser, TriggerCreate("Tardigrade_OnModeChosen"));
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Callback: setup done (Start pressed) -> the race draft, straight into
+// Testing mode, or the custom game screen.
 //--------------------------------------------------------------------------------------------------
 bool Tardigrade_OnModeChosen(bool testConds, bool runActions) {
+    if (GameMode_IsCustom()) {
+        CustomSetup_Start(TriggerCreate("Tardigrade_OnCustomAccepted"),
+            TriggerCreate("Tardigrade_OnCustomBack"));
+        return true;
+    }
     if (GameMode_IsTesting()) {
         TestingMode_Start();
         return true;
@@ -694,6 +783,10 @@ void Tardigrade_Init() {
     if (g_debugLevel > c_debug_None) {
         Debug_SetAutoRunTrigger(TriggerCreate("Tardigrade_DebugAutoRun"));
     }
+
+    // Every human's bank file (last game's code, a code to load). At map init:
+    // online, only banks preloaded here are synced (see MatchCode.galaxy).
+    MatchCode_LoadBanks();
 
     // Setup (teams, pause, draft lock), then Setup screen -> Race -> Modifiers -> Units -> Game.
     if (!RaceDraft_Setup()) {

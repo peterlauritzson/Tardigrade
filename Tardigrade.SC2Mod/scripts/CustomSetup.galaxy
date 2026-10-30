@@ -1,0 +1,922 @@
+//--------------------------------------------------------------------------------------------------
+// Custom game screen
+//
+// Shown with mission time paused, before any draft, when the host picks Custom
+// game. It edits MatchCode's state (slots 1 and 2 = lobby team 1 / team 2, written
+// "p1" / "p2" on screen, plus g_mc_roster) and nothing else, only through
+// MatchCode's edit functions. Each returns false when nothing changed: then the
+// click does nothing, not even a click cue.
+//
+//   Editors   the two deciders, MatchCode_TeamDecider(1) and (2) (one player when
+//             one human plays an AI). Either editor may change anything on both
+//             sides. Everyone else (spectators, teammates) sees the same screen
+//             read-only, as in the other setup screens.
+//   Changes   any edit or load clears both Accepts.
+//   Accept    one card per distinct editor, only its owner can click it. When every
+//             editor has accepted the dialog and triggers are destroyed and onAccept
+//             runs. Accept is blocked (shown Taken, with the reason) while
+//             MatchCode_Problem() says the setup cannot start.
+//   Back      only g_draft_modeChooser can click it; destroys everything, runs onBack.
+//   Start     the first human's last game code is loaded (the deciders first); if
+//             there is none, or it does not parse, the setup is MatchCode_Reset().
+//   Load      top row: Last game / File: Player N (x2) / Reset. An editor can also
+//             type a code in chat while the screen is open: a message that starts
+//             with p1- or p2- (after MatchCode_Clean) is loaded. A bad code leaves
+//             the setup unchanged; the status line shows the error and the chat gets
+//             "Code not loaded: ...".
+//   Tabs      Modifiers / Units / Doctrines. The tab is PER VIEWER (g_cs_tab), and
+//             anyone may click one, spectators too: it only changes their own view.
+//
+// Layout (dialog 1240 x 860, all positions c_anchorTop, x from the centre; side x is
+// -310 for p1 and +310 for p2):
+//
+//   y 50    status label 1180 x 22, per viewer
+//   y 84    4 load cards 280 x 48 at x -435 / -145 / 145 / 435
+//   y 146   side headers 580 x 24
+//   y 174   race cards 190 x 44, 3 a side at side x -200 / 0 / 200
+//   y 228   tab cards 260 x 40 at x -280 / 0 / 280
+//   Modifiers tab   21 cards a side (23 less the draft-only ones), 3 columns x 7
+//                   rows, 190 x 56, pitch 200 x 62, top y 284
+//   Units tab       roster row at y 284 (3 cards 260 x 48), then per side:
+//                     Unit list    18 cards, 3 x 6, 190 x 48, pitch y 54, top y 344,
+//                                  "N units" at y 676
+//                     Full roster  one line at y 344
+//                     Unit groups  4 split cards 140 x 48 at y 344, 3 group labels
+//                                  580 x 100 at y 404 / 508 / 612, a note at y 716
+//   Doctrines tab   34 cards a side, 3 x 12, 190 x 36, pitch y 38, top y 284
+//   y 770   code label 1180 x 30 (second line: the problem, in red)
+//   y 800   Accept cards 300 x 48 (two editors: x -310 / +310, Back at x 0;
+//           one editor: Accept at x -160, Back at x +160), Back 200 x 48
+//
+// Every card is drawn twice per refresh, once for the editors (clickable) and once
+// for everyone else (disabled). DraftStyle_ApplyCard always makes a card visible
+// for the group it draws, so each refresh ends with a per-viewer visibility pass
+// that hides the boards of the tabs that viewer is not on.
+//
+// Include after MatchCode.galaxy. Entry point: CustomSetup_Start.
+//--------------------------------------------------------------------------------------------------
+
+int    g_cs_dialog = c_invalidDialogId;
+bool   g_cs_open   = false;
+int    g_cs_ed1    = 0;                 // the editor of lobby team 1
+int    g_cs_ed2    = 0;                 // the editor of lobby team 2
+bool   g_cs_single = true;              // one distinct editor
+playergroup g_cs_edGroup;               // the editors
+playergroup g_cs_otherGroup;            // everyone else
+playergroup g_cs_acc1Own;               // the owner of Accept card 1 / 2
+playergroup g_cs_acc1Oth;               // everyone but the owner
+playergroup g_cs_acc2Own;
+playergroup g_cs_acc2Oth;
+playergroup g_cs_backOwn;               // the Back card's chooser
+playergroup g_cs_backOth;
+bool[3] g_cs_acc;                       // [1] / [2]: that editor has accepted
+int[16] g_cs_tab;                       // per viewer: 0 Modifiers, 1 Units, 2 Doctrines
+string g_cs_note   = "";                // the last load result, coloured, starts with a separator
+int    g_cs_lastP  = 0;                 // whose "last" code the Last game card loads (0 = none)
+int[3] g_cs_loadP;                      // [1] / [2]: whose "load" code the File cards load (0 = none)
+trigger g_cs_onAccept = null;
+trigger g_cs_onBack   = null;
+trigger g_cs_click    = null;
+trigger g_cs_chat     = null;
+
+// Controls. Sides are 1..2.
+int       g_cs_status = c_invalidDialogControlId;
+int[4]    g_cs_load;                    // Last game, File 1, File 2, Reset
+int[3]    g_cs_hdr;
+int[3][4] g_cs_race;                    // [side][race 1..3]
+int[3]    g_cs_tabBtn;
+int[3][24] g_cs_mod;                    // [side][CycleMod index]
+int[3]    g_cs_rosterBtn;               // Unit list, Full roster, Unit groups
+int[3][19] g_cs_unit;                   // [side][roster pool slot]
+int[3]    g_cs_unitCnt;
+int[3]    g_cs_fullLbl;
+int[3][5] g_cs_split;
+int[3][4] g_cs_grpLbl;
+int[3]    g_cs_grpNote;
+int[3][35] g_cs_doc;
+int       g_cs_code   = c_invalidDialogControlId;
+int[3]    g_cs_accBtn;
+int       g_cs_back   = c_invalidDialogControlId;
+
+//--------------------------------------------------------------------------------------------------
+// Small helpers
+//--------------------------------------------------------------------------------------------------
+int CustomSetup_SideX(int t) {
+    if (t == 1) { return -310; }
+    return 310;
+}
+
+// Card index 0..2 of the roster row -> c_gameRoster*.
+int CustomSetup_RosterOf(int i) {
+    if (i == 0) { return c_gameRosterDraft; }
+    if (i == 1) { return c_gameRosterFull; }
+    return c_gameRosterGroups;
+}
+
+string CustomSetup_RosterName(int i) {
+    if (i == 0) { return "Unit list"; }
+    if (i == 1) { return "Full roster"; }
+    return "Unit groups";
+}
+
+string CustomSetup_RosterDesc(int i) {
+    if (i == 0) { return "pick each side's units"; }
+    if (i == 1) { return "every unit allowed"; }
+    return "every unit; modifiers can power one group";
+}
+
+string CustomSetup_TabName(int i) {
+    if (i == 0) { return "Modifiers"; }
+    if (i == 1) { return "Units"; }
+    return "Doctrines";
+}
+
+string CustomSetup_TabDesc(int i) {
+    if (i == 0) { return "any number a side"; }
+    if (i == 1) { return "who can use which units"; }
+    return "any number a side";
+}
+
+string CustomSetup_SplitDesc(int p) {
+    if (p == 1) { return "by building"; }
+    if (p == 2) { return "by role"; }
+    if (p == 3) { return "by speed"; }
+    return "by price";
+}
+
+int CustomSetup_ChosenState(bool chosen) {
+    if (chosen) { return c_draftStateSelected; }
+    return c_draftStateOpen;
+}
+
+playergroup CustomSetup_AccOwn(int k) {
+    if (k == 1) { return g_cs_acc1Own; }
+    return g_cs_acc2Own;
+}
+
+playergroup CustomSetup_AccOth(int k) {
+    if (k == 1) { return g_cs_acc1Oth; }
+    return g_cs_acc2Oth;
+}
+
+bool CustomSetup_HasLast(int p) {
+    if (p < 1) { return false; }
+    if (p > 15) { return false; }
+    if (!g_mc_bankOk[p]) { return false; }
+    return g_mc_last[p] != "";
+}
+
+bool CustomSetup_AllAccepted() {
+    if (!g_cs_acc[1]) { return false; }
+    if (g_cs_single) { return true; }
+    return g_cs_acc[2];
+}
+
+void CustomSetup_ClearAccepts() {
+    g_cs_acc[1] = false;
+    g_cs_acc[2] = false;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Drawing
+//--------------------------------------------------------------------------------------------------
+void CustomSetup_DrawTo(int control, playergroup grp, bool canClick, int state, string tag,
+                        string name, string detail, string tip) {
+    DraftStyle_ApplyCard(control, grp, state, DraftStyle_Card(state, tag, name, detail), canClick);
+    DraftStyle_SetTip(control, grp, tip);
+}
+
+// A card for the editors (clickable) and everyone else (disabled).
+void CustomSetup_Draw(int control, int state, string tag, string name, string detail, string tip) {
+    CustomSetup_DrawTo(control, g_cs_edGroup, true, state, tag, name, detail, tip);
+    CustomSetup_DrawTo(control, g_cs_otherGroup, false, state, tag, name, detail, tip);
+}
+
+// One state/tag pair for a card that is either on (Selected, tag) or off (open).
+void CustomSetup_DrawChosen(int control, bool chosen, string tag, string name, string detail) {
+    if (chosen) {
+        CustomSetup_Draw(control, c_draftStateSelected, tag, name, detail, "");
+    } else {
+        CustomSetup_Draw(control, c_draftStateOpen, "", name, detail, "");
+    }
+}
+
+void CustomSetup_DrawStatus() {
+    string who;
+    if (g_cs_single) {
+        who = "Player " + IntToString(g_cs_ed1) + " is";
+    } else {
+        who = "Players " + IntToString(g_cs_ed1) + " and " + IntToString(g_cs_ed2) + " are";
+    }
+    DialogControlSetPropertyAsText(g_cs_status, c_triggerControlPropertyText, g_cs_edGroup,
+        StringToText(DraftStyle_Small("<c val=\"00FF88\">Edit either side, then Accept. "
+            + "Any change clears both Accepts.</c>" + g_cs_note)));
+    DialogControlSetPropertyAsText(g_cs_status, c_triggerControlPropertyText, g_cs_otherGroup,
+        StringToText(DraftStyle_Small("<c val=\"888888\">" + who
+            + " setting up a custom game...</c>" + g_cs_note)));
+}
+
+void CustomSetup_DrawLoad() {
+    // [0] Last game
+    if (g_cs_lastP == 0) {
+        CustomSetup_Draw(g_cs_load[0], c_draftStateTaken, "N/A", "Last game", "none saved yet", "");
+    } else {
+        CustomSetup_Draw(g_cs_load[0], c_draftStateOpen, "", "Last game",
+            "Player " + IntToString(g_cs_lastP) + "'s last code", "");
+    }
+    // [1] and [2] File: Player N
+    if (g_cs_loadP[1] == 0) {
+        CustomSetup_Draw(g_cs_load[1], c_draftStateTaken, "N/A", "File: none",
+            "paste a code into load in Tardigrade.SC2Bank", "");
+    } else {
+        CustomSetup_Draw(g_cs_load[1], c_draftStateOpen, "", "File: Player " + IntToString(g_cs_loadP[1]),
+            "the load code in Tardigrade.SC2Bank", "");
+    }
+    if (g_cs_loadP[2] == 0) {
+        CustomSetup_Draw(g_cs_load[2], c_draftStateTaken, "N/A", "File: none", "", "");
+    } else {
+        CustomSetup_Draw(g_cs_load[2], c_draftStateOpen, "", "File: Player " + IntToString(g_cs_loadP[2]),
+            "the load code in Tardigrade.SC2Bank", "");
+    }
+    // [3] Reset
+    CustomSetup_Draw(g_cs_load[3], c_draftStateOpen, "", "Reset", "lobby races, nothing picked", "");
+}
+
+void CustomSetup_DrawSideHead(int t) {
+    string colour;
+    if (t == 1) { colour = "7FD0FF"; } else { colour = "FF9F7F"; }
+    DialogControlSetPropertyAsText(g_cs_hdr[t], c_triggerControlPropertyText, PlayerGroupAll(),
+        StringToText(DraftStyle_Small("<c val=\"" + colour + "\">p" + IntToString(t) + "</c>  team "
+            + IntToString(t) + "  " + c_draftDot + "  Player " + IntToString(MatchCode_TeamDecider(t))
+            + "  " + c_draftDot + "  " + IntToString(MatchCode_ModCount(t)) + " modifiers, "
+            + IntToString(MatchCode_DocCount(t)) + " doctrines")));
+}
+
+void CustomSetup_DrawRaces(int t) {
+    int r;
+    r = 1;
+    while (r <= 3) {
+        CustomSetup_DrawChosen(g_cs_race[t][r], g_mc_race[t] == r, "RACE", RaceName(r),
+            MatchCode_RaceLetter(r));
+        r = r + 1;
+    }
+}
+
+void CustomSetup_DrawMods(int t) {
+    int    i;
+    int    state;
+    string tag;
+    string tip;
+    string chain;
+    int    g;
+
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (!CycleMod_ModIsDraftOnly(i)) {
+            tip = CycleMod_Desc(i);
+            if (g_mc_roster == c_gameRosterGroups && CycleMod_Bucket(i) != c_cycleBucketCommand) {
+                chain = "all units";
+                g = 1;
+                while (g <= 3) {
+                    chain = chain + " > " + UnitGroups_GroupName(g_mc_split[t], g_mc_race[t], g);
+                    g = g + 1;
+                }
+                tip = tip + "<n/>Click again: " + chain + " > off";
+            }
+            tag = "";
+            if (g_mc_modOn[t][i]) {
+                state = c_draftStateSelected;
+                if (g_mc_modGrp[t][i] > 0) { tag = "GROUP " + IntToString(g_mc_modGrp[t][i]); }
+                else                       { tag = "ALL UNITS"; }
+            } else {
+                state = c_draftStateOpen;
+            }
+            CustomSetup_Draw(g_cs_mod[t][i], state, tag, CycleMod_Name(i),
+                "#" + MatchCode_Two(i) + "  " + CycleMod_BucketName(CycleMod_Bucket(i)), tip);
+        }
+        i = i + 1;
+    }
+}
+
+string CustomSetup_GroupText(int t, int grp) {
+    string s;
+    string mlist;
+    int    i;
+    s = "<c val=\"FFD54A\">" + UnitGroups_GroupName(g_mc_split[t], g_mc_race[t], grp) + "</c><n/>";
+    mlist = "";
+    i = 1;
+    while (i <= c_cycleModCount) {
+        if (g_mc_modOn[t][i] && g_mc_modGrp[t][i] == grp) {
+            if (mlist != "") { mlist = mlist + ", "; }
+            mlist = mlist + CycleMod_Name(i);
+        }
+        i = i + 1;
+    }
+    if (mlist == "") { s = s + "<c val=\"888888\">no modifier</c>"; }
+    else            { s = s + "<c val=\"FFFFFF\">" + mlist + "</c>"; }
+    s = s + "<n/>" + DraftStyle_Small("<c val=\"8A8A8A\">"
+        + UnitGroups_UnitNames(UnitGroups_Units(g_mc_split[t], g_mc_race[t], grp), ", ") + "</c>");
+    return s;
+}
+
+void CustomSetup_DrawUnitsTab(int t) {
+    int i;
+    int pool;
+
+    // The roster row is shared; it is drawn with side 1 so it happens once.
+    if (t == 1) {
+        i = 0;
+        while (i <= 2) {
+            CustomSetup_DrawChosen(g_cs_rosterBtn[i], g_mc_roster == CustomSetup_RosterOf(i), "CHOSEN",
+                CustomSetup_RosterName(i), CustomSetup_RosterDesc(i));
+            i = i + 1;
+        }
+    }
+
+    pool = GetRosterPoolCount(g_mc_race[t]);
+    i = 1;
+    while (i <= pool && i <= c_rosterPoolMax) {
+        CustomSetup_DrawChosen(g_cs_unit[t][i], g_mc_unit[t][i], "IN",
+            RosterUnitDisplayName(GetRosterPoolUnit(g_mc_race[t], i)),
+            MatchCode_UnitToken(GetRosterPoolUnit(g_mc_race[t], i)));
+        i = i + 1;
+    }
+    DialogControlSetPropertyAsText(g_cs_unitCnt[t], c_triggerControlPropertyText, PlayerGroupAll(),
+        StringToText(DraftStyle_Small(IntToString(MatchCode_UnitCount(t)) + " units")));
+    DialogControlSetPropertyAsText(g_cs_fullLbl[t], c_triggerControlPropertyText, PlayerGroupAll(),
+        StringToText("Every " + RaceName(g_mc_race[t]) + " unit is allowed."));
+
+    i = 1;
+    while (i <= 4) {
+        CustomSetup_Draw(g_cs_split[t][i],
+            CustomSetup_ChosenState(g_mc_split[t] == i), "CHOSEN", UnitGroups_PresetName(i),
+            CustomSetup_SplitDesc(i), UnitGroups_PresetDesc(i));
+        i = i + 1;
+    }
+    i = 1;
+    while (i <= 3) {
+        DialogControlSetPropertyAsText(g_cs_grpLbl[t][i], c_triggerControlPropertyText, PlayerGroupAll(),
+            StringToText(CustomSetup_GroupText(t, i)));
+        i = i + 1;
+    }
+    DialogControlSetPropertyAsText(g_cs_grpNote[t], c_triggerControlPropertyText, PlayerGroupAll(),
+        StringToText(DraftStyle_Small("<c val=\"8A8A8A\">Assign modifiers to groups on the "
+            + "Modifiers tab.</c>")));
+}
+
+void CustomSetup_DrawDocs(int t) {
+    int    d;
+    int    state;
+    string tag;
+    d = 1;
+    while (d <= c_docCount) {
+        tag = "";
+        if (g_mc_doc[t][d]) {
+            state = c_draftStateSelected;
+            tag = "ON";
+        } else {
+            state = c_draftStateOpen;
+        }
+        CustomSetup_Draw(g_cs_doc[t][d], state, tag, Doctrine_Name(d), "#" + MatchCode_Two(d),
+            Doctrine_Desc(d));
+        d = d + 1;
+    }
+}
+
+void CustomSetup_DrawCode() {
+    string s;
+    string prob;
+    s = "Code:  <c val=\"FFFFFF\">" + MatchCode_Encode() + "</c>";
+    prob = MatchCode_Problem();
+    if (prob != "") { s = s + "<n/><c val=\"FF5555\">" + prob + "</c>"; }
+    DialogControlSetPropertyAsText(g_cs_code, c_triggerControlPropertyText, PlayerGroupAll(),
+        StringToText(DraftStyle_Small(s)));
+}
+
+void CustomSetup_DrawAccept() {
+    int    k;
+    string prob;
+    prob = MatchCode_Problem();
+    k = 1;
+    while (k <= 2) {
+        if (k == 1 || !g_cs_single) {
+            if (g_cs_acc[k]) {
+                CustomSetup_DrawTo(g_cs_accBtn[k], CustomSetup_AccOwn(k), true, c_draftStateMine, "ACCEPTED",
+                    "Accept", "waiting for the other player...", "");
+                CustomSetup_DrawTo(g_cs_accBtn[k], CustomSetup_AccOth(k), false, c_draftStateMine, "ACCEPTED",
+                    "Accept", "waiting for the other player...", "");
+            } else if (prob != "") {
+                CustomSetup_DrawTo(g_cs_accBtn[k], CustomSetup_AccOwn(k), true, c_draftStateTaken, "BLOCKED",
+                    "Accept", prob, "");
+                CustomSetup_DrawTo(g_cs_accBtn[k], CustomSetup_AccOth(k), false, c_draftStateTaken, "BLOCKED",
+                    "Accept", prob, "");
+            } else {
+                CustomSetup_DrawTo(g_cs_accBtn[k], CustomSetup_AccOwn(k), true, c_draftStateOpen, "",
+                    "Accept", "start with this setup", "");
+                CustomSetup_DrawTo(g_cs_accBtn[k], CustomSetup_AccOth(k), false, c_draftStateOpen, "",
+                    "Accept", "start with this setup", "");
+            }
+        }
+        k = k + 1;
+    }
+    CustomSetup_DrawTo(g_cs_back, g_cs_backOwn, true, c_draftStateOpen, "", "Back",
+        "to the setup screen", "");
+    CustomSetup_DrawTo(g_cs_back, g_cs_backOth, false, c_draftStateOpen, "", "Back",
+        "to the setup screen", "");
+}
+
+// The viewer's own tab cards: clickable for everyone, state is per viewer.
+void CustomSetup_DrawTabs(int p) {
+    playergroup grp;
+    int         i;
+    grp = PlayerGroupSingle(p);
+    i = 0;
+    while (i <= 2) {
+        if (g_cs_tab[p] == i) {
+            CustomSetup_DrawTo(g_cs_tabBtn[i], grp, true, c_draftStateSelected, "VIEWING",
+                CustomSetup_TabName(i), CustomSetup_TabDesc(i), "");
+        } else {
+            CustomSetup_DrawTo(g_cs_tabBtn[i], grp, true, c_draftStateOpen, "",
+                CustomSetup_TabName(i), CustomSetup_TabDesc(i), "");
+        }
+        i = i + 1;
+    }
+}
+
+// Show only the controls of viewer p's tab and the roster sub-view in play, and
+// hide the unit cards past the pool size. Must run after the cards are drawn.
+void CustomSetup_ApplyVisibility(int p) {
+    playergroup grp;
+    int         tab;
+    int         t;
+    int         i;
+    int         pool;
+    bool        mods;
+    bool        units;
+    bool        docs;
+    bool        isList;
+    bool        isFull;
+    bool        isGroups;
+
+    grp  = PlayerGroupSingle(p);
+    tab  = g_cs_tab[p];
+    mods  = (tab == 0);
+    units = (tab == 1);
+    docs  = (tab == 2);
+    isList   = units && (g_mc_roster == c_gameRosterDraft);
+    isFull   = units && (g_mc_roster == c_gameRosterFull);
+    isGroups = units && (g_mc_roster == c_gameRosterGroups);
+
+    i = 0;
+    while (i <= 2) {
+        DialogControlSetVisible(g_cs_rosterBtn[i], grp, units);
+        i = i + 1;
+    }
+    t = 1;
+    while (t <= 2) {
+        i = 1;
+        while (i <= c_cycleModCount) {
+            if (!CycleMod_ModIsDraftOnly(i)) { DialogControlSetVisible(g_cs_mod[t][i], grp, mods); }
+            i = i + 1;
+        }
+        pool = GetRosterPoolCount(g_mc_race[t]);
+        i = 1;
+        while (i <= c_rosterPoolMax) {
+            DialogControlSetVisible(g_cs_unit[t][i], grp, isList && i <= pool);
+            i = i + 1;
+        }
+        DialogControlSetVisible(g_cs_unitCnt[t], grp, isList);
+        DialogControlSetVisible(g_cs_fullLbl[t], grp, isFull);
+        i = 1;
+        while (i <= 4) {
+            DialogControlSetVisible(g_cs_split[t][i], grp, isGroups);
+            i = i + 1;
+        }
+        i = 1;
+        while (i <= 3) {
+            DialogControlSetVisible(g_cs_grpLbl[t][i], grp, isGroups);
+            i = i + 1;
+        }
+        DialogControlSetVisible(g_cs_grpNote[t], grp, isGroups);
+        i = 1;
+        while (i <= c_docCount) {
+            DialogControlSetVisible(g_cs_doc[t][i], grp, docs);
+            i = i + 1;
+        }
+        t = t + 1;
+    }
+    if (g_cs_single) { DialogControlSetVisible(g_cs_accBtn[2], PlayerGroupAll(), false); }
+}
+
+void CustomSetup_Refresh() {
+    int t;
+    int p;
+
+    CustomSetup_DrawStatus();
+    CustomSetup_DrawLoad();
+    t = 1;
+    while (t <= 2) {
+        CustomSetup_DrawSideHead(t);
+        CustomSetup_DrawRaces(t);
+        CustomSetup_DrawMods(t);
+        CustomSetup_DrawUnitsTab(t);
+        CustomSetup_DrawDocs(t);
+        t = t + 1;
+    }
+    CustomSetup_DrawCode();
+    CustomSetup_DrawAccept();
+
+    p = 0;
+    while (p <= 15) {
+        if (PlayerGroupHasPlayer(Tardigrade_Viewers(), p)) {
+            CustomSetup_DrawTabs(p);
+            CustomSetup_ApplyVisibility(p);
+        }
+        p = p + 1;
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Loading a code
+//--------------------------------------------------------------------------------------------------
+// Parse code into the setup. Returns true when it loaded. Either way the screen is
+// redrawn; a failed parse leaves the setup as it was.
+bool CustomSetup_Load(string code, string source) {
+    if (MatchCode_Parse(code)) {
+        CustomSetup_ClearAccepts();
+        g_cs_note = "  " + c_draftDot + "  <c val=\"4ADB92\">Loaded " + source + "</c>";
+        CustomSetup_Refresh();
+        return true;
+    }
+    g_cs_note = "  " + c_draftDot + "  <c val=\"FF5555\">" + g_mc_error + "</c>";
+    UIDisplayMessage(Tardigrade_Viewers(), c_messageAreaChat,
+        StringToText("Code not loaded: " + g_mc_error));
+    CustomSetup_Refresh();
+    return false;
+}
+
+void CustomSetup_Finish(trigger go) {
+    g_cs_open = false;
+    if (g_cs_click != null) { TriggerDestroy(g_cs_click); g_cs_click = null; }
+    if (g_cs_chat != null)  { TriggerDestroy(g_cs_chat);  g_cs_chat = null; }
+    DialogDestroy(g_cs_dialog);
+    g_cs_dialog = c_invalidDialogId;
+    if (go != null) { TriggerExecute(go, false, false); }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Events
+//--------------------------------------------------------------------------------------------------
+bool CustomSetup_OnClick(bool testConds, bool runActions) {
+    int  p;
+    int  c;
+    int  t;
+    int  i;
+    int  pool;
+    bool changed;
+    bool isEditor;
+
+    if (!g_cs_open) { return true; }
+    p = EventPlayer();
+    c = EventDialogControl();
+    if (p < 0 || p > 15) { return true; }
+
+    // Tabs: anyone, and only their own view.
+    i = 0;
+    while (i <= 2) {
+        if (c == g_cs_tabBtn[i]) {
+            g_cs_tab[p] = i;
+            DraftStyle_ClickCue(PlayerGroupSingle(p));
+            CustomSetup_DrawTabs(p);
+            CustomSetup_ApplyVisibility(p);
+            return true;
+        }
+        i = i + 1;
+    }
+
+    if (c == g_cs_back) {
+        if (p != g_draft_modeChooser) { return true; }
+        DraftStyle_ClickCue(PlayerGroupSingle(p));
+        CustomSetup_Finish(g_cs_onBack);
+        return true;
+    }
+
+    // Accept: only the card's owner, and only while the setup can start.
+    if (c == g_cs_accBtn[1] || c == g_cs_accBtn[2]) {
+        if (c == g_cs_accBtn[1]) { i = 1; } else { i = 2; }
+        if (i == 2 && g_cs_single) { return true; }
+        if (i == 1 && p != g_cs_ed1) { return true; }
+        if (i == 2 && p != g_cs_ed2) { return true; }
+        if (g_cs_acc[i]) { return true; }
+        if (MatchCode_Problem() != "") { return true; }
+        g_cs_acc[i] = true;
+        DraftStyle_ClickCue(PlayerGroupSingle(p));
+        if (CustomSetup_AllAccepted()) {
+            CustomSetup_Finish(g_cs_onAccept);
+        } else {
+            CustomSetup_DrawAccept();
+        }
+        return true;
+    }
+
+    // Everything else edits the setup: editors only.
+    isEditor = PlayerGroupHasPlayer(g_cs_edGroup, p);
+    if (!isEditor) { return true; }
+
+    // Load cards.
+    if (c == g_cs_load[0]) {
+        if (g_cs_lastP == 0) { return true; }
+        if (CustomSetup_Load(g_mc_last[g_cs_lastP], "your last game")) { DraftStyle_ClickCue(PlayerGroupSingle(p)); }
+        return true;
+    }
+    i = 1;
+    while (i <= 2) {
+        if (c == g_cs_load[i]) {
+            if (g_cs_loadP[i] == 0) { return true; }
+            if (CustomSetup_Load(g_mc_load[g_cs_loadP[i]], "Player " + IntToString(g_cs_loadP[i]) + "'s file")) {
+                DraftStyle_ClickCue(PlayerGroupSingle(p));
+            }
+            return true;
+        }
+        i = i + 1;
+    }
+    if (c == g_cs_load[3]) {
+        MatchCode_Reset();
+        CustomSetup_ClearAccepts();
+        g_cs_note = "  " + c_draftDot + "  <c val=\"4ADB92\">Reset</c>";
+        DraftStyle_ClickCue(PlayerGroupSingle(p));
+        CustomSetup_Refresh();
+        return true;
+    }
+
+    changed = false;
+
+    // Roster row.
+    i = 0;
+    while (i <= 2) {
+        if (c == g_cs_rosterBtn[i]) { changed = MatchCode_SetRoster(CustomSetup_RosterOf(i)); }
+        i = i + 1;
+    }
+
+    t = 1;
+    while (t <= 2) {
+        i = 1;
+        while (i <= 3) {
+            if (c == g_cs_race[t][i]) { changed = MatchCode_SetRace(t, i); }
+            i = i + 1;
+        }
+        i = 1;
+        while (i <= c_cycleModCount) {
+            if (!CycleMod_ModIsDraftOnly(i)) {
+                if (c == g_cs_mod[t][i]) { changed = MatchCode_StepMod(t, i); }
+            }
+            i = i + 1;
+        }
+        pool = GetRosterPoolCount(g_mc_race[t]);
+        i = 1;
+        while (i <= c_rosterPoolMax) {
+            if (c == g_cs_unit[t][i] && i <= pool && g_mc_roster == c_gameRosterDraft) {
+                changed = MatchCode_ToggleUnit(t, i);
+            }
+            i = i + 1;
+        }
+        i = 1;
+        while (i <= 4) {
+            if (c == g_cs_split[t][i] && g_mc_roster == c_gameRosterGroups) {
+                changed = MatchCode_SetSplit(t, i);
+            }
+            i = i + 1;
+        }
+        i = 1;
+        while (i <= c_docCount) {
+            if (c == g_cs_doc[t][i]) { changed = MatchCode_ToggleDoc(t, i); }
+            i = i + 1;
+        }
+        t = t + 1;
+    }
+
+    if (changed) {
+        DraftStyle_ClickCue(PlayerGroupSingle(p));
+        CustomSetup_ClearAccepts();
+        CustomSetup_Refresh();
+    }
+    return true;
+}
+
+bool CustomSetup_OnChat(bool testConds, bool runActions) {
+    int    p;
+    string msg;
+    string clean;
+
+    if (!g_cs_open) { return true; }
+    p = EventPlayer();
+    if (p < 0 || p > 15) { return true; }
+    if (!PlayerGroupHasPlayer(g_cs_edGroup, p)) { return true; }
+    msg = EventChatMessage(false);
+    clean = MatchCode_Clean(msg);
+    if (StringLength(clean) < 3) { return true; }
+    if (StringSub(clean, 1, 3) == "p1-" || StringSub(clean, 1, 3) == "p2-") {
+        if (CustomSetup_Load(msg, "the code from chat")) { DraftStyle_ClickCue(PlayerGroupSingle(p)); }
+    }
+    return true;
+}
+
+//--------------------------------------------------------------------------------------------------
+// Building the dialog
+//--------------------------------------------------------------------------------------------------
+int CustomSetup_Label(int x, int y, int w, int h) {
+    int lbl;
+    lbl = DialogControlCreate(g_cs_dialog, c_triggerControlTypeLabel);
+    DialogControlSetSize(lbl, PlayerGroupAll(), w, h);
+    DialogControlSetPosition(lbl, PlayerGroupAll(), c_anchorTop, x, y);
+    return lbl;
+}
+
+int CustomSetup_Button(int x, int y, int w, int h) {
+    int btn;
+    btn = DialogControlCreate(g_cs_dialog, c_triggerControlTypeButton);
+    DraftStyle_InitButton(btn, PlayerGroupAll());
+    DialogControlSetSize(btn, PlayerGroupAll(), w, h);
+    DialogControlSetPosition(btn, PlayerGroupAll(), c_anchorTop, x, y);
+    TriggerAddEventDialogControl(g_cs_click, c_playerAny, btn, c_triggerControlEventTypeClick);
+    return btn;
+}
+
+// Show the screen. onAccept runs when every editor has accepted, onBack when the
+// host presses Back; the screen and its triggers are gone by then.
+void CustomSetup_Start(trigger onAccept, trigger onBack) {
+    int    p;
+    int    t;
+    int    i;
+    int    k;
+    int    sx;
+    int    n;
+    string parsedErr;
+    bool   loaded;
+
+    g_cs_onAccept = onAccept;
+    g_cs_onBack   = onBack;
+    g_cs_ed1      = MatchCode_TeamDecider(1);
+    g_cs_ed2      = MatchCode_TeamDecider(2);
+    g_cs_single   = (g_cs_ed1 == g_cs_ed2);
+    CustomSetup_ClearAccepts();
+    g_cs_note = "";
+    p = 0;
+    while (p <= 15) {
+        g_cs_tab[p] = 0;
+        p = p + 1;
+    }
+
+    // Who can edit, and the groups the cards are drawn for.
+    g_cs_edGroup = PlayerGroupCopy(PlayerGroupSingle(g_cs_ed1));
+    if (!g_cs_single) { PlayerGroupAdd(g_cs_edGroup, g_cs_ed2); }
+    g_cs_otherGroup = PlayerGroupCopy(PlayerGroupAll());
+    PlayerGroupRemove(g_cs_otherGroup, g_cs_ed1);
+    PlayerGroupRemove(g_cs_otherGroup, g_cs_ed2);
+    g_cs_acc1Own = PlayerGroupSingle(g_cs_ed1);
+    g_cs_acc1Oth = PlayerGroupCopy(PlayerGroupAll());
+    PlayerGroupRemove(g_cs_acc1Oth, g_cs_ed1);
+    g_cs_acc2Own = PlayerGroupSingle(g_cs_ed2);
+    g_cs_acc2Oth = PlayerGroupCopy(PlayerGroupAll());
+    PlayerGroupRemove(g_cs_acc2Oth, g_cs_ed2);
+    g_cs_backOwn = PlayerGroupSingle(g_draft_modeChooser);
+    g_cs_backOth = PlayerGroupCopy(PlayerGroupAll());
+    PlayerGroupRemove(g_cs_backOth, g_draft_modeChooser);
+
+    // Load sources: the last game of the first human with one (deciders first), and
+    // the load codes of the first two humans that have one.
+    g_cs_lastP = 0;
+    if (CustomSetup_HasLast(g_cs_ed1)) { g_cs_lastP = g_cs_ed1; }
+    else if (CustomSetup_HasLast(g_cs_ed2)) { g_cs_lastP = g_cs_ed2; }
+    else {
+        p = 1;
+        while (p <= 15 && g_cs_lastP == 0) {
+            if (CustomSetup_HasLast(p)) { g_cs_lastP = p; }
+            p = p + 1;
+        }
+    }
+    g_cs_loadP[1] = 0;
+    g_cs_loadP[2] = 0;
+    n = 0;
+    p = 1;
+    while (p <= 15 && n < 2) {
+        if (g_mc_bankOk[p]) {
+            if (g_mc_load[p] != "") {
+                n = n + 1;
+                g_cs_loadP[n] = p;
+            }
+        }
+        p = p + 1;
+    }
+
+    // Prefill.
+    loaded = false;
+    if (g_cs_lastP != 0) {
+        loaded = MatchCode_Parse(g_mc_last[g_cs_lastP]);
+        if (loaded) {
+            g_cs_note = "  " + c_draftDot + "  <c val=\"4ADB92\">Loaded your last game</c>";
+        } else {
+            parsedErr = g_mc_error;
+            g_cs_note = "  " + c_draftDot + "  <c val=\"FF5555\">Last game not loaded: " + parsedErr + "</c>";
+        }
+    }
+    if (!loaded) { MatchCode_Reset(); }
+
+    // The dialog.
+    g_cs_dialog = DialogCreate(1240, 860, c_anchorCenter, 0, 0, true);
+    Tardigrade_ObservableDialog(g_cs_dialog);
+    DialogSetTitle(g_cs_dialog, StringToText("Tardigrade  -  Custom game"));
+    DialogSetVisible(g_cs_dialog, Tardigrade_Viewers(), true);
+    g_cs_click = TriggerCreate("CustomSetup_OnClick");
+    g_cs_chat  = TriggerCreate("CustomSetup_OnChat");
+    g_cs_open  = true;
+
+    g_cs_status = CustomSetup_Label(0, 50, 1180, 22);
+
+    g_cs_load[0] = CustomSetup_Button(-435, 84, 280, 48);
+    g_cs_load[1] = CustomSetup_Button(-145, 84, 280, 48);
+    g_cs_load[2] = CustomSetup_Button( 145, 84, 280, 48);
+    g_cs_load[3] = CustomSetup_Button( 435, 84, 280, 48);
+
+    i = 0;
+    while (i <= 2) {
+        g_cs_tabBtn[i] = CustomSetup_Button(-280 + i * 280, 228, 260, 40);
+        i = i + 1;
+    }
+
+    t = 1;
+    while (t <= 2) {
+        sx = CustomSetup_SideX(t);
+        g_cs_hdr[t] = CustomSetup_Label(sx, 146, 580, 24);
+        i = 1;
+        while (i <= 3) {
+            g_cs_race[t][i] = CustomSetup_Button(sx + (i - 2) * 200, 174, 190, 44);
+            i = i + 1;
+        }
+
+        // Modifiers: the draft-only ones have no card, so the grid has no gap.
+        k = 0;
+        i = 1;
+        while (i <= c_cycleModCount) {
+            if (!CycleMod_ModIsDraftOnly(i)) {
+                g_cs_mod[t][i] = CustomSetup_Button(sx + (ModI(k, 3) - 1) * 200, 284 + (k / 3) * 62, 190, 56);
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+
+        // Units: all 18 cards exist; the ones past the pool are hidden per refresh.
+        i = 1;
+        while (i <= c_rosterPoolMax) {
+            g_cs_unit[t][i] = CustomSetup_Button(sx + (ModI(i - 1, 3) - 1) * 200, 344 + ((i - 1) / 3) * 54, 190, 48);
+            i = i + 1;
+        }
+        g_cs_unitCnt[t] = CustomSetup_Label(sx, 676, 580, 20);
+        g_cs_fullLbl[t] = CustomSetup_Label(sx, 344, 580, 24);
+        i = 1;
+        while (i <= 4) {
+            g_cs_split[t][i] = CustomSetup_Button(sx - 360 + i * 144, 344, 140, 48);
+            i = i + 1;
+        }
+        i = 1;
+        while (i <= 3) {
+            g_cs_grpLbl[t][i] = CustomSetup_Label(sx, 404 + (i - 1) * 104, 580, 100);
+            i = i + 1;
+        }
+        g_cs_grpNote[t] = CustomSetup_Label(sx, 716, 580, 20);
+
+        // Doctrines.
+        i = 1;
+        while (i <= c_docCount) {
+            g_cs_doc[t][i] = CustomSetup_Button(sx + (ModI(i - 1, 3) - 1) * 200, 284 + ((i - 1) / 3) * 38, 190, 36);
+            i = i + 1;
+        }
+        t = t + 1;
+    }
+
+    // Roster row (Units tab), shared by both sides.
+    i = 0;
+    while (i <= 2) {
+        g_cs_rosterBtn[i] = CustomSetup_Button(-280 + i * 280, 284, 260, 48);
+        i = i + 1;
+    }
+
+    g_cs_code = CustomSetup_Label(0, 770, 1180, 30);
+    if (g_cs_single) {
+        g_cs_accBtn[1] = CustomSetup_Button(-160, 800, 300, 48);
+        g_cs_accBtn[2] = CustomSetup_Button(0, 800, 300, 48);   // hidden by the visibility pass
+        g_cs_back      = CustomSetup_Button(160, 800, 200, 48);
+    } else {
+        g_cs_accBtn[1] = CustomSetup_Button(-310, 800, 300, 48);
+        g_cs_accBtn[2] = CustomSetup_Button( 310, 800, 300, 48);
+        g_cs_back      = CustomSetup_Button(0, 800, 200, 48);
+    }
+
+    // Unit-list cards sit under the roster row on the Units tab; the split cards
+    // are drawn for Unit groups only (visibility), so overlapping positions are fine.
+    CustomSetup_Refresh();
+
+    TriggerAddEventChatMessage(g_cs_chat, c_playerAny, "", false);
+    DraftStyle_TurnCuePlayer(g_cs_ed1);
+    if (!g_cs_single) { DraftStyle_TurnCuePlayer(g_cs_ed2); }
+}
