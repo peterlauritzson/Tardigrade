@@ -1,6 +1,6 @@
 # Handover: Custom game and match codes (2026-10-30)
 
-**Not committed. Not compiled. Not playtested.**
+**Committed. Not playtested.** The first version compiled, and the screen opened in an editor test run. The lobby-race fix and the no-caps change came after that and are not compiled.
 
 A rematch in one click, or any setup by hand. Every game now has a readable **match code**, e.g. `p1-z-m041119-uzlrohyluinvi+p2-t-m020713-umamdmvtkvkth`. The setup screen's new **Custom game / rematch** button opens a screen where both players edit both sides or load a code, then both Accept. Format and rules: CURRENT_STATE section 0b.
 
